@@ -1,0 +1,11 @@
+.{
+    .name = .mapdb_collections,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.0",
+    .fingerprint = 0x34520b430209f7e9,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

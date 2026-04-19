@@ -1,0 +1,144 @@
+// Copyright (c) 2026 Jan Kotek.
+// Derived from Eclipse Collections (Copyright (c) Goldman Sachs and others).
+// Licensed under the Eclipse Public License v1.0 and Eclipse Distribution License v1.0.
+// See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
+// USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+pub fn HashBag(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        const Map = std.AutoHashMapUnmanaged(T, usize);
+
+        inner: Map,
+        allocator: Allocator,
+        total_size: usize,
+
+        pub fn init(allocator: Allocator) Self {
+            return .{
+                .inner = .{},
+                .allocator = allocator,
+                .total_size = 0,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.inner.deinit(self.allocator);
+        }
+
+        pub fn add(self: *Self, value: T) void {
+            if (self.inner.getPtr(value)) |count_ptr| {
+                count_ptr.* += 1;
+            } else {
+                self.inner.put(self.allocator, value, 1) catch @panic("out of memory");
+            }
+            self.total_size += 1;
+        }
+
+        pub fn occurrencesOf(self: *const Self, value: T) usize {
+            return self.inner.get(value) orelse 0;
+        }
+
+        pub fn sizeDistinct(self: *const Self) usize {
+            return self.inner.count();
+        }
+
+        /// Total number of items including multiplicities.
+        pub fn len(self: *const Self) usize {
+            return self.total_size;
+        }
+
+        pub fn contains(self: *const Self, value: T) bool {
+            return self.inner.contains(value);
+        }
+
+        /// Remove one occurrence of value. Returns true if value was present.
+        pub fn removeOne(self: *Self, value: T) bool {
+            const ptr = self.inner.getPtr(value) orelse return false;
+            if (ptr.* <= 1) {
+                _ = self.inner.fetchRemove(value);
+            } else {
+                ptr.* -= 1;
+            }
+            self.total_size -= 1;
+            return true;
+        }
+
+        pub fn forEachWithOccurrences(self: *const Self, f: *const fn (T, usize) void) void {
+            var it = self.inner.iterator();
+            while (it.next()) |entry| {
+                f(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
+
+        pub fn clear(self: *Self) void {
+            self.inner.clearRetainingCapacity();
+            self.total_size = 0;
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "HashBag basic" {
+    const allocator = std.testing.allocator;
+    var bag = HashBag(i32).init(allocator);
+    defer bag.deinit();
+
+    bag.add(1);
+    bag.add(1);
+    bag.add(2);
+
+    try std.testing.expectEqual(@as(usize, 3), bag.len());
+    try std.testing.expectEqual(@as(usize, 2), bag.sizeDistinct());
+    try std.testing.expectEqual(@as(usize, 2), bag.occurrencesOf(1));
+    try std.testing.expectEqual(@as(usize, 1), bag.occurrencesOf(2));
+    try std.testing.expectEqual(@as(usize, 0), bag.occurrencesOf(99));
+}
+
+test "HashBag removeOne" {
+    const allocator = std.testing.allocator;
+    var bag = HashBag(i32).init(allocator);
+    defer bag.deinit();
+
+    bag.add(5);
+    bag.add(5);
+    bag.add(5);
+
+    try std.testing.expect(bag.removeOne(5));
+    try std.testing.expectEqual(@as(usize, 2), bag.occurrencesOf(5));
+    try std.testing.expectEqual(@as(usize, 2), bag.len());
+
+    try std.testing.expect(bag.removeOne(5));
+    try std.testing.expect(bag.removeOne(5));
+    try std.testing.expect(!bag.removeOne(5));
+    try std.testing.expectEqual(@as(usize, 0), bag.len());
+    try std.testing.expectEqual(@as(usize, 0), bag.sizeDistinct());
+}
+
+test "HashBag contains" {
+    const allocator = std.testing.allocator;
+    var bag = HashBag(i32).init(allocator);
+    defer bag.deinit();
+
+    bag.add(42);
+    try std.testing.expect(bag.contains(42));
+    try std.testing.expect(!bag.contains(0));
+}
+
+test "HashBag clear" {
+    const allocator = std.testing.allocator;
+    var bag = HashBag(i32).init(allocator);
+    defer bag.deinit();
+
+    bag.add(1);
+    bag.add(2);
+    bag.clear();
+
+    try std.testing.expectEqual(@as(usize, 0), bag.len());
+    try std.testing.expectEqual(@as(usize, 0), bag.sizeDistinct());
+}
