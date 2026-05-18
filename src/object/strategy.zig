@@ -71,7 +71,15 @@ pub fn Comparator(comptime T: type) type {
 pub fn naturalComparator(comptime T: type) Comparator(T) {
     return &struct {
         fn cmp(a: T, b: T) std.math.Order {
-            return std.math.order(a, b);
+            return switch (@typeInfo(T)) {
+                .float, .comptime_float => if (std.math.isNan(a))
+                    (if (std.math.isNan(b)) .eq else .gt)
+                else if (std.math.isNan(b))
+                    .lt
+                else
+                    std.math.order(a, b),
+                else => std.math.order(a, b),
+            };
         }
     }.cmp;
 }
@@ -87,7 +95,7 @@ pub fn naturalComparator(comptime T: type) Comparator(T) {
 pub fn reverseComparator(comptime T: type) Comparator(T) {
     return &struct {
         fn cmp(a: T, b: T) std.math.Order {
-            return std.math.order(b, a);
+            return naturalComparator(T)(b, a);
         }
     }.cmp;
 }

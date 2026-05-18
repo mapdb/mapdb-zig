@@ -44,15 +44,16 @@ const std = @import("std");
 const mapdb = @import("mapdb_collections");
 
 // Primitive ArrayList
-var list = mapdb.I32ArrayList.init();
-defer list.deinit(allocator);
-list.append(allocator, 3);
-list.append(allocator, 1);
-list.append(allocator, 4);
+var list = mapdb.I32ArrayList.init(allocator);
+defer list.deinit();
+list.push(3);
+list.push(1);
+list.push(4);
 list.sort();
-const big = list.select(allocator, struct {
+const big = list.select(struct {
     pub fn call(v: i32) bool { return v > 2; }
 }.call);
+defer big.deinit();
 
 // Generic ArrayList
 const ObjList = mapdb.object.ArrayList([]const u8);

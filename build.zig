@@ -18,13 +18,14 @@ pub fn build(b: *std.Build) void {
     });
     _ = mod;
 
-    // Validation runner executable
-    const validate_exe = b.addExecutable(.{
-        .name = "validate",
-        .root_source_file = b.path("src/validate.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Validation runner executable.
+    //
+    // Zig 0.15 removed `root_source_file` / `target` / `optimize` from
+    // std.Build.ExecutableOptions; those fields are now carried by a
+    // std.Build.Module created via b.createModule and passed as
+    // .root_module. The 0.14 API had them directly on ExecutableOptions.
+    // `addExe` below picks the right shape at comptime.
+    const validate_exe = addExe(b, "validate", b.path("src/validate.zig"), target, optimize);
     b.installArtifact(validate_exe);
 
     const run_validate = b.addRunArtifact(validate_exe);
@@ -36,12 +37,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_validate.step);
 
     // NaN semantics probe executable
-    const nanprobe_exe = b.addExecutable(.{
-        .name = "nanprobe",
-        .root_source_file = b.path("src/nanprobe.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const nanprobe_exe = addExe(b, "nanprobe", b.path("src/nanprobe.zig"), target, optimize);
     b.installArtifact(nanprobe_exe);
 
     const run_nanprobe = b.addRunArtifact(nanprobe_exe);
@@ -61,4 +57,40 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
+}
+
+/// Add an executable in a way that works on both Zig 0.14 and 0.15.
+/// On 0.15, std.Build.ExecutableOptions no longer carries root_source_file /
+/// target / optimize — those must live on a Module passed via root_module.
+/// On 0.14, the old flat shape is still accepted. We detect the current
+/// API shape at comptime via @hasField; the un-selected branch is pruned
+/// and is never type-checked against the live ExecutableOptions definition.
+fn addExe(
+    b: *std.Build,
+    name: []const u8,
+    src: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    if (comptime @hasField(std.Build.ExecutableOptions, "root_module")) {
+        return b.addExecutable(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = src,
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+    } else {
+        // Zig 0.14 path. The @as cast is what makes the struct literal
+        // target the version-appropriate ExecutableOptions type; on 0.15
+        // this branch is comptime-dead so the missing fields below never
+        // reach semantic analysis.
+        return b.addExecutable(@as(std.Build.ExecutableOptions, .{
+            .name = name,
+            .root_source_file = src,
+            .target = target,
+            .optimize = optimize,
+        }));
+    }
 }

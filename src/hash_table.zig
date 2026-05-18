@@ -508,7 +508,9 @@ fn nextPow2(n: usize) usize {
     v |= v >> 4;
     v |= v >> 8;
     v |= v >> 16;
-    v |= v >> 32;
+    if (@bitSizeOf(usize) > 32) {
+        v |= v >> 32;
+    }
     return v + 1;
 }
 

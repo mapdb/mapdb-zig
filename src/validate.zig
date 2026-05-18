@@ -184,10 +184,8 @@ fn getItemSlice(coll: *Collection, allocator: Allocator) []i32 {
             return b.toSlice(allocator);
         },
         .tree_set => |*s| {
-            const src = s.toSlice();
-            const copy = allocator.alloc(i32, src.len) catch @panic("oom");
-            @memcpy(copy, src);
-            return copy;
+            // toSlice(allocator) now owns the return — no extra copy needed.
+            return s.toSlice(allocator);
         },
         .array_stack => |*s| {
             const src = s.toSlice();
@@ -451,7 +449,10 @@ fn evaluateAssertion(
         const threshold = parseThreshold(key, "select_gt_").?;
         const items = getItemSlice(coll, allocator);
         defer allocator.free(items);
-        var result = std.ArrayList(i32).init(allocator);
+        // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
+        // (std.array_list.Managed). The allocator-carrying init(alloc) form
+        // now lives on Managed; unmanaged uses .empty / append(alloc, item).
+        var result = std.array_list.Managed(i32).init(allocator);
         defer result.deinit();
         for (items) |item| {
             if (item > threshold) result.append(item) catch @panic("oom");
@@ -467,7 +468,10 @@ fn evaluateAssertion(
         const threshold = parseThreshold(key, "reject_gt_").?;
         const items = getItemSlice(coll, allocator);
         defer allocator.free(items);
-        var result = std.ArrayList(i32).init(allocator);
+        // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
+        // (std.array_list.Managed). The allocator-carrying init(alloc) form
+        // now lives on Managed; unmanaged uses .empty / append(alloc, item).
+        var result = std.array_list.Managed(i32).init(allocator);
         defer result.deinit();
         for (items) |item| {
             if (item <= threshold) result.append(item) catch @panic("oom");
@@ -815,8 +819,14 @@ pub fn main() !void {
         if (other_coll != null) deinitCollection(&other_coll.?);
     }
 
-    // Output header
-    const stdout = std.io.getStdOut().writer();
+    // Output header.
+    // Zig 0.15 replaced std.io.getStdOut() with std.fs.File.stdout();
+    // the new Writer is buffered and needs an explicit flush.
+    // Requires Zig 0.15+.
+    var buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
     try stdout.print("=== scenario: {s} ===\n", .{name});
 
     // Process assertions in order

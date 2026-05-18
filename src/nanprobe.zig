@@ -17,7 +17,14 @@ const pos_inf: f32 = std.math.inf(f32);
 const neg_inf: f32 = -std.math.inf(f32);
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
+    // Zig 0.15 removed std.io.getStdOut(); stdout is now reached via
+    // std.fs.File.stdout() and a buffered std.Io.Writer that requires
+    // explicit flush. Requires Zig 0.15+.
+    var buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
