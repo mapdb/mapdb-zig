@@ -1,6 +1,6 @@
 // Benchmark and stress test for Zig collections.
-// Run: cd mapdb-zig && zig run ../benchmarks/bench_zig.zig
-// Or: zig build-exe --dep mapdb:src/root.zig ../benchmarks/bench_zig.zig
+// Run: zig run bench_zig.zig
+// Or:  zig build-exe --dep mapdb:src/root.zig bench_zig.zig
 
 const std = @import("std");
 const root = @import("mapdb_collections");

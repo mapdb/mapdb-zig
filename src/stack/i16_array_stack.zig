@@ -69,7 +69,7 @@ pub const I16ArrayStack = struct {
     // ---- Fallible capacity reservation ----
 
     /// Ensures that `additional` more items can be pushed without a
-    /// reallocation. See `docs/zig/error-handling.md`.
+    /// reallocation.
     pub fn ensureUnusedCapacity(self: *I16ArrayStack, additional: usize) Allocator.Error!void {
         return self.items.ensureUnusedCapacity(self.config.itemsAllocator(), additional);
     }

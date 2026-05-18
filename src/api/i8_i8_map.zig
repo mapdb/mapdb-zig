@@ -30,7 +30,7 @@ pub fn assertI8I8MutableMap(comptime T: type) void {
 // satisfies the matching read-only and (where applicable) mutable interface.
 //
 // Imports go through per-package index files — the index is the swap point
-// for alternative implementations. See docs/zig/interface-redesign.md.
+// for alternative implementations.
 comptime {
     const hashmap = @import("../hashmap/hashmap.zig");
     const treemap = @import("../treemap/treemap.zig");

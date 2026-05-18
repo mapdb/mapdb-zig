@@ -1,6 +1,6 @@
 // Comprehensive benchmark for ALL Zig collection classes and ALL their methods.
-// Run: cd mapdb-zig && zig build-exe ../benchmarks/bench_all_methods_zig.zig && ./bench_all_methods_zig
-// Or:  cp ../benchmarks/bench_all_methods_zig.zig bench_all.zig && zig run bench_all.zig
+// Run: zig build-exe bench_all_methods.zig && ./bench_all_methods
+// Or:  zig run bench_all_methods.zig
 //
 // Benchmarks every public method on:
 //   I32I32HashMap, I32HashSet, I32ArrayList, I32HashBag,

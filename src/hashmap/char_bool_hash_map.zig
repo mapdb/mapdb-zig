@@ -127,8 +127,7 @@ pub const CharBoolHashMap = struct {
     // ---- Fallible capacity reservation ----
 
     /// Ensures that `additional` more entries can be put without triggering
-    /// a rehash. Returns `error.OutOfMemory` if the allocator fails. See
-    /// `docs/zig/error-handling.md`.
+    /// a rehash. Returns `error.OutOfMemory` if the allocator fails.
     pub fn ensureUnusedCapacity(self: *CharBoolHashMap, additional: usize) Allocator.Error!void {
         return self.inner.ensureCapacity(additional);
     }

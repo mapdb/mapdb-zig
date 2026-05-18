@@ -84,7 +84,7 @@ pub const I32HashSet = struct {
 
     /// Ensures that `additional` more entries can be added without
     /// triggering a rehash. Returns `error.OutOfMemory` if the allocator
-    /// fails. See `docs/zig/error-handling.md`.
+    /// fails.
     pub fn ensureUnusedCapacity(self: *I32HashSet, additional: usize) Allocator.Error!void {
         return self.inner.ensureCapacity(additional);
     }

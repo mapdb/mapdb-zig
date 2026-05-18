@@ -121,8 +121,7 @@ pub const I8ArrayList = struct {
     /// Ensures that `additional` more items can be appended without a
     /// reallocation. Returns `error.OutOfMemory` if the allocator fails.
     /// Pair this with the infallible `push` / `with` methods to get an
-    /// opt-in allocation-failure handling path. See
-    /// `docs/zig/error-handling.md`.
+    /// opt-in allocation-failure handling path.
     pub fn ensureUnusedCapacity(self: *I8ArrayList, additional: usize) Allocator.Error!void {
         return self.items.ensureUnusedCapacity(self.config.itemsAllocator(), additional);
     }

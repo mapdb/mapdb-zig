@@ -142,8 +142,7 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         ///
         /// This is the hook that the generated wrappers expose as
         /// `ensureUnusedCapacity` / `ensureTotalCapacity`, enabling a "reserve
-        /// fallibly, then put infallibly" usage pattern (see
-        /// `docs/zig/error-handling.md`).
+        /// fallibly, then put infallibly" usage pattern.
         pub fn ensureCapacity(self: *Self, additional: usize) Allocator.Error!void {
             const needed = self.size + additional;
             // Keep load factor strictly below 0.75: capacity * 3 >= needed * 4 + 1
