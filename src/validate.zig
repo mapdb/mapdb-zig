@@ -18,6 +18,9 @@ const I32HashBag = @import("bag/i32_hash_bag.zig").I32HashBag;
 const I32TreeSet = @import("treeset/i32_tree_set.zig").I32TreeSet;
 const I32I32TreeMap = @import("treemap/i32_i32_tree_map.zig").I32I32TreeMap;
 const I32ArrayStack = @import("stack/i32_array_stack.zig").I32ArrayStack;
+const F32I32HashMap = @import("hashmap/f32_i32_hash_map.zig").F32I32HashMap;
+const F32HashSet = @import("hashset/f32_hash_set.zig").F32HashSet;
+const F32ArrayList = @import("arraylist/f32_array_list.zig").F32ArrayList;
 
 const CollectionKind = enum {
     hash_map,
@@ -109,6 +112,19 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
         switch (coll.*) {
             .array_list => |*l| {
                 l.items.insert(l.config.itemsAllocator(), index, value) catch @panic("out of memory");
+            },
+            else => {},
+        }
+    } else if (std.mem.eql(u8, op_name, "addToValue")) {
+        // Cross-language scenarios (06-overflow/*) require wrapping i32 semantics.
+        // Reimplement locally with +%= rather than relying on a production
+        // `addToValue` that may or may not wrap; mirrors validate.rs.
+        const key = jsonToI32(obj.get("key").?).?;
+        const delta = jsonToI32(obj.get("delta").?).?;
+        switch (coll.*) {
+            .hash_map => |*m| {
+                const cur: i32 = m.get(key) orelse 0;
+                _ = m.put(key, cur +% delta);
             },
             else => {},
         }
@@ -232,6 +248,9 @@ fn writeNull(writer: anytype) !void {
     try writer.writeAll("null");
 }
 
+// Canonical array format across all ports is "[1,2,3]" (no spaces after the
+// comma) — Rust validate.rs and Go cmd/validate use this; harness diffs
+// require an exact byte match.
 fn writeSortedArray(writer: anytype, items: []i32) !void {
     std.mem.sort(i32, items, {}, struct {
         pub fn f(_: void, a: i32, b: i32) bool {
@@ -240,7 +259,7 @@ fn writeSortedArray(writer: anytype, items: []i32) !void {
     }.f);
     try writer.writeAll("[");
     for (items, 0..) |item, i| {
-        if (i > 0) try writer.writeAll(", ");
+        if (i > 0) try writer.writeAll(",");
         try writer.print("{d}", .{item});
     }
     try writer.writeAll("]");
@@ -249,7 +268,7 @@ fn writeSortedArray(writer: anytype, items: []i32) !void {
 fn writeArray(writer: anytype, items: []const i32) !void {
     try writer.writeAll("[");
     for (items, 0..) |item, i| {
-        if (i > 0) try writer.writeAll(", ");
+        if (i > 0) try writer.writeAll(",");
         try writer.print("{d}", .{item});
     }
     try writer.writeAll("]");
@@ -292,10 +311,19 @@ fn evaluateAssertion(
             else => try writeNull(writer),
         }
     }
-    // --- sum ---
+    // --- sum (wrapping i32, matches Rust/Go) ---
+    // Note: the production I32ArrayList.sum() returns a widened i64 so it
+    // never overflows in normal use. The cross-language scenario contract
+    // (scenarios/06-overflow/i32_sum_overflow.json) is wrapping i32 instead
+    // — Java/Go wrap silently, Rust uses wrapping_add in release. Compute
+    // it locally here rather than changing the production API.
     else if (std.mem.eql(u8, key, "sum")) {
         switch (coll.*) {
-            .array_list => |*l| try writeI64(writer, l.sum()),
+            .array_list => |*l| {
+                var acc: i32 = 0;
+                for (l.toSlice()) |item| acc +%= item;
+                try writeI32(writer, acc);
+            },
             else => try writeNull(writer),
         }
     }
@@ -412,33 +440,52 @@ fn evaluateAssertion(
         defer allocator.free(items);
         try writeSortedArray(writer, items);
     }
-    // --- inject_into_sum ---
+    // --- inject_into_sum (widened i64 fold, matches Rust/Go) ---
     else if (std.mem.eql(u8, key, "inject_into_sum")) {
         switch (coll.*) {
             .array_list => |*l| {
-                var acc: i32 = 0;
-                for (l.toSlice()) |item| acc += item;
-                try writeI32(writer, acc);
+                var acc: i64 = 0;
+                for (l.toSlice()) |item| acc += @as(i64, @intCast(item));
+                try writeI64(writer, acc);
             },
             .array_stack => |*s| {
-                var acc: i32 = 0;
-                for (s.toSlice()) |item| acc += item;
-                try writeI32(writer, acc);
+                var acc: i64 = 0;
+                for (s.toSlice()) |item| acc += @as(i64, @intCast(item));
+                try writeI64(writer, acc);
             },
             else => try writeNull(writer),
         }
     }
-    // --- inject_into_product ---
+    // --- inject_into_product (widened i64 fold, matches Rust/Go) ---
     else if (std.mem.eql(u8, key, "inject_into_product")) {
         switch (coll.*) {
             .array_list => |*l| {
+                var acc: i64 = 1;
+                for (l.toSlice()) |item| acc *= @as(i64, @intCast(item));
+                try writeI64(writer, acc);
+            },
+            .array_stack => |*s| {
+                var acc: i64 = 1;
+                for (s.toSlice()) |item| acc *= @as(i64, @intCast(item));
+                try writeI64(writer, acc);
+            },
+            else => try writeNull(writer),
+        }
+    }
+    // --- product / inject_into_wrapping_product (wrapping i32) ---
+    // scenarios/06-overflow/i32_multiply_overflow.json keys this as
+    // "product"; Rust's validate also handles "inject_into_wrapping_product"
+    // as the same wrapping form. Mirror that here.
+    else if (std.mem.eql(u8, key, "product") or std.mem.eql(u8, key, "inject_into_wrapping_product")) {
+        switch (coll.*) {
+            .array_list => |*l| {
                 var acc: i32 = 1;
-                for (l.toSlice()) |item| acc *= item;
+                for (l.toSlice()) |item| acc *%= item;
                 try writeI32(writer, acc);
             },
             .array_stack => |*s| {
                 var acc: i32 = 1;
-                for (s.toSlice()) |item| acc *= item;
+                for (s.toSlice()) |item| acc *%= item;
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -786,6 +833,29 @@ pub fn main() !void {
     const collection_type = root.get("collection").?.string;
     const operations = root.get("operations").?.array;
 
+    // f32 collections take a separate dispatch path: the Collection union
+    // above is i32-only and the API surface differs (bit-pattern eq, total
+    // ordering for sort) enough that mixing them in is uglier than two
+    // sibling paths.
+    var stdout_buf: [16 * 1024]u8 = undefined;
+    var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_w.interface;
+    if (std.mem.eql(u8, collection_type, "HashMap<f32, i32>")) {
+        try runF32HashMap(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "HashSet<f32>")) {
+        try runF32HashSet(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "ArrayList<f32>")) {
+        try runF32ArrayList(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        return;
+    }
+
     const kind = parseCollectionKind(collection_type) orelse {
         std.debug.print("Unknown collection type: {s}\n", .{collection_type});
         std.process.exit(1);
@@ -819,13 +889,8 @@ pub fn main() !void {
         if (other_coll != null) deinitCollection(&other_coll.?);
     }
 
-    // Output header.
-    // Zig 0.15 replaced std.io.getStdOut() with std.fs.File.stdout();
-    // the new Writer is buffered and needs an explicit flush.
-    // Requires Zig 0.15+.
-    var buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&buffer);
-    const stdout = &stdout_writer.interface;
+    // Output header (reusing the stdout writer set up above for the f32
+    // dispatch path).
     defer stdout.flush() catch {};
     try stdout.print("=== scenario: {s} ===\n", .{name});
 
@@ -833,7 +898,253 @@ pub fn main() !void {
     const assertions = root.get("assertions").?.object;
     // std.json.ObjectMap preserves insertion order
     for (assertions.keys(), assertions.values()) |key, _| {
+        // Scenario authors use "comment" as a doc string; the other ports
+        // (Rust, Go) skip it. Treat it the same way here so harness diffs
+        // line up.
+        if (std.mem.eql(u8, key, "comment")) continue;
         const other_ptr: ?*Collection = if (other_coll != null) &other_coll.? else null;
         try evaluateAssertion(key, &coll, other_ptr, allocator, stdout);
+    }
+}
+
+// ── f32 runners ────────────────────────────────────────────────────────────
+//
+// Float collections live on a separate dispatch path; the Collection union
+// above is i32-only. These three runners (HashMap<f32,i32>, HashSet<f32>,
+// ArrayList<f32>) are direct translations of the equivalent runners in
+// mapdb-rust/src/bin/validate.rs and mapdb-golang/cmd/validate/main.go.
+// Required by `cross-language-validation/scenarios/05-float-edge-cases/*`.
+
+fn parseF32Value(v: std.json.Value) f32 {
+    return switch (v) {
+        .string => |s| parseF32Label(s),
+        .float => |f| @as(f32, @floatCast(f)),
+        .integer => |i| @as(f32, @floatFromInt(i)),
+        .number_string => |s| std.fmt.parseFloat(f32, s) catch @panic("invalid f32 literal"),
+        else => @panic("expected f32 value"),
+    };
+}
+
+fn parseF32Label(s: []const u8) f32 {
+    if (std.mem.eql(u8, s, "NaN")) return std.math.nan(f32);
+    if (std.mem.eql(u8, s, "Infinity") or std.mem.eql(u8, s, "+Infinity")) return std.math.inf(f32);
+    if (std.mem.eql(u8, s, "-Infinity")) return -std.math.inf(f32);
+    if (std.mem.eql(u8, s, "pos_zero")) return 0.0;
+    if (std.mem.eql(u8, s, "neg_zero")) return -0.0;
+    return std.fmt.parseFloat(f32, s) catch @panic("invalid f32 literal in key");
+}
+
+fn writeF32(writer: anytype, v: f32) !void {
+    if (std.math.isNan(v)) {
+        try writer.writeAll("NaN");
+        return;
+    }
+    if (std.math.isInf(v)) {
+        if (v > 0) try writer.writeAll("Infinity") else try writer.writeAll("-Infinity");
+        return;
+    }
+    if (v == 0 and std.math.signbit(v)) {
+        try writer.writeAll("-0.0");
+        return;
+    }
+    const trunc = @trunc(v);
+    if (v == trunc and @abs(v) < 1e16) {
+        const as_int: i64 = @intFromFloat(v);
+        try writer.print("{d}.0", .{as_int});
+        return;
+    }
+    try writer.print("{d}", .{v});
+}
+
+/// IEEE total order comparator on f32: matches Rust's `f32::total_cmp` and
+/// the bit-pattern ordering in algorithms.md §"Float ordering for tree
+/// collections". Same sign-flip-then-int-compare trick the Go runner uses.
+fn totalCmpF32(a: f32, b: f32) std.math.Order {
+    var ai: i32 = @bitCast(a);
+    var bi: i32 = @bitCast(b);
+    ai ^= @as(i32, @bitCast(@as(u32, @bitCast(ai >> 31)) >> 1));
+    bi ^= @as(i32, @bitCast(@as(u32, @bitCast(bi >> 31)) >> 1));
+    return std.math.order(ai, bi);
+}
+
+fn sortF32Total(items: []f32) void {
+    std.mem.sort(f32, items, {}, struct {
+        pub fn less(_: void, a: f32, b: f32) bool {
+            return totalCmpF32(a, b) == .lt;
+        }
+    }.less);
+}
+
+fn runF32HashMap(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    var m = F32I32HashMap.init(allocator);
+    defer m.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const k = parseF32Value(obj.get("key").?);
+            const v = @as(i32, @intCast(obj.get("value").?.integer));
+            _ = m.put(k, v);
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = m.remove(parseF32Value(obj.get("key").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            m.clear();
+        }
+    }
+    for (assertions.keys()) |key| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        try writer.print("{s}: ", .{key});
+        if (std.mem.eql(u8, key, "size")) {
+            try writer.print("{d}", .{m.size()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try writer.print("{s}", .{if (m.isEmpty()) "true" else "false"});
+        } else if (std.mem.startsWith(u8, key, "get_")) {
+            const probe = parseF32Label(key[4..]);
+            if (m.get(probe)) |v| try writer.print("{d}", .{v}) else try writer.writeAll("null");
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try writer.print("{s}", .{if (m.containsKey(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted_keys")) {
+            const keys = m.keysToSlice(allocator);
+            defer allocator.free(keys);
+            sortF32Total(keys);
+            try writer.writeAll("[");
+            for (keys, 0..) |k, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("\"");
+                try writeF32(writer, k);
+                try writer.writeAll("\"");
+            }
+            try writer.writeAll("]");
+        } else {
+            try writer.print("UNKNOWN_KEY({s})", .{key});
+        }
+        try writer.writeAll("\n");
+    }
+}
+
+fn runF32HashSet(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    var set = F32HashSet.init(allocator);
+    defer set.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            _ = set.add(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = set.remove(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        }
+    }
+    for (assertions.keys()) |key| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        try writer.print("{s}: ", .{key});
+        if (std.mem.eql(u8, key, "size")) {
+            try writer.print("{d}", .{set.size()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try writer.print("{s}", .{if (set.isEmpty()) "true" else "false"});
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try writer.print("{s}", .{if (set.contains(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
+            const vals = set.toSlice(allocator);
+            defer allocator.free(vals);
+            sortF32Total(vals);
+            try writer.writeAll("[");
+            for (vals, 0..) |v, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("\"");
+                try writeF32(writer, v);
+                try writer.writeAll("\"");
+            }
+            try writer.writeAll("]");
+        } else {
+            try writer.print("UNKNOWN_KEY({s})", .{key});
+        }
+        try writer.writeAll("\n");
+    }
+}
+
+fn runF32ArrayList(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    var list = F32ArrayList.init(allocator);
+    defer list.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            list.add(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            list.clear();
+        }
+    }
+    const values = list.toSlice();
+    for (assertions.keys()) |key| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        try writer.print("{s}: ", .{key});
+        if (std.mem.eql(u8, key, "size")) {
+            try writer.print("{d}", .{values.len});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try writer.print("{s}", .{if (values.len == 0) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sum")) {
+            var acc: f32 = 0;
+            for (values) |v| acc += v;
+            try writeF32(writer, acc);
+        } else if (std.mem.eql(u8, key, "min")) {
+            if (values.len == 0) {
+                try writer.writeAll("null");
+            } else {
+                var mn = values[0];
+                for (values[1..]) |v| if (totalCmpF32(v, mn) == .lt) {
+                    mn = v;
+                };
+                try writeF32(writer, mn);
+            }
+        } else if (std.mem.eql(u8, key, "max")) {
+            if (values.len == 0) {
+                try writer.writeAll("null");
+            } else {
+                var mx = values[0];
+                for (values[1..]) |v| if (totalCmpF32(v, mx) == .gt) {
+                    mx = v;
+                };
+                try writeF32(writer, mx);
+            }
+        } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "to_sorted_array")) {
+            const buf = allocator.alloc(f32, values.len) catch @panic("oom");
+            defer allocator.free(buf);
+            @memcpy(buf, values);
+            sortF32Total(buf);
+            try writer.writeAll("[");
+            for (buf, 0..) |v, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writeF32(writer, v);
+            }
+            try writer.writeAll("]");
+        } else {
+            try writer.print("UNKNOWN_KEY({s})", .{key});
+        }
+        try writer.writeAll("\n");
     }
 }
