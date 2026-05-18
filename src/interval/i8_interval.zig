@@ -75,8 +75,12 @@ pub const I8Interval = struct {
         return result;
     }
 
-    /// Returns a reversed interval.
+    /// Returns a reversed interval. Panics for the minimum signed
+    /// step: negating `std.math.minInt(i8)` overflows.
     pub fn reversed(self: *const I8Interval) I8Interval {
+        if (self.step == std.math.minInt(i8)) {
+            @panic("I8Interval: cannot reverse interval with minimum step");
+        }
         return .{ .from = self.to, .to = self.from, .step = -self.step };
     }
 };

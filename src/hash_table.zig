@@ -24,7 +24,10 @@ fn hashKey(comptime K: type, key: K) u64 {
         .bool => if (key) @as(u64, 1) else 0,
         else => @compileError("unsupported key type for hash table: " ++ @typeName(K)),
     };
-    return raw *% 0x9E3779B9;
+    // 64-bit Fibonacci hash (golden-ratio multiply). The 32-bit
+    // constant 0x9E3779B9 gives poor distribution on i64 keys; the
+    // 64-bit form below mixes the full width.
+    return raw *% 0x9E3779B97F4A7C15;
 }
 
 fn keyEql(comptime K: type, a: K, b: K) bool {

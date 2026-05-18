@@ -75,8 +75,12 @@ pub const I16Interval = struct {
         return result;
     }
 
-    /// Returns a reversed interval.
+    /// Returns a reversed interval. Panics for the minimum signed
+    /// step: negating `std.math.minInt(i16)` overflows.
     pub fn reversed(self: *const I16Interval) I16Interval {
+        if (self.step == std.math.minInt(i16)) {
+            @panic("I16Interval: cannot reverse interval with minimum step");
+        }
         return .{ .from = self.to, .to = self.from, .step = -self.step };
     }
 };
