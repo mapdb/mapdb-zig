@@ -82,6 +82,20 @@ test "ImmutableI32HashSet: of and contains" {
     try std.testing.expect(il.contains(1));
 }
 
+test "ImmutableI32HashSet: fromMutable snapshot is independent of source mutation" {
+    var ml = I32HashSet.init(std.testing.allocator);
+    defer ml.deinit();
+    _ = ml.add(1);
+    _ = ml.add(2);
+    var il = ImmutableI32HashSet.fromMutable(std.testing.allocator, &ml);
+    defer il.deinit();
+    _ = ml.remove(1);
+    _ = ml.add(3);
+    try std.testing.expectEqual(@as(usize, 2), il.len());
+    try std.testing.expect(il.contains(1));
+    try std.testing.expect(!il.contains(3));
+}
+
 test "ImmutableI32HashSet: toMutable independence" {
     var il = ImmutableI32HashSet.of(std.testing.allocator, &[_]i32{ 1, 2 });
     defer il.deinit();

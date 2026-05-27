@@ -446,6 +446,63 @@ test "I32I32SetMultimap: ensureUnusedCapacity reserves map slots" {
     try std.testing.expectEqual(@as(usize, 2), m.size());
 }
 
+test "I32I32SetMultimap: get returns []const i32 borrowed view" {
+    var m = I32I32SetMultimap.init(std.testing.allocator);
+    defer m.deinit();
+    m.put(1, 10);
+    m.put(1, 20);
+    const vals = m.get(1);
+    comptime {
+        if (@TypeOf(vals) != []const i32) @compileError("get() must return []const i32, not []i32");
+    }
+    try std.testing.expectEqual(@as(usize, 2), vals.len);
+    try std.testing.expectEqual(@as(i32, 10), vals[0]);
+    try std.testing.expectEqual(@as(i32, 20), vals[1]);
+}
+
+test "I32I32SetMultimap: uniqueKeys returns independent caller-owned copy" {
+    var m = I32I32SetMultimap.init(std.testing.allocator);
+    defer m.deinit();
+    m.put(1, 10);
+    m.put(2, 20);
+    const keys = m.uniqueKeys(std.testing.allocator);
+    defer std.testing.allocator.free(keys);
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    const original = keys[0];
+    keys[0] = 999;
+    try std.testing.expect(m.containsKey(original));
+    try std.testing.expect(!m.containsKey(999));
+}
+
+test "I32I32SetMultimap: valuesToSlice returns independent caller-owned copy" {
+    var m = I32I32SetMultimap.init(std.testing.allocator);
+    defer m.deinit();
+    m.put(1, 10);
+    m.put(1, 20);
+    const vals = m.valuesToSlice(std.testing.allocator);
+    defer std.testing.allocator.free(vals);
+    try std.testing.expectEqual(@as(usize, 2), vals.len);
+    vals[0] = 999;
+    try std.testing.expect(m.containsKeyValue(1, 10));
+    try std.testing.expect(!m.containsKeyValue(1, 999));
+}
+
+test "I32I32SetMultimap: forEach passes values by copy" {
+    var m = I32I32SetMultimap.init(std.testing.allocator);
+    defer m.deinit();
+    m.put(1, 10);
+    m.put(1, 20);
+    comptime {
+        const F = @TypeOf(I32I32SetMultimap.forEach);
+        const params = @typeInfo(F).@"fn".params;
+        const cb_type = params[1].type.?;
+        const cb_info = @typeInfo(@typeInfo(cb_type).pointer.child);
+        const cb_params = cb_info.@"fn".params;
+        if (cb_params[0].type.? != i32) @compileError("forEach callback key param must be i32 by value");
+        if (cb_params[1].type.? != i32) @compileError("forEach callback value param must be i32 by value");
+    }
+}
+
 test "I32I32SetMultimap: ensureUnusedCapacity propagates allocator error" {
     // fail_index = 0: SetMultimap.init doesn't allocate (lazy backing),
     // so the first alloc (ensureUnusedCapacity grow) fails immediately.
