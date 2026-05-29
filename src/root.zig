@@ -19,6 +19,7 @@ pub const hashset = @import("hashset/hashset.zig");
 pub const immutable = @import("immutable/immutable.zig");
 pub const interval = @import("interval/interval.zig");
 pub const multimap = @import("multimap/multimap.zig");
+pub const parallel = @import("parallel/parallel.zig");
 pub const priority_queue = @import("priority_queue/priority_queue.zig");
 pub const stack = @import("stack/stack.zig");
 pub const treemap = @import("treemap/treemap.zig");
@@ -51,6 +52,7 @@ comptime {
     _ = @import("immutable/immutable.zig");
     _ = @import("interval/interval.zig");
     _ = @import("multimap/multimap.zig");
+    _ = @import("parallel/parallel.zig");
     _ = @import("priority_queue/priority_queue.zig");
     _ = @import("stack/stack.zig");
     _ = @import("treemap/treemap.zig");
