@@ -21,7 +21,7 @@
 
 const std = @import("std");
 
-const SpecificI32ArrayList = @import("arraylist/i32_array_list.zig").I32ArrayList;
+const SpecificI32ArrayList = @import("arraylist/arraylist.zig").I32ArrayList;
 const GenericArrayList = @import("object/arraylist.zig").ArrayList;
 
 const N: usize = 10_000_000;

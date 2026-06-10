@@ -27,12 +27,12 @@ pub const treemap = @import("treemap/treemap.zig");
 pub const treeset = @import("treeset/treeset.zig");
 pub const tuple = @import("tuple/tuple.zig");
 
-pub const I32ArrayList = @import("arraylist/i32_array_list.zig").I32ArrayList;
-pub const I32HashSet = @import("hashset/i32_hash_set.zig").I32HashSet;
-pub const I32HashBag = @import("bag/i32_hash_bag.zig").I32HashBag;
-pub const I32ArrayStack = @import("stack/i32_array_stack.zig").I32ArrayStack;
+pub const I32ArrayList = @import("arraylist/arraylist.zig").I32ArrayList;
+pub const I32HashSet = @import("hashset/hashset.zig").I32HashSet;
+pub const I32HashBag = @import("bag/bag.zig").I32HashBag;
+pub const I32ArrayStack = @import("stack/stack.zig").I32ArrayStack;
 pub const I32I64HashMap = @import("hashmap/hashmap.zig").I32I64HashMap;
-pub const I32TreeSet = @import("treeset/i32_tree_set.zig").I32TreeSet;
+pub const I32TreeSet = @import("treeset/treeset.zig").I32TreeSet;
 pub const I32I64TreeMap = @import("treemap/treemap.zig").I32I64TreeMap;
 pub const I32I64Pair = @import("tuple/i32_i64_pair.zig").I32I64Pair;
 pub const I32Interval = @import("interval/i32_interval.zig").I32Interval;
@@ -47,12 +47,18 @@ comptime {
     _ = @import("object/object.zig");
     _ = @import("api/api.zig");
     _ = @import("arraylist/arraylist.zig");
+    _ = @import("arraylist/array_list.zig");
     _ = @import("bag/bag.zig");
+    _ = @import("bag/hash_bag.zig");
+    _ = @import("bag/tree_bag.zig");
     _ = @import("bitset/bitset.zig");
+    _ = @import("containers_test.zig");
     _ = @import("deque/deque.zig");
+    _ = @import("deque/array_deque.zig");
     _ = @import("hashmap/hashmap.zig");
     _ = @import("hashmap/hash_map_test.zig");
     _ = @import("hashset/hashset.zig");
+    _ = @import("hashset/hash_set.zig");
     _ = @import("immutable/immutable.zig");
     _ = @import("immutable/immutable_test.zig");
     _ = @import("interval/interval.zig");
@@ -61,8 +67,10 @@ comptime {
     _ = @import("parallel/parallel.zig");
     _ = @import("priority_queue/priority_queue.zig");
     _ = @import("stack/stack.zig");
+    _ = @import("stack/array_stack.zig");
     _ = @import("treemap/treemap.zig");
     _ = @import("treemap/tree_map_test.zig");
     _ = @import("treeset/treeset.zig");
+    _ = @import("treeset/tree_set.zig");
     _ = @import("tuple/tuple.zig");
 }
