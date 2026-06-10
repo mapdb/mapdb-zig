@@ -4,151 +4,38 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
+//! Aggregator for the compile-time collection / map interface layer.
+//!
+//! The 72 per-(K,V) / per-type interface-assertion files (`<k>_<v>_map.zig`,
+//! `<t>_collection.zig`) have been collapsed into a single
+//! `api_assert.zig`: the `@hasDecl` method-name checks were identical across
+//! every element type, so they are now generic, type-erased functions
+//! (`assertMap`, `assertMutableMap`, `assertCollection`, `assertList`, …), and
+//! the per-file conformance blocks (which concrete production types must
+//! satisfy which interface) are reproduced as comptime loops in that file over
+//! every named aggregator alias.
+//!
+//! Referencing `api_assert` here (and forcing it in the `comptime` block) makes
+//! every `@compileError`-based conformance check run whenever the api layer is
+//! compiled.
 
-pub const bool_bool_map = @import("bool_bool_map.zig");
-pub const bool_char_map = @import("bool_char_map.zig");
-pub const bool_collection = @import("bool_collection.zig");
-pub const bool_f32_map = @import("bool_f32_map.zig");
-pub const bool_f64_map = @import("bool_f64_map.zig");
-pub const bool_i16_map = @import("bool_i16_map.zig");
-pub const bool_i32_map = @import("bool_i32_map.zig");
-pub const bool_i64_map = @import("bool_i64_map.zig");
-pub const bool_i8_map = @import("bool_i8_map.zig");
-pub const char_bool_map = @import("char_bool_map.zig");
-pub const char_char_map = @import("char_char_map.zig");
-pub const char_collection = @import("char_collection.zig");
-pub const char_f32_map = @import("char_f32_map.zig");
-pub const char_f64_map = @import("char_f64_map.zig");
-pub const char_i16_map = @import("char_i16_map.zig");
-pub const char_i32_map = @import("char_i32_map.zig");
-pub const char_i64_map = @import("char_i64_map.zig");
-pub const char_i8_map = @import("char_i8_map.zig");
-pub const f32_bool_map = @import("f32_bool_map.zig");
-pub const f32_char_map = @import("f32_char_map.zig");
-pub const f32_collection = @import("f32_collection.zig");
-pub const f32_f32_map = @import("f32_f32_map.zig");
-pub const f32_f64_map = @import("f32_f64_map.zig");
-pub const f32_i16_map = @import("f32_i16_map.zig");
-pub const f32_i32_map = @import("f32_i32_map.zig");
-pub const f32_i64_map = @import("f32_i64_map.zig");
-pub const f32_i8_map = @import("f32_i8_map.zig");
-pub const f64_bool_map = @import("f64_bool_map.zig");
-pub const f64_char_map = @import("f64_char_map.zig");
-pub const f64_collection = @import("f64_collection.zig");
-pub const f64_f32_map = @import("f64_f32_map.zig");
-pub const f64_f64_map = @import("f64_f64_map.zig");
-pub const f64_i16_map = @import("f64_i16_map.zig");
-pub const f64_i32_map = @import("f64_i32_map.zig");
-pub const f64_i64_map = @import("f64_i64_map.zig");
-pub const f64_i8_map = @import("f64_i8_map.zig");
-pub const i16_bool_map = @import("i16_bool_map.zig");
-pub const i16_char_map = @import("i16_char_map.zig");
-pub const i16_collection = @import("i16_collection.zig");
-pub const i16_f32_map = @import("i16_f32_map.zig");
-pub const i16_f64_map = @import("i16_f64_map.zig");
-pub const i16_i16_map = @import("i16_i16_map.zig");
-pub const i16_i32_map = @import("i16_i32_map.zig");
-pub const i16_i64_map = @import("i16_i64_map.zig");
-pub const i16_i8_map = @import("i16_i8_map.zig");
-pub const i32_bool_map = @import("i32_bool_map.zig");
-pub const i32_char_map = @import("i32_char_map.zig");
-pub const i32_collection = @import("i32_collection.zig");
-pub const i32_f32_map = @import("i32_f32_map.zig");
-pub const i32_f64_map = @import("i32_f64_map.zig");
-pub const i32_i16_map = @import("i32_i16_map.zig");
-pub const i32_i32_map = @import("i32_i32_map.zig");
-pub const i32_i64_map = @import("i32_i64_map.zig");
-pub const i32_i8_map = @import("i32_i8_map.zig");
-pub const i64_bool_map = @import("i64_bool_map.zig");
-pub const i64_char_map = @import("i64_char_map.zig");
-pub const i64_collection = @import("i64_collection.zig");
-pub const i64_f32_map = @import("i64_f32_map.zig");
-pub const i64_f64_map = @import("i64_f64_map.zig");
-pub const i64_i16_map = @import("i64_i16_map.zig");
-pub const i64_i32_map = @import("i64_i32_map.zig");
-pub const i64_i64_map = @import("i64_i64_map.zig");
-pub const i64_i8_map = @import("i64_i8_map.zig");
-pub const i8_bool_map = @import("i8_bool_map.zig");
-pub const i8_char_map = @import("i8_char_map.zig");
-pub const i8_collection = @import("i8_collection.zig");
-pub const i8_f32_map = @import("i8_f32_map.zig");
-pub const i8_f64_map = @import("i8_f64_map.zig");
-pub const i8_i16_map = @import("i8_i16_map.zig");
-pub const i8_i32_map = @import("i8_i32_map.zig");
-pub const i8_i64_map = @import("i8_i64_map.zig");
-pub const i8_i8_map = @import("i8_i8_map.zig");
+pub const api_assert = @import("api_assert.zig");
+
+// Re-export the generic interface assertions at the top level.
+pub const assertMap = api_assert.assertMap;
+pub const assertMutableMap = api_assert.assertMutableMap;
+pub const assertCollection = api_assert.assertCollection;
+pub const assertMutableCollection = api_assert.assertMutableCollection;
+pub const assertList = api_assert.assertList;
+pub const assertMutableList = api_assert.assertMutableList;
+pub const assertSet = api_assert.assertSet;
+pub const assertMutableSet = api_assert.assertMutableSet;
+pub const assertBag = api_assert.assertBag;
+pub const assertMutableBag = api_assert.assertMutableBag;
+pub const assertStack = api_assert.assertStack;
+pub const assertMutableStack = api_assert.assertMutableStack;
 
 comptime {
-    _ = @import("bool_bool_map.zig");
-    _ = @import("bool_char_map.zig");
-    _ = @import("bool_collection.zig");
-    _ = @import("bool_f32_map.zig");
-    _ = @import("bool_f64_map.zig");
-    _ = @import("bool_i16_map.zig");
-    _ = @import("bool_i32_map.zig");
-    _ = @import("bool_i64_map.zig");
-    _ = @import("bool_i8_map.zig");
-    _ = @import("char_bool_map.zig");
-    _ = @import("char_char_map.zig");
-    _ = @import("char_collection.zig");
-    _ = @import("char_f32_map.zig");
-    _ = @import("char_f64_map.zig");
-    _ = @import("char_i16_map.zig");
-    _ = @import("char_i32_map.zig");
-    _ = @import("char_i64_map.zig");
-    _ = @import("char_i8_map.zig");
-    _ = @import("f32_bool_map.zig");
-    _ = @import("f32_char_map.zig");
-    _ = @import("f32_collection.zig");
-    _ = @import("f32_f32_map.zig");
-    _ = @import("f32_f64_map.zig");
-    _ = @import("f32_i16_map.zig");
-    _ = @import("f32_i32_map.zig");
-    _ = @import("f32_i64_map.zig");
-    _ = @import("f32_i8_map.zig");
-    _ = @import("f64_bool_map.zig");
-    _ = @import("f64_char_map.zig");
-    _ = @import("f64_collection.zig");
-    _ = @import("f64_f32_map.zig");
-    _ = @import("f64_f64_map.zig");
-    _ = @import("f64_i16_map.zig");
-    _ = @import("f64_i32_map.zig");
-    _ = @import("f64_i64_map.zig");
-    _ = @import("f64_i8_map.zig");
-    _ = @import("i16_bool_map.zig");
-    _ = @import("i16_char_map.zig");
-    _ = @import("i16_collection.zig");
-    _ = @import("i16_f32_map.zig");
-    _ = @import("i16_f64_map.zig");
-    _ = @import("i16_i16_map.zig");
-    _ = @import("i16_i32_map.zig");
-    _ = @import("i16_i64_map.zig");
-    _ = @import("i16_i8_map.zig");
-    _ = @import("i32_bool_map.zig");
-    _ = @import("i32_char_map.zig");
-    _ = @import("i32_collection.zig");
-    _ = @import("i32_f32_map.zig");
-    _ = @import("i32_f64_map.zig");
-    _ = @import("i32_i16_map.zig");
-    _ = @import("i32_i32_map.zig");
-    _ = @import("i32_i64_map.zig");
-    _ = @import("i32_i8_map.zig");
-    _ = @import("i64_bool_map.zig");
-    _ = @import("i64_char_map.zig");
-    _ = @import("i64_collection.zig");
-    _ = @import("i64_f32_map.zig");
-    _ = @import("i64_f64_map.zig");
-    _ = @import("i64_i16_map.zig");
-    _ = @import("i64_i32_map.zig");
-    _ = @import("i64_i64_map.zig");
-    _ = @import("i64_i8_map.zig");
-    _ = @import("i8_bool_map.zig");
-    _ = @import("i8_char_map.zig");
-    _ = @import("i8_collection.zig");
-    _ = @import("i8_f32_map.zig");
-    _ = @import("i8_f64_map.zig");
-    _ = @import("i8_i16_map.zig");
-    _ = @import("i8_i32_map.zig");
-    _ = @import("i8_i64_map.zig");
-    _ = @import("i8_i8_map.zig");
+    // Force the conformance comptime blocks (and the self-test) to compile.
+    _ = api_assert;
 }
