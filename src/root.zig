@@ -57,6 +57,7 @@ comptime {
     _ = @import("immutable/immutable_test.zig");
     _ = @import("interval/interval.zig");
     _ = @import("multimap/multimap.zig");
+    _ = @import("multimap/multimap_test.zig");
     _ = @import("parallel/parallel.zig");
     _ = @import("priority_queue/priority_queue.zig");
     _ = @import("stack/stack.zig");
