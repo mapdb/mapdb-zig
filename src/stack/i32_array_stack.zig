@@ -168,8 +168,8 @@ pub const I32ArrayStack = struct {
         return self.items.items;
     }
 
-    pub fn toImmutable(self: *const I32ArrayStack) @import("../immutable/immutable_i32_array_stack.zig").ImmutableI32ArrayStack {
-        return @import("../immutable/immutable_i32_array_stack.zig").ImmutableI32ArrayStack.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const I32ArrayStack) @import("../immutable/immutable.zig").ImmutableI32ArrayStack {
+        return @import("../immutable/immutable.zig").ImmutableI32ArrayStack.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

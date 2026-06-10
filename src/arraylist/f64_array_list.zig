@@ -303,8 +303,8 @@ pub const F64ArrayList = struct {
     // ---- Conversion ----
 
     /// Creates an immutable snapshot of this list.
-    pub fn toImmutable(self: *const F64ArrayList) @import("../immutable/immutable_f64_array_list.zig").ImmutableF64ArrayList {
-        return @import("../immutable/immutable_f64_array_list.zig").ImmutableF64ArrayList.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const F64ArrayList) @import("../immutable/immutable.zig").ImmutableF64ArrayList {
+        return @import("../immutable/immutable.zig").ImmutableF64ArrayList.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

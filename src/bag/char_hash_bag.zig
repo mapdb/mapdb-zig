@@ -230,8 +230,8 @@ pub const CharHashBag = struct {
     }
 
     /// Creates an immutable snapshot of this bag.
-    pub fn toImmutable(self: *const CharHashBag) @import("../immutable/immutable_char_hash_bag.zig").ImmutableCharHashBag {
-        return @import("../immutable/immutable_char_hash_bag.zig").ImmutableCharHashBag.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const CharHashBag) @import("../immutable/immutable.zig").ImmutableCharHashBag {
+        return @import("../immutable/immutable.zig").ImmutableCharHashBag.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

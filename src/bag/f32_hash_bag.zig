@@ -230,8 +230,8 @@ pub const F32HashBag = struct {
     }
 
     /// Creates an immutable snapshot of this bag.
-    pub fn toImmutable(self: *const F32HashBag) @import("../immutable/immutable_f32_hash_bag.zig").ImmutableF32HashBag {
-        return @import("../immutable/immutable_f32_hash_bag.zig").ImmutableF32HashBag.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const F32HashBag) @import("../immutable/immutable.zig").ImmutableF32HashBag {
+        return @import("../immutable/immutable.zig").ImmutableF32HashBag.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

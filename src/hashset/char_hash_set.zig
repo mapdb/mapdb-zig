@@ -9,7 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashSet = @import("../hash_table.zig").OpenHashSet;
-const ImmutableCharHashSet = @import("../immutable/immutable_char_hash_set.zig").ImmutableCharHashSet;
+const ImmutableCharHashSet = @import("../immutable/immutable.zig").ImmutableCharHashSet;
 
 /// Hash set of unique `u21` values.
 ///

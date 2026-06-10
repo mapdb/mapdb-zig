@@ -302,8 +302,8 @@ pub const I8ArrayList = struct {
     // ---- Conversion ----
 
     /// Creates an immutable snapshot of this list.
-    pub fn toImmutable(self: *const I8ArrayList) @import("../immutable/immutable_i8_array_list.zig").ImmutableI8ArrayList {
-        return @import("../immutable/immutable_i8_array_list.zig").ImmutableI8ArrayList.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const I8ArrayList) @import("../immutable/immutable.zig").ImmutableI8ArrayList {
+        return @import("../immutable/immutable.zig").ImmutableI8ArrayList.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

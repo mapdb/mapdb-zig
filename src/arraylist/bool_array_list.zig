@@ -303,8 +303,8 @@ pub const BoolArrayList = struct {
     // ---- Conversion ----
 
     /// Creates an immutable snapshot of this list.
-    pub fn toImmutable(self: *const BoolArrayList) @import("../immutable/immutable_bool_array_list.zig").ImmutableBoolArrayList {
-        return @import("../immutable/immutable_bool_array_list.zig").ImmutableBoolArrayList.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const BoolArrayList) @import("../immutable/immutable.zig").ImmutableBoolArrayList {
+        return @import("../immutable/immutable.zig").ImmutableBoolArrayList.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

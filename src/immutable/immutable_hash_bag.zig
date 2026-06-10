@@ -1,0 +1,132 @@
+// Copyright (c) 2026 Jan Kotek.
+// Derived from Eclipse Collections (Copyright (c) Goldman Sachs and others).
+// Licensed under the Eclipse Public License v1.0 and Eclipse Distribution License v1.0.
+// See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
+// USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
+
+//! Generic immutable bag (multiset). Single source for the 8 `Immutable<T>HashBag`
+//! per-type wrappers.
+//!
+//! Backed by a snapshot of the counts map (`OpenHashMap(T, usize)`). All
+//! operations are read-only. Key-equality (NaN-aware / signed-zero distinct for
+//! float keys) is delegated entirely to `OpenHashMap`, so there is no
+//! element-type-dependent logic in this wrapper.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
+const bag = @import("../bag/bag.zig");
+
+fn typeToken(comptime T: type) []const u8 {
+    return switch (T) {
+        bool => "bool",
+        u21 => "char",
+        i8 => "i8",
+        i16 => "i16",
+        i32 => "i32",
+        i64 => "i64",
+        f32 => "f32",
+        f64 => "f64",
+        else => @compileError("unsupported hash bag type: " ++ @typeName(T)),
+    };
+}
+
+fn typePascal(comptime T: type) []const u8 {
+    return switch (T) {
+        bool => "Bool",
+        u21 => "Char",
+        i8 => "I8",
+        i16 => "I16",
+        i32 => "I32",
+        i64 => "I64",
+        f32 => "F32",
+        f64 => "F64",
+        else => @compileError("unsupported hash bag type: " ++ @typeName(T)),
+    };
+}
+
+fn MutableType(comptime T: type) type {
+    const module = @field(bag, typeToken(T) ++ "_hash_bag");
+    return @field(module, typePascal(T) ++ "HashBag");
+}
+
+/// Immutable bag (multiset) of `T` values with occurrence counting.
+pub fn ImmutableHashBag(comptime T: type) type {
+    return struct {
+        counts: OpenHashMap(T, usize),
+        size: usize,
+        allocator: Allocator,
+
+        const Self = @This();
+        const Mutable = MutableType(T);
+
+        pub fn of(allocator: Allocator, values: []const T) Self {
+            var mutable = Mutable.init(allocator);
+            for (values) |val| mutable.add(val);
+            const result = fromMutable(allocator, &mutable);
+            mutable.deinit();
+            return result;
+        }
+
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
+            var counts = OpenHashMap(T, usize).init(allocator, allocator, allocator) catch @panic("out of memory");
+            for (0..mutable.counts.capacity) |i| {
+                if (mutable.counts.entries[i].occupied) {
+                    _ = counts.put(mutable.counts.entries[i].key, mutable.counts.entries[i].value) catch @panic("out of memory");
+                }
+            }
+            return .{
+                .counts = counts,
+                .size = mutable.size,
+                .allocator = allocator,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.counts.deinit();
+        }
+
+        pub fn occurrencesOf(self: *const Self, value: T) usize {
+            return self.counts.get(value) orelse 0;
+        }
+
+        pub fn contains(self: *const Self, value: T) bool {
+            return self.occurrencesOf(value) > 0;
+        }
+
+        pub fn totalSize(self: *const Self) usize {
+            return self.size;
+        }
+
+        pub fn sizeDistinct(self: *const Self) usize {
+            return self.counts.len();
+        }
+
+        pub fn isEmpty(self: *const Self) bool {
+            return self.size == 0;
+        }
+
+        pub fn len(self: *const Self) usize {
+            return self.size;
+        }
+
+        pub fn toSlice(self: *const Self) []const T {
+            _ = self;
+            // Not directly applicable for bags; use toMutable().
+            return &[_]T{};
+        }
+
+        pub fn toMutable(self: *const Self) Mutable {
+            var mutable = Mutable.init(self.allocator);
+            for (0..self.counts.capacity) |i| {
+                if (self.counts.entries[i].occupied) {
+                    var j: usize = 0;
+                    while (j < self.counts.entries[i].value) : (j += 1) {
+                        mutable.add(self.counts.entries[i].key);
+                    }
+                }
+            }
+            return mutable;
+        }
+    };
+}

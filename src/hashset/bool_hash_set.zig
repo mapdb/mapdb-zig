@@ -9,7 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashSet = @import("../hash_table.zig").OpenHashSet;
-const ImmutableBoolHashSet = @import("../immutable/immutable_bool_hash_set.zig").ImmutableBoolHashSet;
+const ImmutableBoolHashSet = @import("../immutable/immutable.zig").ImmutableBoolHashSet;
 
 /// Hash set of unique `bool` values.
 ///

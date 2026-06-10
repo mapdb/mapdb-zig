@@ -302,8 +302,8 @@ pub const CharArrayList = struct {
     // ---- Conversion ----
 
     /// Creates an immutable snapshot of this list.
-    pub fn toImmutable(self: *const CharArrayList) @import("../immutable/immutable_char_array_list.zig").ImmutableCharArrayList {
-        return @import("../immutable/immutable_char_array_list.zig").ImmutableCharArrayList.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const CharArrayList) @import("../immutable/immutable.zig").ImmutableCharArrayList {
+        return @import("../immutable/immutable.zig").ImmutableCharArrayList.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

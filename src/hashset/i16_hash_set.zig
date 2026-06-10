@@ -9,7 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashSet = @import("../hash_table.zig").OpenHashSet;
-const ImmutableI16HashSet = @import("../immutable/immutable_i16_hash_set.zig").ImmutableI16HashSet;
+const ImmutableI16HashSet = @import("../immutable/immutable.zig").ImmutableI16HashSet;
 
 /// Hash set of unique `i16` values.
 ///

@@ -230,8 +230,8 @@ pub const BoolHashBag = struct {
     }
 
     /// Creates an immutable snapshot of this bag.
-    pub fn toImmutable(self: *const BoolHashBag) @import("../immutable/immutable_bool_hash_bag.zig").ImmutableBoolHashBag {
-        return @import("../immutable/immutable_bool_hash_bag.zig").ImmutableBoolHashBag.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const BoolHashBag) @import("../immutable/immutable.zig").ImmutableBoolHashBag {
+        return @import("../immutable/immutable.zig").ImmutableBoolHashBag.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----

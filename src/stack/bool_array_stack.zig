@@ -168,8 +168,8 @@ pub const BoolArrayStack = struct {
         return self.items.items;
     }
 
-    pub fn toImmutable(self: *const BoolArrayStack) @import("../immutable/immutable_bool_array_stack.zig").ImmutableBoolArrayStack {
-        return @import("../immutable/immutable_bool_array_stack.zig").ImmutableBoolArrayStack.fromMutable(self.config.base, self);
+    pub fn toImmutable(self: *const BoolArrayStack) @import("../immutable/immutable.zig").ImmutableBoolArrayStack {
+        return @import("../immutable/immutable.zig").ImmutableBoolArrayStack.fromMutable(self.config.base, self);
     }
 
     // ---- Fluent API ----
