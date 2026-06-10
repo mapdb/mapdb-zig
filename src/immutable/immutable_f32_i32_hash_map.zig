@@ -8,7 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
-const F32I32HashMap = @import("../hashmap/f32_i32_hash_map.zig").F32I32HashMap;
+const F32I32HashMap = @import("../hashmap/hashmap.zig").F32I32HashMap;
 
 /// Immutable hash map from `f32` keys to `i32` values.
 ///

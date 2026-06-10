@@ -31,7 +31,7 @@ pub const I32ArrayList = @import("arraylist/i32_array_list.zig").I32ArrayList;
 pub const I32HashSet = @import("hashset/i32_hash_set.zig").I32HashSet;
 pub const I32HashBag = @import("bag/i32_hash_bag.zig").I32HashBag;
 pub const I32ArrayStack = @import("stack/i32_array_stack.zig").I32ArrayStack;
-pub const I32I64HashMap = @import("hashmap/i32_i64_hash_map.zig").I32I64HashMap;
+pub const I32I64HashMap = @import("hashmap/hashmap.zig").I32I64HashMap;
 pub const I32TreeSet = @import("treeset/i32_tree_set.zig").I32TreeSet;
 pub const I32I64TreeMap = @import("treemap/i32_i64_tree_map.zig").I32I64TreeMap;
 pub const I32I64Pair = @import("tuple/i32_i64_pair.zig").I32I64Pair;
@@ -51,6 +51,7 @@ comptime {
     _ = @import("bitset/bitset.zig");
     _ = @import("deque/deque.zig");
     _ = @import("hashmap/hashmap.zig");
+    _ = @import("hashmap/hash_map_test.zig");
     _ = @import("hashset/hashset.zig");
     _ = @import("immutable/immutable.zig");
     _ = @import("interval/interval.zig");

@@ -8,7 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
-const BoolF64HashMap = @import("../hashmap/bool_f64_hash_map.zig").BoolF64HashMap;
+const BoolF64HashMap = @import("../hashmap/hashmap.zig").BoolF64HashMap;
 
 /// Immutable hash map from `bool` keys to `f64` values.
 ///

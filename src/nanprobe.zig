@@ -9,7 +9,7 @@
 // in a canonical per-line format so outputs can be diffed across languages.
 
 const std = @import("std");
-const F32I32HashMap = @import("hashmap/f32_i32_hash_map.zig").F32I32HashMap;
+const F32I32HashMap = @import("hashmap/hashmap.zig").F32I32HashMap;
 const F32HashSet = @import("hashset/f32_hash_set.zig").F32HashSet;
 
 const nan_f32: f32 = std.math.nan(f32);

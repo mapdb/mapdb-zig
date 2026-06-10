@@ -13,18 +13,18 @@ const Allocator = std.mem.Allocator;
 
 const float_order = @import("float_order.zig");
 
-const I32I32HashMap = @import("hashmap/i32_i32_hash_map.zig").I32I32HashMap;
+const I32I32HashMap = @import("hashmap/hashmap.zig").I32I32HashMap;
 const I32ArrayList = @import("arraylist/i32_array_list.zig").I32ArrayList;
 const I32HashSet = @import("hashset/i32_hash_set.zig").I32HashSet;
 const I32HashBag = @import("bag/i32_hash_bag.zig").I32HashBag;
 const I32TreeSet = @import("treeset/i32_tree_set.zig").I32TreeSet;
 const I32I32TreeMap = @import("treemap/i32_i32_tree_map.zig").I32I32TreeMap;
 const I32ArrayStack = @import("stack/i32_array_stack.zig").I32ArrayStack;
-const F32I32HashMap = @import("hashmap/f32_i32_hash_map.zig").F32I32HashMap;
+const F32I32HashMap = @import("hashmap/hashmap.zig").F32I32HashMap;
 const F32HashSet = @import("hashset/f32_hash_set.zig").F32HashSet;
 const F32TreeSet = @import("treeset/f32_tree_set.zig").F32TreeSet;
 const F32ArrayList = @import("arraylist/f32_array_list.zig").F32ArrayList;
-const I64I32HashMap = @import("hashmap/i64_i32_hash_map.zig").I64I32HashMap;
+const I64I32HashMap = @import("hashmap/hashmap.zig").I64I32HashMap;
 
 const CollectionKind = enum {
     hash_map,
