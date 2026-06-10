@@ -409,3 +409,59 @@ test "F32TreeSet: ensureUnusedCapacity propagates allocator error" {
     defer set.deinit();
     try std.testing.expectError(error.OutOfMemory, set.ensureUnusedCapacity(1024));
 }
+
+// NaN sign/payload ordering is verified natively here (NOT in the shared
+// cross-language validation suite): in TypeScript all NaN bit patterns are a
+// single ECMAScript language-level NaN, so an f32 NaN's SIGN and PAYLOAD are
+// not cross-language-observable. totalCmpF32 (and the F32TreeSet built on it)
+// is the production totalOrder comparator phase 3 fixed.
+test "totalCmpF32: -NaN below -Inf and +NaN payloads ascending" {
+    const negNaN: f32 = @bitCast(@as(u32, 0xffc00000));
+    const negInf = -std.math.inf(f32);
+    try std.testing.expectEqual(std.math.Order.lt, float_order.totalCmpF32(negNaN, negInf));
+    try std.testing.expectEqual(std.math.Order.lt, float_order.totalCmpF32(negNaN, -std.math.floatMax(f32)));
+
+    const p0: f32 = @bitCast(@as(u32, 0x7fc00000));
+    const p1: f32 = @bitCast(@as(u32, 0x7fc00001));
+    const posInf = std.math.inf(f32);
+    try std.testing.expectEqual(std.math.Order.lt, float_order.totalCmpF32(p0, p1));
+    try std.testing.expectEqual(std.math.Order.lt, float_order.totalCmpF32(posInf, p0));
+}
+
+test "F32TreeSet: NaN sign/payload total order in-order traversal" {
+    const negNaN: f32 = @bitCast(@as(u32, 0xffc00000));
+    const posNaN0: f32 = @bitCast(@as(u32, 0x7fc00000));
+    const posNaN1: f32 = @bitCast(@as(u32, 0x7fc00001));
+    const negZero: f32 = @bitCast(@as(u32, 0x80000000));
+    var set = F32TreeSet.of(std.testing.allocator, &[_]f32{
+        0.0,
+        posNaN0,
+        2.0,
+        -std.math.inf(f32),
+        negNaN,
+        -3.0,
+        negZero,
+        std.math.inf(f32),
+        posNaN1,
+    });
+    defer set.deinit();
+    // Each distinct bit pattern is a distinct element (±0 split, both +NaN payloads).
+    try std.testing.expectEqual(@as(usize, 9), set.len());
+    const items = set.toSlice(std.testing.allocator);
+    defer std.testing.allocator.free(items);
+    const want = [_]u32{
+        0xffc00000, // -NaN (bottom)
+        0xff800000, // -Inf
+        0xc0400000, // -3.0
+        0x80000000, // -0.0
+        0x00000000, // +0.0
+        0x40000000, // 2.0
+        0x7f800000, // +Inf
+        0x7fc00000, // +NaN
+        0x7fc00001, // +NaN, larger payload (top)
+    };
+    try std.testing.expectEqual(want.len, items.len);
+    for (want, 0..) |w, i| {
+        try std.testing.expectEqual(w, @as(u32, @bitCast(items[i])));
+    }
+}

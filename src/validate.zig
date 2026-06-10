@@ -22,6 +22,7 @@ const I32I32TreeMap = @import("treemap/i32_i32_tree_map.zig").I32I32TreeMap;
 const I32ArrayStack = @import("stack/i32_array_stack.zig").I32ArrayStack;
 const F32I32HashMap = @import("hashmap/f32_i32_hash_map.zig").F32I32HashMap;
 const F32HashSet = @import("hashset/f32_hash_set.zig").F32HashSet;
+const F32TreeSet = @import("treeset/f32_tree_set.zig").F32TreeSet;
 const F32ArrayList = @import("arraylist/f32_array_list.zig").F32ArrayList;
 
 const CollectionKind = enum {
@@ -309,6 +310,17 @@ fn elementToF32(e: std.json.Value) f32 {
     };
 }
 
+// A numeric (bare-JSON-number) scalar expected value is an f32 (and must use
+// the f32 formatter, matching TS) when: under f32_list any non-`size` scalar
+// (sum/min/max); or under f32_keyed the key-typed scalars min/max. Other
+// f32_keyed scalars (size, get_N, contains_N) stay i32.
+fn isF32Scalar(mode: FloatMode, key: []const u8) bool {
+    if (mode == .f32_list and !std.mem.eql(u8, key, "size")) return true;
+    if (mode == .f32_keyed and
+        (std.mem.eql(u8, key, "min") or std.mem.eql(u8, key, "max"))) return true;
+    return false;
+}
+
 // Render an expected JSON assertion value into the same canonical string the
 // runner emits for its computed value.
 fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: FloatMode) !void {
@@ -316,7 +328,7 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
         .null => try writer.writeAll("null"),
         .bool => |b| try writer.writeAll(if (b) "true" else "false"),
         .integer => |i| {
-            if (mode == .f32_list and !std.mem.eql(u8, key, "size")) {
+            if (isF32Scalar(mode, key)) {
                 try writeF32(writer, @as(f32, @floatFromInt(i)));
             } else {
                 try writer.print("{d}", .{i});
@@ -324,7 +336,7 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
         },
         .float => |f| {
             // JSON numbers with a fractional part decode as .float.
-            if (mode == .f32_list and !std.mem.eql(u8, key, "size")) {
+            if (isF32Scalar(mode, key)) {
                 try writeF32(writer, @as(f32, @floatCast(f)));
             } else {
                 try writer.print("{d}", .{@as(i64, @intFromFloat(f))});
@@ -955,6 +967,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "TreeSet<f32>")) {
+        try runF32TreeSet(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
     if (std.mem.eql(u8, collection_type, "ArrayList<f32>")) {
         try runF32ArrayList(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
@@ -1248,6 +1266,66 @@ fn runF32HashSet(
             const vals = set.toSlice(allocator);
             defer allocator.free(vals);
             sortF32Total(vals);
+            try vw.writeAll("[");
+            for (vals, 0..) |v, i| {
+                if (i > 0) try vw.writeAll(",");
+                try vw.writeAll("\"");
+                try writeF32(vw, v);
+                try vw.writeAll("\"");
+            }
+            try vw.writeAll("]");
+        } else {
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
+    }
+}
+
+// Routes through the PRODUCTION F32TreeSet (std.Treap ordered by
+// float_order.totalCmpF32). The sorted output is toSlice(), the treap's
+// in-order traversal -- NEVER sorted in the runner -- so this exercises the
+// production float total-order comparator directly.
+fn runF32TreeSet(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    var set = F32TreeSet.init(allocator);
+    defer set.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            _ = set.add(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = set.remove(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        if (std.mem.eql(u8, key, "size")) {
+            try vw.print("{d}", .{set.size()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "min")) {
+            if (set.min()) |mn| try writeF32(vw, mn) else try vw.writeAll("null");
+        } else if (std.mem.eql(u8, key, "max")) {
+            if (set.max()) |mx| try writeF32(vw, mx) else try vw.writeAll("null");
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
+            // In-order traversal straight from the production treap.
+            const vals = set.toSlice(allocator);
+            defer allocator.free(vals);
             try vw.writeAll("[");
             for (vals, 0..) |v, i| {
                 if (i > 0) try vw.writeAll(",");
