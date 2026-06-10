@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const float_order = @import("../float_order.zig");
 
 /// Primitive min-heap priority queue of `f32` values, backed by an
 /// `ArrayListUnmanaged`. O(log n) push/pop, O(1) peek.
@@ -99,7 +100,7 @@ pub const F32PriorityQueue = struct {
         var i = start;
         while (i > 0) {
             const parent = (i - 1) / 2;
-            if (self.items.items[i] < self.items.items[parent]) {
+            if (float_order.totalCmpF32(self.items.items[i], self.items.items[parent]) == .lt) {
                 const tmp = self.items.items[i];
                 self.items.items[i] = self.items.items[parent];
                 self.items.items[parent] = tmp;
@@ -116,10 +117,10 @@ pub const F32PriorityQueue = struct {
             if (left >= n) break;
             const right = left + 1;
             var best = left;
-            if (right < n and self.items.items[right] < self.items.items[left]) {
+            if (right < n and float_order.totalCmpF32(self.items.items[right], self.items.items[left]) == .lt) {
                 best = right;
             }
-            if (self.items.items[best] < self.items.items[i]) {
+            if (float_order.totalCmpF32(self.items.items[best], self.items.items[i]) == .lt) {
                 const tmp = self.items.items[best];
                 self.items.items[best] = self.items.items[i];
                 self.items.items[i] = tmp;

@@ -7,6 +7,7 @@
 
 pub const allocator_config = @import("allocator_config.zig");
 pub const hash_table = @import("hash_table.zig");
+pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
 pub const api = @import("api/api.zig");
@@ -41,6 +42,8 @@ pub const ImmutableI32HashBag = @import("immutable/immutable_i32_hash_bag.zig").
 pub const ImmutableI32ArrayStack = @import("immutable/immutable_i32_array_stack.zig").ImmutableI32ArrayStack;
 
 comptime {
+    _ = @import("float_order.zig");
+    _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");
     _ = @import("api/api.zig");
     _ = @import("arraylist/arraylist.zig");

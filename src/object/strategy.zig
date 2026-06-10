@@ -19,6 +19,7 @@
 //! function with no runtime indirection.
 
 const std = @import("std");
+const float_order = @import("../float_order.zig");
 
 // ── HashingStrategy ─────────────────────────────────────────────────────
 
@@ -72,12 +73,12 @@ pub fn naturalComparator(comptime T: type) Comparator(T) {
     return &struct {
         fn cmp(a: T, b: T) std.math.Order {
             return switch (@typeInfo(T)) {
-                .float, .comptime_float => if (std.math.isNan(a))
-                    (if (std.math.isNan(b)) .eq else .gt)
-                else if (std.math.isNan(b))
-                    .lt
-                else
-                    std.math.order(a, b),
+                // IEEE 754 totalOrder for floats: a true total order that keeps
+                // distinct NaN payloads and ±0 distinct (see src/float_order.zig).
+                // The old branch-on-isNaN collapsed all NaNs to .eq and ±0 via
+                // std.math.order, which is not a total order with negatives.
+                .float => float_order.totalCmp(T)(a, b),
+                .comptime_float => std.math.order(a, b),
                 else => std.math.order(a, b),
             };
         }

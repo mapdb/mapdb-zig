@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const float_order = @import("../float_order.zig");
 
 /// Return an equality function appropriate for type T.
 fn eqlFn(comptime T: type) fn (T, T) bool {
@@ -158,10 +159,21 @@ pub fn ArrayList(comptime T: type) type {
         pub fn sort(self: *Self) void {
             const info = @typeInfo(T);
             switch (info) {
-                .int, .float => {
+                .int => {
                     std.mem.sort(T, self.inner.items, {}, struct {
                         fn lessThan(_: void, a: T, b: T) bool {
                             return a < b;
+                        }
+                    }.lessThan);
+                },
+                .float => {
+                    // Raw `<` is not a strict weak ordering when NaN is present
+                    // (NaN compares "equal" to everything, non-transitively),
+                    // so std.mem.sort would yield unspecified order and ±0 would
+                    // collapse. Use the IEEE totalOrder comparator instead.
+                    std.mem.sort(T, self.inner.items, {}, struct {
+                        fn lessThan(_: void, a: T, b: T) bool {
+                            return float_order.totalCmp(T)(a, b) == .lt;
                         }
                     }.lessThan);
                 },
@@ -183,6 +195,29 @@ pub fn ArrayList(comptime T: type) type {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test "ArrayList(f32).sort uses IEEE total order (NaN + ±0 + negatives)" {
+    const allocator = std.testing.allocator;
+    var list = ArrayList(f32).init(allocator);
+    defer list.deinit();
+    const nan = std.math.nan(f32);
+    list.push(nan);
+    list.push(1.0);
+    list.push(-1.0);
+    list.push(-0.0);
+    list.push(0.0);
+    list.push(-std.math.inf(f32));
+    list.sort();
+    const items = list.inner.items;
+    // -Inf < -1 < -0.0 < +0.0 < +1 < +NaN ; total order is transitive.
+    try std.testing.expect(items[0] == -std.math.inf(f32));
+    try std.testing.expectEqual(@as(f32, -1.0), items[1]);
+    // -0.0 must sort strictly before +0.0 (distinct bit patterns).
+    try std.testing.expect(@as(u32, @bitCast(items[2])) == @as(u32, @bitCast(@as(f32, -0.0))));
+    try std.testing.expect(@as(u32, @bitCast(items[3])) == @as(u32, @bitCast(@as(f32, 0.0))));
+    try std.testing.expectEqual(@as(f32, 1.0), items[4]);
+    try std.testing.expect(std.math.isNan(items[5])); // +NaN sorts last
+}
 
 test "ArrayList basic" {
     const allocator = std.testing.allocator;

@@ -8,19 +8,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
+const float_order = @import("../float_order.zig");
 
 /// Sorted set of unique `f64` values, backed by `std.Treap` for
 /// O(log n) insert, remove, and lookup.
 pub const F64TreeSet = struct {
     fn orderFn(a: f64, b: f64) std.math.Order {
-        return (blk: {
-            const a_bits: u64 = @bitCast(a);
-            const b_bits: u64 = @bitCast(b);
-            if (std.math.isNan(a) or std.math.isNan(b)) break :blk std.math.order(a_bits, b_bits);
-            const ord = std.math.order(a, b);
-            if (ord != .eq) break :blk ord;
-            break :blk std.math.order(a_bits, b_bits);
-        });
+        // IEEE 754 totalOrder — see src/float_order.zig. A raw bit
+        // compare is not a total order when NaN coexists with negatives.
+        return float_order.totalCmpF64(a, b);
     }
 
     const TreapType = std.Treap(f64, orderFn);

@@ -8,6 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
+const float_order = @import("../float_order.zig");
 
 /// Resizable array-backed list of `f32` values.
 ///
@@ -211,14 +212,7 @@ pub const F32ArrayList = struct {
         if (self.items.items.len == 0) return null;
         var result = self.items.items[0];
         for (self.items.items[1..]) |item| {
-            if ((blk: {
-                const a_bits: u32 = @bitCast(item);
-                const b_bits: u32 = @bitCast(result);
-                if (std.math.isNan(item) or std.math.isNan(result)) break :blk std.math.order(a_bits, b_bits);
-                const ord = std.math.order(item, result);
-                if (ord != .eq) break :blk ord;
-                break :blk std.math.order(a_bits, b_bits);
-            }) == .lt) result = item;
+            if (float_order.totalCmpF32(item, result) == .lt) result = item;
         }
         return result;
     }
@@ -228,14 +222,7 @@ pub const F32ArrayList = struct {
         if (self.items.items.len == 0) return null;
         var result = self.items.items[0];
         for (self.items.items[1..]) |item| {
-            if ((blk: {
-                const a_bits: u32 = @bitCast(item);
-                const b_bits: u32 = @bitCast(result);
-                if (std.math.isNan(item) or std.math.isNan(result)) break :blk std.math.order(a_bits, b_bits);
-                const ord = std.math.order(item, result);
-                if (ord != .eq) break :blk ord;
-                break :blk std.math.order(a_bits, b_bits);
-            }) == .gt) result = item;
+            if (float_order.totalCmpF32(item, result) == .gt) result = item;
         }
         return result;
     }
@@ -244,14 +231,7 @@ pub const F32ArrayList = struct {
     pub fn sort(self: *F32ArrayList) void {
         std.mem.sort(f32, self.items.items, {}, struct {
             pub fn f(_: void, a: f32, b: f32) bool {
-                return (blk: {
-                    const a_bits: u32 = @bitCast(a);
-                    const b_bits: u32 = @bitCast(b);
-                    if (std.math.isNan(a) or std.math.isNan(b)) break :blk std.math.order(a_bits, b_bits);
-                    const ord = std.math.order(a, b);
-                    if (ord != .eq) break :blk ord;
-                    break :blk std.math.order(a_bits, b_bits);
-                }) == .lt;
+                return float_order.totalCmpF32(a, b) == .lt;
             }
         }.f);
     }
@@ -308,14 +288,7 @@ pub const F32ArrayList = struct {
         var hi: usize = self.items.items.len;
         while (lo < hi) {
             const mid = lo + (hi - lo) / 2;
-            const ord = (blk: {
-                const a_bits: u32 = @bitCast(self.items.items[mid]);
-                const b_bits: u32 = @bitCast(value);
-                if (std.math.isNan(self.items.items[mid]) or std.math.isNan(value)) break :blk std.math.order(a_bits, b_bits);
-                const ord = std.math.order(self.items.items[mid], value);
-                if (ord != .eq) break :blk ord;
-                break :blk std.math.order(a_bits, b_bits);
-            });
+            const ord = float_order.totalCmpF32(self.items.items[mid], value);
             if (ord == .lt) {
                 lo = mid + 1;
             } else if (ord == .gt) {

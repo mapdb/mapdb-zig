@@ -11,6 +11,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const float_order = @import("float_order.zig");
+
 const I32I32HashMap = @import("hashmap/i32_i32_hash_map.zig").I32I32HashMap;
 const I32ArrayList = @import("arraylist/i32_array_list.zig").I32ArrayList;
 const I32HashSet = @import("hashset/i32_hash_set.zig").I32HashSet;
@@ -116,15 +118,14 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
             else => {},
         }
     } else if (std.mem.eql(u8, op_name, "addToValue")) {
-        // Cross-language scenarios (06-overflow/*) require wrapping i32 semantics.
-        // Reimplement locally with +%= rather than relying on a production
-        // `addToValue` that may or may not wrap; mirrors validate.rs.
+        // Exercise the production addToValue, which now wraps at the value
+        // width (+%=) per the spec Integer overflow contract. The runner must
+        // drive production code so conformance is actually proved here.
         const key = jsonToI32(obj.get("key").?).?;
         const delta = jsonToI32(obj.get("delta").?).?;
         switch (coll.*) {
             .hash_map => |*m| {
-                const cur: i32 = m.get(key) orelse 0;
-                _ = m.put(key, cur +% delta);
+                _ = m.addToValue(key, delta);
             },
             else => {},
         }
@@ -1058,16 +1059,11 @@ fn writeF32(writer: anytype, v: f32) !void {
     try writer.print("{d}", .{v});
 }
 
-/// IEEE total order comparator on f32: matches Rust's `f32::total_cmp` and
-/// the bit-pattern ordering in algorithms.md §"Float ordering for tree
-/// collections". Same sign-flip-then-int-compare trick the Go runner uses.
-fn totalCmpF32(a: f32, b: f32) std.math.Order {
-    var ai: i32 = @bitCast(a);
-    var bi: i32 = @bitCast(b);
-    ai ^= @as(i32, @bitCast(@as(u32, @bitCast(ai >> 31)) >> 1));
-    bi ^= @as(i32, @bitCast(@as(u32, @bitCast(bi >> 31)) >> 1));
-    return std.math.order(ai, bi);
-}
+/// IEEE total order comparator on f32, reused from the shared production
+/// helper. Used here only on the *harness* side to order the unordered output
+/// of hash-based f32 collections for assertion comparison — not to model any
+/// collection's own ordering (those now call float_order directly).
+const totalCmpF32 = float_order.totalCmpF32;
 
 fn sortF32Total(items: []f32) void {
     std.mem.sort(f32, items, {}, struct {
@@ -1238,34 +1234,22 @@ fn runF32ArrayList(
         } else if (std.mem.eql(u8, key, "is_empty")) {
             try vw.print("{s}", .{if (values.len == 0) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sum")) {
-            var acc: f32 = 0;
-            for (values) |v| acc += v;
-            try writeF32(vw, acc);
+            // Production F32ArrayList.sum().
+            try writeF32(vw, list.sum());
         } else if (std.mem.eql(u8, key, "min")) {
-            if (values.len == 0) {
-                try vw.writeAll("null");
-            } else {
-                var mn = values[0];
-                for (values[1..]) |v| if (totalCmpF32(v, mn) == .lt) {
-                    mn = v;
-                };
-                try writeF32(vw, mn);
-            }
+            // Production total-order min() (sign-flip comparator).
+            if (list.min()) |mn| try writeF32(vw, mn) else try vw.writeAll("null");
         } else if (std.mem.eql(u8, key, "max")) {
-            if (values.len == 0) {
-                try vw.writeAll("null");
-            } else {
-                var mx = values[0];
-                for (values[1..]) |v| if (totalCmpF32(v, mx) == .gt) {
-                    mx = v;
-                };
-                try writeF32(vw, mx);
-            }
+            // Production total-order max().
+            if (list.max()) |mx| try writeF32(vw, mx) else try vw.writeAll("null");
         } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "to_sorted_array")) {
-            const buf = allocator.alloc(f32, values.len) catch @panic("oom");
-            defer allocator.free(buf);
-            @memcpy(buf, values);
-            sortF32Total(buf);
+            // Production F32ArrayList.sort() (total-order). Sort a copy so the
+            // original element order is preserved for any later assertions.
+            var sorted_list = F32ArrayList.init(allocator);
+            defer sorted_list.deinit();
+            for (values) |v| sorted_list.add(v);
+            sorted_list.sort();
+            const buf = sorted_list.toSlice();
             try vw.writeAll("[");
             for (buf, 0..) |v, i| {
                 if (i > 0) try vw.writeAll(",");

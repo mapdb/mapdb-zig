@@ -16,9 +16,11 @@ pub const I32Interval = struct {
 
     /// Creates an interval from `from` to `to` (inclusive) with the given step.
     pub fn fromToBy(from: i32, to: i32, step: i32) I32Interval {
-        std.debug.assert(step != 0); // step must not be zero
-        if (from < to) std.debug.assert(step > 0); // step must be positive when from < to
-        if (from > to) std.debug.assert(step < 0); // step must be negative when from > to
+        // Always-on validation (not std.debug.assert, which is a no-op in
+        // ReleaseFast): a zero step would divide by zero in len().
+        if (step == 0) @panic("Interval.fromToBy: step must not be zero");
+        if (from < to and step <= 0) @panic("Interval.fromToBy: step must be positive when from < to");
+        if (from > to and step >= 0) @panic("Interval.fromToBy: step must be negative when from > to");
         return .{ .from = from, .to = to, .step = step };
     }
 
@@ -45,7 +47,11 @@ pub const I32Interval = struct {
         }
         const diff: i128 = @as(i128, self.to) - @as(i128, self.from);
         const s: i128 = @as(i128, self.step);
-        return @intCast(@divTrunc(diff, s) + 1);
+        const count: i128 = @divTrunc(diff, s) + 1;
+        // Cap at the native maxInt(usize) instead of panicking on @intCast.
+        // A full-range i64 interval has 2^64 elements, which exceeds usize.
+        const cap: i128 = std.math.maxInt(usize);
+        return @intCast(if (count > cap) cap else count);
     }
 
     /// Returns true if the interval is empty.

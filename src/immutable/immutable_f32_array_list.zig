@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const float_order = @import("../float_order.zig");
 const F32ArrayList = @import("../arraylist/f32_array_list.zig").F32ArrayList;
 
 /// Immutable list of `f32` values, backed by an owned allocated slice.
@@ -81,14 +82,7 @@ pub const ImmutableF32ArrayList = struct {
         if (self.items.len == 0) return null;
         var result = self.items[0];
         for (self.items[1..]) |item| {
-            if ((blk: {
-                const a_bits: u32 = @bitCast(item);
-                const b_bits: u32 = @bitCast(result);
-                if (std.math.isNan(item) or std.math.isNan(result)) break :blk std.math.order(a_bits, b_bits);
-                const ord = std.math.order(item, result);
-                if (ord != .eq) break :blk ord;
-                break :blk std.math.order(a_bits, b_bits);
-            }) == .lt) result = item;
+            if (float_order.totalCmpF32(item, result) == .lt) result = item;
         }
         return result;
     }
@@ -98,14 +92,7 @@ pub const ImmutableF32ArrayList = struct {
         if (self.items.len == 0) return null;
         var result = self.items[0];
         for (self.items[1..]) |item| {
-            if ((blk: {
-                const a_bits: u32 = @bitCast(item);
-                const b_bits: u32 = @bitCast(result);
-                if (std.math.isNan(item) or std.math.isNan(result)) break :blk std.math.order(a_bits, b_bits);
-                const ord = std.math.order(item, result);
-                if (ord != .eq) break :blk ord;
-                break :blk std.math.order(a_bits, b_bits);
-            }) == .gt) result = item;
+            if (float_order.totalCmpF32(item, result) == .gt) result = item;
         }
         return result;
     }

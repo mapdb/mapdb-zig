@@ -252,7 +252,7 @@ pub const I16I32HashMap = struct {
 
     pub fn addToValue(self: *I16I32HashMap, key: i16, delta: i32) i32 {
         if (self.inner.getPtr(key)) |val_ptr| {
-            val_ptr.* += delta;
+            val_ptr.* +%= delta; // wrapping per spec Integer overflow contract
             return val_ptr.*;
         } else {
             _ = self.put(key, delta);

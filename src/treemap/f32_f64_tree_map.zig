@@ -8,6 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
+const float_order = @import("../float_order.zig");
 
 /// Sorted map from `f32` keys to `f64` values, backed by sorted ArrayLists.
 pub const F32F64TreeMap = struct {
@@ -29,14 +30,9 @@ pub const F32F64TreeMap = struct {
     }
 
     fn orderFn(a: f32, b: f32) std.math.Order {
-        return (blk: {
-            const a_bits: u32 = @bitCast(a);
-            const b_bits: u32 = @bitCast(b);
-            if (std.math.isNan(a) or std.math.isNan(b)) break :blk std.math.order(a_bits, b_bits);
-            const ord = std.math.order(a, b);
-            if (ord != .eq) break :blk ord;
-            break :blk std.math.order(a_bits, b_bits);
-        });
+        // IEEE 754 totalOrder — see src/float_order.zig. A raw bit
+        // compare is not a total order when NaN coexists with negatives.
+        return float_order.totalCmpF32(a, b);
     }
 
     fn findIndex(self: *const F32F64TreeMap, key: f32) struct { index: usize, found: bool } {

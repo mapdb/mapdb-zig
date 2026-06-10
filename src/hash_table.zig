@@ -94,7 +94,10 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         inline fn needsResize(self: *const Self) bool {
-            return (self.size + 1) * 4 > self.capacity * 3;
+            // Strictly below 0.75: grow once (size+1)/capacity would reach 0.75,
+            // i.e. use >= so the 12th insert into a capacity-16 table resizes.
+            // Consistent with ensureCapacity's strict form below.
+            return (self.size + 1) * 4 >= self.capacity * 3;
         }
 
         fn resize(self: *Self) Allocator.Error!void {
@@ -148,9 +151,10 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         /// fallibly, then put infallibly" usage pattern.
         pub fn ensureCapacity(self: *Self, additional: usize) Allocator.Error!void {
             const needed = self.size + additional;
-            // Keep load factor strictly below 0.75: capacity * 3 >= needed * 4 + 1
-            // i.e. capacity > needed * 4 / 3. We compute ceil(needed*4/3) + 1
-            // to match the >  strict inequality in needsResize().
+            // Keep load factor strictly below 0.75. needsResize() resizes when
+            // (size+1)*4 >= capacity*3, so an insert reaching `needed` entries
+            // stays in place iff capacity*3 > needed*4, i.e. capacity > needed*4/3.
+            // (needed*4)/3 + 1 is an integer strictly greater than needed*4/3.
             const required = (needed * 4) / 3 + 1;
             if (required <= self.capacity) return;
             const new_cap = nextPow2(@max(required, DEFAULT_CAPACITY));
@@ -356,7 +360,10 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         inline fn needsResize(self: *const Self) bool {
-            return (self.size + 1) * 4 > self.capacity * 3;
+            // Strictly below 0.75: grow once (size+1)/capacity would reach 0.75,
+            // i.e. use >= so the 12th insert into a capacity-16 table resizes.
+            // Consistent with ensureCapacity's strict form below.
+            return (self.size + 1) * 4 >= self.capacity * 3;
         }
 
         fn resize(self: *Self) Allocator.Error!void {
