@@ -10,10 +10,10 @@
 const std = @import("std");
 const testing = std.testing;
 
-const F32I32TreeMap = @import("treemap/f32_i32_tree_map.zig").F32I32TreeMap;
+const F32I32TreeMap = @import("treemap/treemap.zig").F32I32TreeMap;
 const F32TreeSet = @import("treeset/f32_tree_set.zig").F32TreeSet;
 const F64TreeSet = @import("treeset/f64_tree_set.zig").F64TreeSet;
-const F64I32TreeMap = @import("treemap/f64_i32_tree_map.zig").F64I32TreeMap;
+const F64I32TreeMap = @import("treemap/treemap.zig").F64I32TreeMap;
 const I64Interval = @import("interval/i64_interval.zig").I64Interval;
 const I32Interval = @import("interval/i32_interval.zig").I32Interval;
 const I32I32HashMap = @import("hashmap/hashmap.zig").I32I32HashMap;
