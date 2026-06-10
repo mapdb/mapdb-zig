@@ -24,10 +24,17 @@ fn hashKey(comptime K: type, key: K) u64 {
         .bool => if (key) @as(u64, 1) else 0,
         else => @compileError("unsupported key type for hash table: " ++ @typeName(K)),
     };
-    // 64-bit Fibonacci hash (golden-ratio multiply). The 32-bit
-    // constant 0x9E3779B9 gives poor distribution on i64 keys; the
-    // 64-bit form below mixes the full width.
-    return raw *% 0x9E3779B97F4A7C15;
+    // 64-bit Fibonacci hash (golden-ratio multiply), then fold the high word
+    // down. The bucket index is taken from the LOW bits (`hashKey(...) & m`):
+    // with an odd multiplier the low k bits of the product depend only on the
+    // low k bits of the key, so without this fold the HIGH 32 bits of an i64
+    // key never reach the bucket and the {1, 2^32+1, 2*2^32+1, ...} family all
+    // collide onto one probe chain. The `h ^= h >> 32` finalizer mixes the
+    // high word into the low word so the full 64-bit key influences the bucket
+    // — matching Go's int64_int32_hash_map.go (`h ^= h >> 32`).
+    var h: u64 = raw *% 0x9E3779B97F4A7C15;
+    h ^= h >> 32;
+    return h;
 }
 
 fn keyEql(comptime K: type, a: K, b: K) bool {
@@ -698,4 +705,51 @@ test "set: ensureCapacity propagates allocator errors" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const result = OpenHashSet(i32).initCapacity(failing.allocator(), 16);
     try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "hashKey: i64 high-32-bit family spreads across distinct buckets" {
+    // Regression for the high-word fold (`h ^= h >> 32`). The bucket index is
+    // taken from the LOW bits (`hashKey(K, key) & m`). Without the fold, the
+    // i64 family {1, 2^32+1, 2*2^32+1, ...} — which differs ONLY in the high
+    // 32 bits — all maps to the SAME bucket (one degenerate probe chain),
+    // because an odd multiplier's low k product bits depend only on the key's
+    // low k bits. With the fold the high word reaches the bucket. Assert the
+    // family lands in distinct buckets for a representative capacity mask.
+    const cap: u64 = 1024; // power of two, like the table's real capacity
+    const m: u64 = cap - 1;
+    const N: usize = 16;
+    var seen = [_]u64{0} ** 1024;
+    var distinct: usize = 0;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        const key: i64 = @intCast(@as(u64, @intCast(i)) *% (@as(u64, 1) << 32) +% 1);
+        const bucket = hashKey(i64, key) & m;
+        if (seen[bucket] == 0) {
+            seen[bucket] = 1;
+            distinct += 1;
+        }
+    }
+    // Pre-fold this family collapsed to distinct == 1. The fold must spread it
+    // to many distinct buckets; require near-perfect spread (allow a couple of
+    // incidental collisions, but reject the degenerate one-chain behavior).
+    try std.testing.expect(distinct >= N - 2);
+}
+
+test "hashKey: i64 high-32-bit family stores/reads through production map" {
+    // Same family, but observed through the real OpenHashMap: every key must
+    // insert and read back independently (correctness held even before the
+    // fold; this guards the fold change against a placement regression).
+    var map = try OpenHashMap(i64, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    defer map.deinit();
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        const key: i64 = @intCast(@as(u64, @intCast(i)) *% (@as(u64, 1) << 32) +% 1);
+        _ = try map.put(key, @intCast(i));
+    }
+    try std.testing.expectEqual(@as(usize, 64), map.len());
+    i = 0;
+    while (i < 64) : (i += 1) {
+        const key: i64 = @intCast(@as(u64, @intCast(i)) *% (@as(u64, 1) << 32) +% 1);
+        try std.testing.expectEqual(@as(?i32, @intCast(i)), map.get(key));
+    }
 }

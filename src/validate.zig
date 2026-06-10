@@ -24,6 +24,7 @@ const F32I32HashMap = @import("hashmap/f32_i32_hash_map.zig").F32I32HashMap;
 const F32HashSet = @import("hashset/f32_hash_set.zig").F32HashSet;
 const F32TreeSet = @import("treeset/f32_tree_set.zig").F32TreeSet;
 const F32ArrayList = @import("arraylist/f32_array_list.zig").F32ArrayList;
+const I64I32HashMap = @import("hashmap/i64_i32_hash_map.zig").I64I32HashMap;
 
 const CollectionKind = enum {
     hash_map,
@@ -979,6 +980,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "HashMap<i64, i32>")) {
+        try runI64HashMap(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         std.debug.print("Unknown collection type: {s}\n", .{collection_type});
@@ -1397,5 +1404,127 @@ fn runF32ArrayList(
             try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
         }
         try emitF32(name, key, vbuf.items, expected, .f32_list, allocator, writer);
+    }
+}
+
+// ── HashMap<i64, i32> runner ────────────────────────────────────────────────
+//
+// Routes through the PRODUCTION I64I32HashMap (real i64 hash spread + key
+// identity). i64 KEYS are decimal STRINGS (they exceed 2^53) parsed straight to
+// i64 via std.fmt.parseInt — never via f64; small keys may also be bare JSON
+// numbers. The value stays an i32 JSON number. See README §"Wide-integer (i64)
+// operand encoding".
+
+fn parseI64Operand(v: std.json.Value) i64 {
+    return switch (v) {
+        .string => |s| std.fmt.parseInt(i64, s, 10) catch @panic("invalid i64 decimal-string key"),
+        .integer => |i| i,
+        .number_string => |s| std.fmt.parseInt(i64, s, 10) catch @panic("invalid i64 number_string key"),
+        else => @panic("expected i64 key (decimal string or number)"),
+    };
+}
+
+fn runI64HashMap(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    var m = I64I32HashMap.init(allocator);
+    defer m.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const k = parseI64Operand(obj.get("key").?);
+            const v = @as(i32, @intCast(obj.get("value").?.integer));
+            _ = m.put(k, v);
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = m.remove(parseI64Operand(obj.get("key").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            m.clear();
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        var known = true;
+        if (std.mem.eql(u8, key, "size")) {
+            try vw.print("{d}", .{m.size()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try vw.print("{s}", .{if (m.isEmpty()) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted_keys")) {
+            // i64 keys exceed 2^53: serialize each as a plain decimal STRING in
+            // a quoted array, sorted numerically as i64 ascending.
+            const keys = m.keysToSlice(allocator);
+            defer allocator.free(keys);
+            std.mem.sort(i64, keys, {}, struct {
+                pub fn lt(_: void, a: i64, b: i64) bool {
+                    return a < b;
+                }
+            }.lt);
+            try vw.writeAll("[");
+            for (keys, 0..) |k, i| {
+                if (i > 0) try vw.writeAll(",");
+                try vw.print("\"{d}\"", .{k});
+            }
+            try vw.writeAll("]");
+        } else if (std.mem.startsWith(u8, key, "get_")) {
+            const k = std.fmt.parseInt(i64, key[4..], 10) catch @panic("bad get_ i64 suffix");
+            if (m.get(k)) |v| try vw.print("{d}", .{v}) else try vw.writeAll("null");
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const k = std.fmt.parseInt(i64, key[9..], 10) catch @panic("bad contains_ i64 suffix");
+            try vw.print("{s}", .{if (m.containsKey(k)) "true" else "false"});
+        } else {
+            known = false;
+        }
+        if (!known) continue; // unknown key -> skip
+        try emitI64(name, key, vbuf.items, expected, allocator, writer);
+    }
+}
+
+// Print a precomputed i64-map assertion value and compare against the expected
+// JSON value. `sorted_keys` expected is a decimal-string array (rendered
+// quoted); scalars are integers/bools/null.
+fn emitI64(
+    name: []const u8,
+    key: []const u8,
+    computed: []const u8,
+    expected: std.json.Value,
+    allocator: Allocator,
+    stdout: anytype,
+) !void {
+    try stdout.print("{s}: {s}\n", .{ key, computed });
+    var ebuf = std.array_list.Managed(u8).init(allocator);
+    defer ebuf.deinit();
+    const ew = ebuf.writer();
+    switch (expected) {
+        .null => try ew.writeAll("null"),
+        .bool => |b| try ew.writeAll(if (b) "true" else "false"),
+        .integer => |i| try ew.print("{d}", .{i}),
+        .number_string => |s| try ew.writeAll(s),
+        .array => |arr| {
+            try ew.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try ew.writeAll(",");
+                // i64 sorted_keys elements are decimal STRINGS — render quoted.
+                switch (e) {
+                    .string => |s| try ew.print("\"{s}\"", .{s}),
+                    .integer => |n| try ew.print("\"{d}\"", .{n}),
+                    .number_string => |s| try ew.print("\"{s}\"", .{s}),
+                    else => @panic("unexpected i64 sorted_keys element"),
+                }
+            }
+            try ew.writeAll("]");
+        },
+        else => @panic("unexpected i64 assertion expected value"),
+    }
+    if (!std.mem.eql(u8, computed, ebuf.items)) {
+        try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+        any_fail = true;
     }
 }
