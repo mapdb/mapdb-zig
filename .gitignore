@@ -1,2 +1,9 @@
 .zig-cache/
 zig-out/
+
+# stray local build artifacts (compiled bench/probe executables)
+/bench_all_methods
+/bench_zig
+/mapdb_zig_const_compile_probe
+/mapdb_zig_const_compile_probe.o
+/root

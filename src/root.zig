@@ -35,7 +35,7 @@ pub const I32I64HashMap = @import("hashmap/hashmap.zig").I32I64HashMap;
 pub const I32TreeSet = @import("treeset/treeset.zig").I32TreeSet;
 pub const I32I64TreeMap = @import("treemap/treemap.zig").I32I64TreeMap;
 pub const I32I64Pair = @import("tuple/tuple.zig").I32I64Pair;
-pub const I32Interval = @import("interval/i32_interval.zig").I32Interval;
+pub const I32Interval = @import("interval/interval.zig").I32Interval;
 pub const ImmutableI32ArrayList = @import("immutable/immutable.zig").ImmutableI32ArrayList;
 pub const ImmutableI32HashSet = @import("immutable/immutable.zig").ImmutableI32HashSet;
 pub const ImmutableI32HashBag = @import("immutable/immutable.zig").ImmutableI32HashBag;
@@ -62,6 +62,7 @@ comptime {
     _ = @import("immutable/immutable.zig");
     _ = @import("immutable/immutable_test.zig");
     _ = @import("interval/interval.zig");
+    _ = @import("interval/interval_test.zig");
     _ = @import("multimap/multimap.zig");
     _ = @import("multimap/multimap_test.zig");
     _ = @import("parallel/parallel.zig");
