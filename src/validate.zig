@@ -274,6 +274,104 @@ fn writeArray(writer: anytype, items: []const i32) !void {
     try writer.writeAll("]");
 }
 
+// Set whenever any assertion mismatches; the process exits non-zero at the
+// end so the harness treats assertion failures as the primary pass/fail.
+var any_fail: bool = false;
+
+// Controls how an expected JSON value renders into the canonical computed
+// string, so float comparisons are by bit pattern (NaN == NaN, +0 != -0).
+const FloatMode = enum {
+    none, // i32 collections
+    f32_keyed, // f32 map/set: only arrays are float-labelled
+    f32_list, // f32 list: sum/min/max scalars + arrays are floats
+};
+
+fn elementToF32(e: std.json.Value) f32 {
+    return switch (e) {
+        .string => |s| parseF32Label(s),
+        .float => |f| @as(f32, @floatCast(f)),
+        .integer => |i| @as(f32, @floatFromInt(i)),
+        .number_string => |s| std.fmt.parseFloat(f32, s) catch @panic("bad float"),
+        else => @panic("unexpected float array element"),
+    };
+}
+
+// Render an expected JSON assertion value into the same canonical string the
+// runner emits for its computed value.
+fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: FloatMode) !void {
+    switch (v) {
+        .null => try writer.writeAll("null"),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .integer => |i| {
+            if (mode == .f32_list and !std.mem.eql(u8, key, "size")) {
+                try writeF32(writer, @as(f32, @floatFromInt(i)));
+            } else {
+                try writer.print("{d}", .{i});
+            }
+        },
+        .float => |f| {
+            // JSON numbers with a fractional part decode as .float.
+            if (mode == .f32_list and !std.mem.eql(u8, key, "size")) {
+                try writeF32(writer, @as(f32, @floatCast(f)));
+            } else {
+                try writer.print("{d}", .{@as(i64, @intFromFloat(f))});
+            }
+        },
+        .number_string => |s| try writer.writeAll(s),
+        .string => |s| try writeF32(writer, parseF32Label(s)), // float label scalar
+        .array => |arr| {
+            try writer.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try writer.writeAll(",");
+                switch (mode) {
+                    .f32_keyed => {
+                        try writer.writeAll("\"");
+                        try writeF32(writer, elementToF32(e));
+                        try writer.writeAll("\"");
+                    },
+                    .f32_list => try writeF32(writer, elementToF32(e)),
+                    .none => try writer.print("{d}", .{e.integer}),
+                }
+            }
+            try writer.writeAll("]");
+        },
+        else => {},
+    }
+}
+
+// Compute one assertion, print the canonical `key: value` line, and compare
+// against the expected JSON value. Unrecognised keys (UNKNOWN_ASSERTION:*)
+// are skipped silently per the README unknown-assertion-skip rule.
+fn emitAssertion(
+    scenario_name: []const u8,
+    key: []const u8,
+    expected: std.json.Value,
+    coll: *Collection,
+    other_coll: ?*Collection,
+    mode: FloatMode,
+    allocator: Allocator,
+    stdout: anytype,
+) !void {
+    var cbuf = std.array_list.Managed(u8).init(allocator);
+    defer cbuf.deinit();
+    try evaluateAssertion(key, coll, other_coll, allocator, cbuf.writer());
+    const computed = cbuf.items;
+    if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) return;
+
+    try stdout.print("{s}: {s}\n", .{ key, computed });
+
+    var ebuf = std.array_list.Managed(u8).init(allocator);
+    defer ebuf.deinit();
+    try renderExpected(ebuf.writer(), expected, key, mode);
+    if (!std.mem.eql(u8, computed, ebuf.items)) {
+        try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ scenario_name, key, ebuf.items, computed });
+        any_fail = true;
+    }
+}
+
+// Writes ONLY the canonical computed value for `key` into `writer` (no
+// "key: " prefix, no trailing newline). Unknown keys write the sentinel
+// "UNKNOWN_ASSERTION:<key>" which the caller treats as skip.
 fn evaluateAssertion(
     key: []const u8,
     coll: *Collection,
@@ -281,8 +379,6 @@ fn evaluateAssertion(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("{s}: ", .{key});
-
     // --- size ---
     if (std.mem.eql(u8, key, "size")) {
         const sz: i64 = @intCast(getCollectionSize(coll));
@@ -790,10 +886,8 @@ fn evaluateAssertion(
     }
     // --- unknown key ---
     else {
-        try writer.print("UNKNOWN_KEY({s})", .{key});
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
     }
-
-    try writer.writeAll("\n");
 }
 
 fn getCollectionSize(coll: *Collection) usize {
@@ -843,16 +937,19 @@ pub fn main() !void {
     if (std.mem.eql(u8, collection_type, "HashMap<f32, i32>")) {
         try runF32HashMap(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
+        if (any_fail) std.process.exit(1);
         return;
     }
     if (std.mem.eql(u8, collection_type, "HashSet<f32>")) {
         try runF32HashSet(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
+        if (any_fail) std.process.exit(1);
         return;
     }
     if (std.mem.eql(u8, collection_type, "ArrayList<f32>")) {
         try runF32ArrayList(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
+        if (any_fail) std.process.exit(1);
         return;
     }
 
@@ -897,13 +994,18 @@ pub fn main() !void {
     // Process assertions in order
     const assertions = root.get("assertions").?.object;
     // std.json.ObjectMap preserves insertion order
-    for (assertions.keys(), assertions.values()) |key, _| {
+    for (assertions.keys(), assertions.values()) |key, expected| {
         // Scenario authors use "comment" as a doc string; the other ports
         // (Rust, Go) skip it. Treat it the same way here so harness diffs
         // line up.
         if (std.mem.eql(u8, key, "comment")) continue;
         const other_ptr: ?*Collection = if (other_coll != null) &other_coll.? else null;
-        try evaluateAssertion(key, &coll, other_ptr, allocator, stdout);
+        try emitAssertion(name, key, expected, &coll, other_ptr, .none, allocator, stdout);
+    }
+
+    if (any_fail) {
+        try stdout.flush();
+        std.process.exit(1);
     }
 }
 
@@ -998,35 +1100,59 @@ fn runF32HashMap(
             m.clear();
         }
     }
-    for (assertions.keys()) |key| {
+    for (assertions.keys(), assertions.values()) |key, expected| {
         if (std.mem.eql(u8, key, "comment")) continue;
-        try writer.print("{s}: ", .{key});
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try writer.print("{d}", .{m.size()});
+            try vw.print("{d}", .{m.size()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
-            try writer.print("{s}", .{if (m.isEmpty()) "true" else "false"});
+            try vw.print("{s}", .{if (m.isEmpty()) "true" else "false"});
         } else if (std.mem.startsWith(u8, key, "get_")) {
             const probe = parseF32Label(key[4..]);
-            if (m.get(probe)) |v| try writer.print("{d}", .{v}) else try writer.writeAll("null");
+            if (m.get(probe)) |v| try vw.print("{d}", .{v}) else try vw.writeAll("null");
         } else if (std.mem.startsWith(u8, key, "contains_")) {
             const probe = parseF32Label(key[9..]);
-            try writer.print("{s}", .{if (m.containsKey(probe)) "true" else "false"});
+            try vw.print("{s}", .{if (m.containsKey(probe)) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted_keys")) {
             const keys = m.keysToSlice(allocator);
             defer allocator.free(keys);
             sortF32Total(keys);
-            try writer.writeAll("[");
+            try vw.writeAll("[");
             for (keys, 0..) |k, i| {
-                if (i > 0) try writer.writeAll(",");
-                try writer.writeAll("\"");
-                try writeF32(writer, k);
-                try writer.writeAll("\"");
+                if (i > 0) try vw.writeAll(",");
+                try vw.writeAll("\"");
+                try writeF32(vw, k);
+                try vw.writeAll("\"");
             }
-            try writer.writeAll("]");
+            try vw.writeAll("]");
         } else {
-            try writer.print("UNKNOWN_KEY({s})", .{key});
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
         }
-        try writer.writeAll("\n");
+        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
+    }
+}
+
+// Print a precomputed f32 assertion value and compare against the expected
+// JSON value; skip unrecognised keys silently.
+fn emitF32(
+    name: []const u8,
+    key: []const u8,
+    computed: []const u8,
+    expected: std.json.Value,
+    mode: FloatMode,
+    allocator: Allocator,
+    stdout: anytype,
+) !void {
+    if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) return;
+    try stdout.print("{s}: {s}\n", .{ key, computed });
+    var ebuf = std.array_list.Managed(u8).init(allocator);
+    defer ebuf.deinit();
+    try renderExpected(ebuf.writer(), expected, key, mode);
+    if (!std.mem.eql(u8, computed, ebuf.items)) {
+        try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+        any_fail = true;
     }
 }
 
@@ -1051,32 +1177,34 @@ fn runF32HashSet(
             set.clear();
         }
     }
-    for (assertions.keys()) |key| {
+    for (assertions.keys(), assertions.values()) |key, expected| {
         if (std.mem.eql(u8, key, "comment")) continue;
-        try writer.print("{s}: ", .{key});
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try writer.print("{d}", .{set.size()});
+            try vw.print("{d}", .{set.size()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
-            try writer.print("{s}", .{if (set.isEmpty()) "true" else "false"});
+            try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
         } else if (std.mem.startsWith(u8, key, "contains_")) {
             const probe = parseF32Label(key[9..]);
-            try writer.print("{s}", .{if (set.contains(probe)) "true" else "false"});
+            try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
             const vals = set.toSlice(allocator);
             defer allocator.free(vals);
             sortF32Total(vals);
-            try writer.writeAll("[");
+            try vw.writeAll("[");
             for (vals, 0..) |v, i| {
-                if (i > 0) try writer.writeAll(",");
-                try writer.writeAll("\"");
-                try writeF32(writer, v);
-                try writer.writeAll("\"");
+                if (i > 0) try vw.writeAll(",");
+                try vw.writeAll("\"");
+                try writeF32(vw, v);
+                try vw.writeAll("\"");
             }
-            try writer.writeAll("]");
+            try vw.writeAll("]");
         } else {
-            try writer.print("UNKNOWN_KEY({s})", .{key});
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
         }
-        try writer.writeAll("\n");
+        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
     }
 }
 
@@ -1100,51 +1228,53 @@ fn runF32ArrayList(
         }
     }
     const values = list.toSlice();
-    for (assertions.keys()) |key| {
+    for (assertions.keys(), assertions.values()) |key, expected| {
         if (std.mem.eql(u8, key, "comment")) continue;
-        try writer.print("{s}: ", .{key});
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try writer.print("{d}", .{values.len});
+            try vw.print("{d}", .{values.len});
         } else if (std.mem.eql(u8, key, "is_empty")) {
-            try writer.print("{s}", .{if (values.len == 0) "true" else "false"});
+            try vw.print("{s}", .{if (values.len == 0) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sum")) {
             var acc: f32 = 0;
             for (values) |v| acc += v;
-            try writeF32(writer, acc);
+            try writeF32(vw, acc);
         } else if (std.mem.eql(u8, key, "min")) {
             if (values.len == 0) {
-                try writer.writeAll("null");
+                try vw.writeAll("null");
             } else {
                 var mn = values[0];
                 for (values[1..]) |v| if (totalCmpF32(v, mn) == .lt) {
                     mn = v;
                 };
-                try writeF32(writer, mn);
+                try writeF32(vw, mn);
             }
         } else if (std.mem.eql(u8, key, "max")) {
             if (values.len == 0) {
-                try writer.writeAll("null");
+                try vw.writeAll("null");
             } else {
                 var mx = values[0];
                 for (values[1..]) |v| if (totalCmpF32(v, mx) == .gt) {
                     mx = v;
                 };
-                try writeF32(writer, mx);
+                try writeF32(vw, mx);
             }
         } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "to_sorted_array")) {
             const buf = allocator.alloc(f32, values.len) catch @panic("oom");
             defer allocator.free(buf);
             @memcpy(buf, values);
             sortF32Total(buf);
-            try writer.writeAll("[");
+            try vw.writeAll("[");
             for (buf, 0..) |v, i| {
-                if (i > 0) try writer.writeAll(",");
-                try writeF32(writer, v);
+                if (i > 0) try vw.writeAll(",");
+                try writeF32(vw, v);
             }
-            try writer.writeAll("]");
+            try vw.writeAll("]");
         } else {
-            try writer.print("UNKNOWN_KEY({s})", .{key});
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
         }
-        try writer.writeAll("\n");
+        try emitF32(name, key, vbuf.items, expected, .f32_list, allocator, writer);
     }
 }
