@@ -233,6 +233,16 @@ fn writeI32(writer: anytype, val: i32) !void {
     try writer.print("{d}", .{val});
 }
 
+// Wrapping i32 reductions passed to the production I32ArrayList.injectInto, so
+// the harness exercises the production fold path with i32-seed-width wrapping
+// (algorithms.md "Integer overflow contract").
+fn injectAddWrapI32(acc: i32, v: i32) i32 {
+    return acc +% v;
+}
+fn injectMulWrapI32(acc: i32, v: i32) i32 {
+    return acc *% v;
+}
+
 fn writeI64(writer: anytype, val: i64) !void {
     try writer.print("{d}", .{val});
 }
@@ -293,6 +303,8 @@ fn elementToF32(e: std.json.Value) f32 {
         .float => |f| @as(f32, @floatCast(f)),
         .integer => |i| @as(f32, @floatFromInt(i)),
         .number_string => |s| std.fmt.parseFloat(f32, s) catch @panic("bad float"),
+        // {"bits":"0x.."} escape inside an assertion array.
+        .object => parseF32Value(e),
         else => @panic("unexpected float array element"),
     };
 }
@@ -320,6 +332,14 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
         },
         .number_string => |s| try writer.writeAll(s),
         .string => |s| try writeF32(writer, parseF32Label(s)), // float label scalar
+        // Bits-escape float scalar (e.g. sum: {"bits":"0xffc00000"}).
+        .object => {
+            if (mode != .none) {
+                try writeF32(writer, parseF32Value(v));
+            } else {
+                try writer.writeAll("{object}");
+            }
+        },
         .array => |arr| {
             try writer.writeAll("[");
             for (arr.items, 0..) |e, i| {
@@ -336,7 +356,6 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
             }
             try writer.writeAll("]");
         },
-        else => {},
     }
 }
 
@@ -364,7 +383,7 @@ fn emitAssertion(
     var ebuf = std.array_list.Managed(u8).init(allocator);
     defer ebuf.deinit();
     try renderExpected(ebuf.writer(), expected, key, mode);
-    if (!std.mem.eql(u8, computed, ebuf.items)) {
+    if (!std.mem.eql(u8, computed, ebuf.items) and !looseNanMatch(expected, mode, computed)) {
         try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ scenario_name, key, ebuf.items, computed });
         any_fail = true;
     }
@@ -408,19 +427,13 @@ fn evaluateAssertion(
             else => try writeNull(writer),
         }
     }
-    // --- sum (wrapping i32, matches Rust/Go) ---
-    // Note: the production I32ArrayList.sum() returns a widened i64 so it
-    // never overflows in normal use. The cross-language scenario contract
-    // (scenarios/06-overflow/i32_sum_overflow.json) is wrapping i32 instead
-    // — Java/Go wrap silently, Rust uses wrapping_add in release. Compute
-    // it locally here rather than changing the production API.
+    // --- sum (widened i64, via the production I32ArrayList.sum()) ---
+    // List sum() widens into an i64 accumulator (IntList.sum(): long parity)
+    // and does NOT wrap at i32 — see algorithms.md "Integer overflow contract"
+    // and scenarios/06-overflow/i32_sum_overflow.json.
     else if (std.mem.eql(u8, key, "sum")) {
         switch (coll.*) {
-            .array_list => |*l| {
-                var acc: i32 = 0;
-                for (l.toSlice()) |item| acc +%= item;
-                try writeI32(writer, acc);
-            },
+            .array_list => |*l| try writeI64(writer, l.sum()),
             else => try writeNull(writer),
         }
     }
@@ -537,34 +550,29 @@ fn evaluateAssertion(
         defer allocator.free(items);
         try writeSortedArray(writer, items);
     }
-    // --- inject_into_sum (widened i64 fold, matches Rust/Go) ---
+    // --- inject_into_sum (i32 wrapping fold, via production injectInto) ---
+    // injectInto with a + reduction accumulates in the i32 seed type and
+    // wraps two's-complement at i32 (algorithms.md "Integer overflow
+    // contract"). Routed through the production I32ArrayList.injectInto.
     else if (std.mem.eql(u8, key, "inject_into_sum")) {
         switch (coll.*) {
-            .array_list => |*l| {
-                var acc: i64 = 0;
-                for (l.toSlice()) |item| acc += @as(i64, @intCast(item));
-                try writeI64(writer, acc);
-            },
+            .array_list => |*l| try writeI32(writer, l.injectInto(0, injectAddWrapI32)),
             .array_stack => |*s| {
-                var acc: i64 = 0;
-                for (s.toSlice()) |item| acc += @as(i64, @intCast(item));
-                try writeI64(writer, acc);
+                var acc: i32 = 0;
+                for (s.toSlice()) |item| acc = injectAddWrapI32(acc, item);
+                try writeI32(writer, acc);
             },
             else => try writeNull(writer),
         }
     }
-    // --- inject_into_product (widened i64 fold, matches Rust/Go) ---
+    // --- inject_into_product (i32 wrapping fold, via production injectInto) ---
     else if (std.mem.eql(u8, key, "inject_into_product")) {
         switch (coll.*) {
-            .array_list => |*l| {
-                var acc: i64 = 1;
-                for (l.toSlice()) |item| acc *= @as(i64, @intCast(item));
-                try writeI64(writer, acc);
-            },
+            .array_list => |*l| try writeI32(writer, l.injectInto(1, injectMulWrapI32)),
             .array_stack => |*s| {
-                var acc: i64 = 1;
-                for (s.toSlice()) |item| acc *= @as(i64, @intCast(item));
-                try writeI64(writer, acc);
+                var acc: i32 = 1;
+                for (s.toSlice()) |item| acc = injectMulWrapI32(acc, item);
+                try writeI32(writer, acc);
             },
             else => try writeNull(writer),
         }
@@ -1018,36 +1026,87 @@ pub fn main() !void {
 // mapdb-rust/src/bin/validate.rs and mapdb-golang/cmd/validate/main.go.
 // Required by `cross-language-validation/scenarios/05-float-edge-cases/*`.
 
+// Q4 float operand encoding (see cross-language-validation/README.md
+// §"Float operand encoding"): JSON number, human-label string, or a
+// {"bits":"0x........"} object reinterpreting 32 IEEE-754 bits.
 fn parseF32Value(v: std.json.Value) f32 {
     return switch (v) {
         .string => |s| parseF32Label(s),
         .float => |f| @as(f32, @floatCast(f)),
         .integer => |i| @as(f32, @floatFromInt(i)),
         .number_string => |s| std.fmt.parseFloat(f32, s) catch @panic("invalid f32 literal"),
+        .object => |obj| blk: {
+            const bits_val = obj.get("bits") orelse @panic("expected {\"bits\":\"0x..\"} float object");
+            const hex = switch (bits_val) {
+                .string => |s| s,
+                else => @panic("bits must be a string"),
+            };
+            break :blk @bitCast(parseF32Bits(hex));
+        },
         else => @panic("expected f32 value"),
     };
 }
 
+// Parse a 0x-prefixed, 8-hex-digit (case-insensitive) string into a raw
+// 32-bit IEEE-754 pattern (NaN-payload / signed-bit escape).
+fn parseF32Bits(hex: []const u8) u32 {
+    if (hex.len != 10 or hex[0] != '0' or (hex[1] != 'x' and hex[1] != 'X')) {
+        @panic("f32 bits literal must be 0x + 8 hex digits");
+    }
+    return std.fmt.parseInt(u32, hex[2..], 16) catch @panic("invalid f32 bits literal");
+}
+
+// Parse a human-label / decimal / hex-bits float string. Used for string
+// operands and assertion-key suffixes (get_-NaN, contains_0.0,
+// contains_0x7fc00001). Canonical NaN bits: +NaN=0x7FC00000, -NaN=0xFFC00000.
 fn parseF32Label(s: []const u8) f32 {
-    if (std.mem.eql(u8, s, "NaN")) return std.math.nan(f32);
+    if (std.mem.eql(u8, s, "NaN") or std.mem.eql(u8, s, "+NaN")) return @bitCast(@as(u32, 0x7FC00000));
+    if (std.mem.eql(u8, s, "-NaN")) return @bitCast(@as(u32, 0xFFC00000));
     if (std.mem.eql(u8, s, "Infinity") or std.mem.eql(u8, s, "+Infinity")) return std.math.inf(f32);
     if (std.mem.eql(u8, s, "-Infinity")) return -std.math.inf(f32);
+    if (std.mem.eql(u8, s, "0.0") or std.mem.eql(u8, s, "+0.0")) return 0.0;
+    if (std.mem.eql(u8, s, "-0.0")) return -0.0;
     if (std.mem.eql(u8, s, "pos_zero")) return 0.0;
     if (std.mem.eql(u8, s, "neg_zero")) return -0.0;
+    if (s.len >= 2 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
+        return @bitCast(parseF32Bits(s));
+    }
     return std.fmt.parseFloat(f32, s) catch @panic("invalid f32 literal in key");
 }
 
+// Loose-NaN scalar match. When the EXPECTED operand is a bare NaN *label*
+// ("NaN"/"+NaN"/"-NaN") — NOT a {"bits":"0x.."} object and NOT an array
+// element — the assertion passes against ANY NaN the runner computed,
+// regardless of sign/payload. This covers impl/arch-defined arithmetic NaNs
+// such as (+Inf)+(-Inf), whose bits differ across x86 vs ARM. {"bits"}
+// operands stay bitwise-exact and array elements stay exact/positional
+// (renderExpected is unchanged for both). See cross-language-validation/README.md
+// §"Float operand encoding".
+fn looseNanMatch(expected: std.json.Value, mode: FloatMode, computed: []const u8) bool {
+    if (mode == .none) return false;
+    const s = switch (expected) {
+        .string => |str| str,
+        else => return false,
+    };
+    if (!std.math.isNan(parseF32Label(s))) return false;
+    // Computed must itself be a NaN bit pattern (canonical "0x........").
+    if (computed.len != 10 or computed[0] != '0' or (computed[1] != 'x' and computed[1] != 'X')) return false;
+    const bits = std.fmt.parseInt(u32, computed[2..], 16) catch return false;
+    return std.math.isNan(@as(f32, @bitCast(bits)));
+}
+
+// Canonical, bit-faithful serialization, matching Rust/Go/TS. NaN (any
+// sign/payload) and ±0.0 render as their 0x-hex bit pattern so distinct
+// payloads and signed zeros stay distinguishable and every port emits the
+// identical string; finite/inf values keep their human-readable label.
 fn writeF32(writer: anytype, v: f32) !void {
-    if (std.math.isNan(v)) {
-        try writer.writeAll("NaN");
+    if (std.math.isNan(v) or v == 0) {
+        const bits: u32 = @bitCast(v);
+        try writer.print("0x{x:0>8}", .{bits});
         return;
     }
     if (std.math.isInf(v)) {
         if (v > 0) try writer.writeAll("Infinity") else try writer.writeAll("-Infinity");
-        return;
-    }
-    if (v == 0 and std.math.signbit(v)) {
-        try writer.writeAll("-0.0");
         return;
     }
     const trunc = @trunc(v);
@@ -1146,7 +1205,7 @@ fn emitF32(
     var ebuf = std.array_list.Managed(u8).init(allocator);
     defer ebuf.deinit();
     try renderExpected(ebuf.writer(), expected, key, mode);
-    if (!std.mem.eql(u8, computed, ebuf.items)) {
+    if (!std.mem.eql(u8, computed, ebuf.items) and !looseNanMatch(expected, mode, computed)) {
         try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
         any_fail = true;
     }
