@@ -1,0 +1,37 @@
+# CI: build, test, and the formatting gate.
+#
+# `zig build test` compiles the library and runs the unit-test suite (the
+# parameterized + refAllDeclsRecursive tests that keep the comptime-collapsed
+# generics actually instantiated). `zig fmt --check src/` fails if any source
+# drifts from canonical formatting — the repo had no fmt gate before, which let
+# four headers accumulate stray blank lines; this keeps formatting honest.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Format check
+        run: zig fmt --check src/ build.zig build.zig.zon
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
