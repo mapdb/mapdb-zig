@@ -59,6 +59,25 @@ pub fn HashSet(comptime T: type) type {
             }
         }
 
+        /// Pull-based iterator yielding each element by value in arbitrary
+        /// (hash-table) order. Non-allocating: wraps the backing
+        /// `AutoHashMapUnmanaged` key iterator. The iterator borrows the set;
+        /// do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: Map.Iterator,
+
+            pub fn next(self: *Iterator) ?T {
+                const entry = self.inner.next() orelse return null;
+                return entry.key_ptr.*;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in arbitrary order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {

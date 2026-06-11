@@ -73,6 +73,41 @@ pub fn HashBag(comptime T: type) type {
             }
         }
 
+        /// Pull-based iterator yielding each element repeated by its occurrence
+        /// count (the same elements as the generic `HashBag` iterator, and the
+        /// expansion of `forEachWithOccurrences`), in arbitrary order.
+        /// Non-allocating: wraps the backing `AutoHashMapUnmanaged` entry
+        /// iterator plus an occurrence counter. The iterator borrows the bag; do
+        /// not mutate while iterating. For distinct `(value, count)` traversal
+        /// use `forEachWithOccurrences`.
+        pub const Iterator = struct {
+            inner: Map.Iterator,
+            remaining: usize = 0,
+            current: T = undefined,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.remaining > 0) {
+                    self.remaining -= 1;
+                    return self.current;
+                }
+                while (self.inner.next()) |entry| {
+                    if (entry.value_ptr.* > 0) {
+                        self.current = entry.key_ptr.*;
+                        self.remaining = entry.value_ptr.* - 1;
+                        return self.current;
+                    }
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based iterator yielding each element repeated by its
+        /// occurrence count (same elements as `forEach` on the generic bag), in
+        /// arbitrary order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         pub fn clear(self: *Self) void {
             self.inner.clearRetainingCapacity();
             self.total_size = 0;

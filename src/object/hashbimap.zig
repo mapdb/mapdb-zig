@@ -104,6 +104,28 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
                 f(entry.key_ptr.*, entry.value_ptr.*);
             }
         }
+
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        /// Pull-based iterator yielding `{ key, value }` (forward) entries in
+        /// arbitrary (hash-table) order. Non-allocating: wraps the forward
+        /// `AutoHashMapUnmanaged` entry iterator. The iterator borrows the bimap;
+        /// do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: Forward.Iterator,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                const entry = self.inner.next() orelse return null;
+                return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` (forward) entries
+        /// in arbitrary order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.forward.iterator() };
+        }
     };
 }
 

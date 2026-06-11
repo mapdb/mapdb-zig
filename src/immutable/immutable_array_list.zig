@@ -108,6 +108,26 @@ pub fn ImmutableArrayList(comptime T: type) type {
             return self.items.len == 0;
         }
 
+        /// Pull-based iterator yielding each element by value in insertion order.
+        /// Non-allocating: indexes directly into the owned backing slice.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in insertion order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.items };
+        }
+
         pub fn contains(self: *const Self, value: T) bool {
             for (self.items) |item| {
                 if (elemEql(T, item, value)) return true;

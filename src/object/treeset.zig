@@ -96,6 +96,25 @@ pub fn TreeSet(comptime T: type) type {
             self.inner.forEach(&wrapper.call);
         }
 
+        /// Pull-based iterator yielding each element by value in ascending
+        /// (in-order) sorted order. Non-allocating: delegates to the backing
+        /// `TreeMap`'s parent-pointer in-order iterator (no recursion, no heap).
+        /// The iterator borrows the set; do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: Map.Iterator,
+
+            pub fn next(self: *Iterator) ?T {
+                const entry = self.inner.next() orelse return null;
+                return entry.key;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in ascending sorted
+        /// order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         pub fn toSlice(self: *const Self, allocator: Allocator) []T {
             return self.inner.keysToSlice(allocator);
         }

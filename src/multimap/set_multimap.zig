@@ -174,6 +174,42 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
 
         // ---- Iteration ----
 
+        /// An entry yielded by `Iterator` — key and value by value. One entry is
+        /// yielded per (key, value) pair, matching `forEach`.
+        pub const IterEntry = struct { key: K, value: V };
+
+        const InnerIterator = std.AutoHashMapUnmanaged(MK, std.ArrayListUnmanaged(V)).Iterator;
+
+        /// Pull-based iterator yielding one `{ key, value }` per (key, value)
+        /// pair — i.e. each key repeated once per distinct value in its set, in
+        /// arbitrary key order (matching `forEach`). Non-allocating: wraps the
+        /// backing map's entry iterator plus a value index into the current key's
+        /// value list. The iterator borrows the multimap; do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: InnerIterator,
+            current_key: K = undefined,
+            current_values: []const V = &[_]V{},
+            value_index: usize = 0,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                while (self.value_index >= self.current_values.len) {
+                    const entry = self.inner.next() orelse return null;
+                    self.current_key = keyFromStored(entry.key_ptr.*);
+                    self.current_values = entry.value_ptr.items;
+                    self.value_index = 0;
+                }
+                const v = self.current_values[self.value_index];
+                self.value_index += 1;
+                return .{ .key = self.current_key, .value = v };
+            }
+        };
+
+        /// Returns a pull-based iterator yielding one `{ key, value }` per
+        /// (key, value) pair (same pairs as `forEach`). Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         /// Calls the function for each key-value pair.
         pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
             var it = self.inner.iterator();

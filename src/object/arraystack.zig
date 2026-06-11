@@ -79,6 +79,27 @@ pub fn ArrayStack(comptime T: type) type {
         pub fn clear(self: *Self) void {
             self.inner.clearRetainingCapacity();
         }
+
+        /// Pull-based iterator yielding each element by value in bottom-to-top
+        /// (push) order. Non-allocating: indexes directly into the backing slice.
+        /// The iterator borrows the stack; do not mutate while iterating.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in bottom-to-top order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.inner.items };
+        }
     };
 }
 

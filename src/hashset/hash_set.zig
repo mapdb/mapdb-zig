@@ -113,6 +113,31 @@ pub fn HashSet(comptime T: type) type {
 
         // ---- Iteration ----
 
+        const Entry = @import("../hash_table.zig").SetEntry(T);
+
+        /// Pull-based iterator yielding each element by value in arbitrary
+        /// (hash-table) order. Non-allocating: walks the inner table's occupied
+        /// slots directly. The iterator borrows the set; do not mutate while iterating.
+        pub const Iterator = struct {
+            entries: []const Entry,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                while (self.index < self.entries.len) {
+                    const e = self.entries[self.index];
+                    self.index += 1;
+                    if (e.occupied) return e.key;
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in arbitrary order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .entries = self.inner.entries };
+        }
+
         /// Calls f for each element.
         pub fn forEach(self: *const Self, f: *const fn (T) void) void {
             for (0..self.inner.capacity) |i| {

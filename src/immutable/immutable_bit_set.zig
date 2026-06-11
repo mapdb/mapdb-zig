@@ -93,6 +93,41 @@ pub const ImmutableBitSet = struct {
         return fromMutable(self.allocator, &m);
     }
 
+    /// Pull-based iterator yielding the indices of all set bits in ascending
+    /// order. Non-allocating: scans the backing words with `@ctz`, clearing the
+    /// lowest set bit each step. The iterator borrows the bit set; the source
+    /// must outlive it.
+    pub const Iterator = struct {
+        bit_set: *const ImmutableBitSet,
+        word_index: usize = 0,
+        remaining_word: u64 = 0,
+        started: bool = false,
+
+        pub fn next(self: *Iterator) ?usize {
+            const words = self.bit_set.words;
+            if (!self.started) {
+                self.started = true;
+                self.remaining_word = if (words.len > 0) words[0] else 0;
+            }
+            while (true) {
+                if (self.remaining_word != 0) {
+                    const tz: usize = @ctz(self.remaining_word);
+                    self.remaining_word &= self.remaining_word - 1;
+                    return self.word_index * BITS_PER_WORD + tz;
+                }
+                self.word_index += 1;
+                if (self.word_index >= words.len) return null;
+                self.remaining_word = words[self.word_index];
+            }
+        }
+    };
+
+    /// Returns a pull-based iterator over the indices of all set bits in
+    /// ascending order. Non-allocating.
+    pub fn iterator(self: *const ImmutableBitSet) Iterator {
+        return .{ .bit_set = self };
+    }
+
     pub fn eql(self: *const ImmutableBitSet, other: *const ImmutableBitSet) bool {
         if (self.bit_length != other.bit_length) return false;
         const n = @min(self.words.len, other.words.len);

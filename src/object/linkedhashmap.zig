@@ -86,6 +86,32 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
             }
         }
 
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        /// Pull-based iterator yielding `{ key, value }` entries in insertion
+        /// order. Non-allocating: indexes the backing array hash map's parallel
+        /// `keys()`/`values()` slices. The iterator borrows the map; do not
+        /// mutate while iterating.
+        pub const Iterator = struct {
+            keys: []const K,
+            values: []const V,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                if (self.index >= self.keys.len) return null;
+                const e = IterEntry{ .key = self.keys[self.index], .value = self.values[self.index] };
+                self.index += 1;
+                return e;
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` entries in
+        /// insertion order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .keys = self.inner.keys(), .values = self.inner.values() };
+        }
+
         pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
             const keys = self.inner.keys();
             const values = self.inner.values();

@@ -127,6 +127,27 @@ pub fn ArrayStack(comptime T: type) type {
 
         // ---- Iteration ----
 
+        /// Pull-based iterator yielding each element by value in bottom-to-top
+        /// order (matching `forEach`). Non-allocating: indexes directly into the
+        /// backing slice. The iterator borrows the stack; do not mutate while iterating.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in bottom-to-top
+        /// order (same order as `forEach`). Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.items.items };
+        }
+
         /// Calls f for each element (bottom to top).
         pub fn forEach(self: *const Self, f: *const fn (T) void) void {
             for (self.items.items) |item| f(item);

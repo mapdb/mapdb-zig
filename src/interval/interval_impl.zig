@@ -109,6 +109,29 @@ pub fn Interval(comptime T: type) type {
             return result;
         }
 
+        /// Pull-based iterator yielding each element in order (`from`,
+        /// `from + step`, … up to and including `to`) — the same sequence as
+        /// `get(0)`, `get(1)`, … and as `toSlice`. Non-allocating: computes each
+        /// value by index, materialising nothing. Holds the interval by value (a
+        /// virtual collection with no backing storage), so it is unaffected by
+        /// the source going out of scope.
+        pub const Iterator = struct {
+            interval: Self,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                const v = self.interval.get(self.index) orelse return null;
+                self.index += 1;
+                return v;
+            }
+        };
+
+        /// Returns a pull-based iterator over the interval's elements in order
+        /// (same sequence as `toSlice`). Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .interval = self.* };
+        }
+
         /// Returns a reversed interval. Panics for the minimum signed
         /// step: negating `std.math.minInt(T)` overflows.
         pub fn reversed(self: *const Self) Self {

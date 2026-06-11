@@ -67,6 +67,28 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             }
         }
 
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        /// Pull-based iterator yielding `{ key, value }` entries in arbitrary
+        /// (hash-table) order. Non-allocating: wraps the backing
+        /// `AutoHashMapUnmanaged` entry iterator. The iterator borrows the map;
+        /// do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: Map.Iterator,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                const entry = self.inner.next() orelse return null;
+                return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` entries in
+        /// arbitrary order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
             const slice = allocator.alloc(K, self.inner.count()) catch @panic("out of memory");
             var it = self.inner.iterator();

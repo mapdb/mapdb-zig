@@ -171,6 +171,25 @@ pub fn TreeSet(comptime T: type) type {
 
         // ---- Iteration ----
 
+        /// Pull-based iterator yielding each element by value in ascending
+        /// (in-order) sorted order. Non-allocating: wraps the treap's
+        /// `InorderIterator`, which threads the tree via node child pointers with
+        /// no heap allocation. The iterator borrows the set; do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: TreapType.InorderIterator,
+
+            pub fn next(self: *Iterator) ?T {
+                const node = self.inner.next() orelse return null;
+                return node.key;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in ascending sorted
+        /// order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = TreapType.InorderIterator{ .current = self.treap.getMin() } };
+        }
+
         pub fn forEach(self: *const Self, f: *const fn (T) void) void {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| f(node.key);

@@ -116,6 +116,42 @@ pub fn ImmutableHashBag(comptime T: type) type {
             return &[_]T{};
         }
 
+        const InnerEntry = @import("../hash_table.zig").MapEntry(T, usize);
+
+        /// Pull-based iterator yielding each element by value, repeated once per
+        /// occurrence (matching the mutable `HashBag` iterator), in arbitrary
+        /// (hash-table) order. Non-allocating: walks the inner snapshot
+        /// count-map's occupied slots directly, tracking remaining occurrences.
+        pub const Iterator = struct {
+            entries: []const InnerEntry,
+            index: usize = 0,
+            remaining: usize = 0,
+            current: T = undefined,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.remaining > 0) {
+                    self.remaining -= 1;
+                    return self.current;
+                }
+                while (self.index < self.entries.len) {
+                    const e = self.entries[self.index];
+                    self.index += 1;
+                    if (e.occupied and e.value > 0) {
+                        self.current = e.key;
+                        self.remaining = e.value - 1;
+                        return e.key;
+                    }
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based iterator yielding each element repeated by its
+        /// occurrence count, in arbitrary order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .entries = self.counts.entries };
+        }
+
         pub fn toMutable(self: *const Self) Mutable {
             var mutable = Mutable.init(self.allocator);
             for (0..self.counts.capacity) |i| {

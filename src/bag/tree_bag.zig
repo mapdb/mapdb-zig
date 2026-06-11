@@ -211,6 +211,36 @@ pub fn TreeBag(comptime T: type) type {
 
         // ---- Iteration ----
 
+        /// Pull-based iterator yielding each element by value, repeated once per
+        /// occurrence (matching `forEach`), in ascending sorted order.
+        /// Non-allocating: wraps the treap's `InorderIterator` (which threads the
+        /// tree via node child pointers with no heap allocation) and tracks how
+        /// many occurrences of the current value remain. The iterator borrows the
+        /// bag; do not mutate while iterating.
+        pub const Iterator = struct {
+            inner: TreapType.InorderIterator,
+            remaining: usize = 0,
+            current: T = undefined,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.remaining > 0) {
+                    self.remaining -= 1;
+                    return self.current;
+                }
+                const node = self.inner.next() orelse return null;
+                self.current = node.key;
+                self.remaining = bagNodeFromTreapNode(node).occ - 1;
+                return node.key;
+            }
+        };
+
+        /// Returns a pull-based iterator yielding each element repeated by its
+        /// occurrence count (same elements as `forEach`), in ascending sorted
+        /// order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .inner = TreapType.InorderIterator{ .current = self.treap.getMin() } };
+        }
+
         /// Calls f(value) for each element (including duplicates).
         pub fn forEach(self: *const Self, f: *const fn (T) void) void {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };

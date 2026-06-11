@@ -178,6 +178,50 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             self.inOrder(n.right, f);
         }
 
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        /// Pull-based iterator yielding `{ key, value }` entries in ascending
+        /// (in-order) sorted key order. Non-allocating: performs a classic
+        /// parent-pointer in-order traversal (leftmost node, then repeatedly the
+        /// in-order successor) over the red-black tree's `left`/`right`/`parent`
+        /// links — no recursion stack, no heap. The iterator borrows the map; do
+        /// not mutate while iterating.
+        pub const Iterator = struct {
+            current: ?*Node,
+
+            fn leftmost(node: *Node) *Node {
+                var n = node;
+                while (n.left) |l| n = l;
+                return n;
+            }
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                const node = self.current orelse return null;
+                const entry = IterEntry{ .key = node.key, .value = node.value };
+                // Advance to the in-order successor.
+                if (node.right) |r| {
+                    self.current = leftmost(r);
+                } else {
+                    var n = node;
+                    var p = n.parent;
+                    while (p != null and n == p.?.right) {
+                        n = p.?;
+                        p = n.parent;
+                    }
+                    self.current = p;
+                }
+                return entry;
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` entries in
+        /// ascending sorted key order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            const start = if (self.root) |r| minNode(r) else null;
+            return .{ .current = start };
+        }
+
         pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
             const slice = allocator.alloc(K, self.size) catch @panic("out of memory");
             var i: usize = 0;

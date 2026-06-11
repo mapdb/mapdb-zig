@@ -149,6 +149,27 @@ pub const BitSet = struct {
         }
     }
 
+    /// Pull-based iterator yielding the indices of all set bits in ascending
+    /// order — the same sequence as `toOwnedSlice`, without allocating. Wraps
+    /// `nextSetBit`. The iterator borrows the bit set; do not mutate while
+    /// iterating.
+    pub const Iterator = struct {
+        bit_set: *const BitSet,
+        next_from: usize = 0,
+
+        pub fn next(self: *Iterator) ?usize {
+            const bit = self.bit_set.nextSetBit(self.next_from) orelse return null;
+            self.next_from = bit + 1;
+            return bit;
+        }
+    };
+
+    /// Returns a pull-based iterator over the indices of all set bits in
+    /// ascending order (same sequence as `toOwnedSlice`). Non-allocating.
+    pub fn iterator(self: *const BitSet) Iterator {
+        return .{ .bit_set = self };
+    }
+
     /// Returns indices of all set bits, ascending. Caller frees.
     pub fn toOwnedSlice(self: *const BitSet, allocator: Allocator) []usize {
         var out = std.ArrayListUnmanaged(usize){};

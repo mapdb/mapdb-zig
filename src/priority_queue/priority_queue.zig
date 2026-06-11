@@ -127,6 +127,28 @@ pub fn PriorityQueue(comptime T: type) type {
             return self.items.items;
         }
 
+        /// Pull-based iterator yielding each element by value in internal heap-array
+        /// order (NOT priority/sorted order — mirrors `slice()`). Non-allocating:
+        /// indexes directly into the backing array. The iterator borrows the queue;
+        /// do not mutate while iterating. For sorted draining use `drainSorted`.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in internal heap-array
+        /// order (NOT sorted). Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.items.items };
+        }
+
         /// Drains the heap into a caller-owned slice in ascending order.
         pub fn drainSorted(self: *Self, allocator: Allocator) []T {
             const out = allocator.alloc(T, self.items.items.len) catch @panic("out of memory");

@@ -101,6 +101,28 @@ pub fn ImmutableHashSet(comptime T: type) type {
             return self.items.len == 0;
         }
 
+        /// Pull-based iterator yielding each element by value. The immutable hash
+        /// set is backed by an owned snapshot slice, so iteration order is the
+        /// fixed order captured at construction. Non-allocating: indexes directly
+        /// into the owned backing slice.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in the snapshot's
+        /// fixed order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.items };
+        }
+
         pub fn contains(self: *const Self, value: T) bool {
             for (self.items) |item| {
                 if (elemEql(T, item, value)) return true;

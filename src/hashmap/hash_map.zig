@@ -196,6 +196,34 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         // ---- Iteration ----
 
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        const InnerEntry = @import("../hash_table.zig").MapEntry(K, V);
+
+        /// Pull-based iterator yielding `{ key, value }` entries in arbitrary
+        /// (hash-table) order. Non-allocating: walks the inner table's occupied
+        /// slots directly. The iterator borrows the map; do not mutate while iterating.
+        pub const Iterator = struct {
+            entries: []const InnerEntry,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                while (self.index < self.entries.len) {
+                    const e = self.entries[self.index];
+                    self.index += 1;
+                    if (e.occupied) return .{ .key = e.key, .value = e.value };
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` entries in
+        /// arbitrary order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .entries = self.inner.entries };
+        }
+
         pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
             self.inner.forEach(f);
         }

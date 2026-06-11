@@ -68,6 +68,27 @@ pub fn LinkedHashSet(comptime T: type) type {
             }
         }
 
+        /// Pull-based iterator yielding each element by value in insertion order.
+        /// Non-allocating: indexes the backing array hash map's `keys()` slice.
+        /// The iterator borrows the set; do not mutate while iterating.
+        pub const Iterator = struct {
+            keys: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.keys.len) return null;
+                const k = self.keys[self.index];
+                self.index += 1;
+                return k;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in insertion order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .keys = self.inner.keys() };
+        }
+
         pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
             for (self.inner.keys()) |k| {
                 if (predicate(k)) return true;

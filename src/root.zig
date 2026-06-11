@@ -4,7 +4,6 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
-
 pub const allocator_config = @import("allocator_config.zig");
 pub const hash_table = @import("hash_table.zig");
 pub const float_order = @import("float_order.zig");
@@ -53,6 +52,7 @@ comptime {
     _ = @import("bag/tree_bag.zig");
     _ = @import("bitset/bitset.zig");
     _ = @import("containers_test.zig");
+    _ = @import("iterator_test.zig");
     _ = @import("deque/deque.zig");
     _ = @import("deque/array_deque.zig");
     _ = @import("hashmap/hashmap.zig");

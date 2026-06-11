@@ -86,6 +86,27 @@ pub fn ArrayList(comptime T: type) type {
             }
         }
 
+        /// Pull-based iterator yielding each element by value in insertion order.
+        /// Non-allocating: indexes directly into the backing slice. The iterator
+        /// borrows the list; do not mutate while iterating.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in insertion order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.inner.items };
+        }
+
         pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
             var result = Self.init(self.allocator);
             for (self.inner.items) |item| {

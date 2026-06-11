@@ -116,6 +116,27 @@ pub fn ArrayDeque(comptime T: type) type {
             return out;
         }
 
+        /// Pull-based iterator yielding each element by value in front-to-back
+        /// order (matching `forEach`). Non-allocating: indexes directly into the
+        /// backing slice. The iterator borrows the deque; do not mutate while iterating.
+        pub const Iterator = struct {
+            items: []const T,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.items.len) return null;
+                const item = self.items[self.index];
+                self.index += 1;
+                return item;
+            }
+        };
+
+        /// Returns a pull-based iterator over the elements in front-to-back
+        /// order (same order as `forEach`). Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .items = self.items.items };
+        }
+
         pub fn forEach(self: *const Self, f: *const fn (T) void) void {
             for (self.items.items) |value| f(value);
         }

@@ -158,6 +158,44 @@ pub fn HashBag(comptime T: type) type {
 
         // ---- Iteration ----
 
+        const InnerEntry = @import("../hash_table.zig").MapEntry(T, usize);
+
+        /// Pull-based iterator yielding each element by value, repeated once per
+        /// occurrence (matching `forEach`), in arbitrary (hash-table) order.
+        /// Non-allocating: walks the inner count-map's occupied slots directly,
+        /// tracking how many occurrences of the current value remain to be
+        /// yielded. The iterator borrows the bag; do not mutate while iterating.
+        pub const Iterator = struct {
+            entries: []const InnerEntry,
+            index: usize = 0,
+            remaining: usize = 0,
+            current: T = undefined,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.remaining > 0) {
+                    self.remaining -= 1;
+                    return self.current;
+                }
+                while (self.index < self.entries.len) {
+                    const e = self.entries[self.index];
+                    self.index += 1;
+                    if (e.occupied and e.value > 0) {
+                        self.current = e.key;
+                        self.remaining = e.value - 1;
+                        return e.key;
+                    }
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based iterator yielding each element repeated by its
+        /// occurrence count (same elements as `forEach`), in arbitrary order.
+        /// Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .entries = self.counts.entries };
+        }
+
         /// Calls f(value, count) for each distinct value.
         pub fn forEachWithOccurrences(self: *const Self, f: *const fn (T, usize) void) void {
             for (0..self.counts.capacity) |i| {

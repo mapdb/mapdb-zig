@@ -187,6 +187,32 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         // ---- Iteration ----
 
+        /// An entry yielded by `Iterator` — key and value by value.
+        pub const IterEntry = struct { key: K, value: V };
+
+        /// Pull-based iterator yielding `{ key, value }` entries in ascending
+        /// sorted key order. Non-allocating: indexes the parallel sorted
+        /// keys/values backing slices. The iterator borrows the map; do not
+        /// mutate while iterating.
+        pub const Iterator = struct {
+            keys: []const K,
+            vals: []const V,
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?IterEntry {
+                if (self.index >= self.keys.len) return null;
+                const e = IterEntry{ .key = self.keys[self.index], .value = self.vals[self.index] };
+                self.index += 1;
+                return e;
+            }
+        };
+
+        /// Returns a pull-based iterator over `{ key, value }` entries in
+        /// ascending sorted key order. Non-allocating.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .keys = self.keys.items, .vals = self.vals.items };
+        }
+
         pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
             for (self.keys.items, self.vals.items) |k, val| f(k, val);
         }
