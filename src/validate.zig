@@ -25,6 +25,8 @@ const F32HashSet = @import("hashset/hashset.zig").F32HashSet;
 const F32TreeSet = @import("treeset/treeset.zig").F32TreeSet;
 const F32ArrayList = @import("arraylist/arraylist.zig").F32ArrayList;
 const I64I32HashMap = @import("hashmap/hashmap.zig").I64I32HashMap;
+const I64I32ListMultimap = @import("multimap/multimap.zig").I64I32ListMultimap;
+const I64I32SetMultimap = @import("multimap/multimap.zig").I64I32SetMultimap;
 
 const CollectionKind = enum {
     hash_map,
@@ -986,6 +988,22 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "ListMultimap<i64, i32>")) {
+        var m = I64I32ListMultimap.init(allocator);
+        defer m.deinit();
+        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "SetMultimap<i64, i32>")) {
+        var m = I64I32SetMultimap.init(allocator);
+        defer m.deinit();
+        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         std.debug.print("Unknown collection type: {s}\n", .{collection_type});
@@ -1522,6 +1540,153 @@ fn emitI64(
             try ew.writeAll("]");
         },
         else => @panic("unexpected i64 assertion expected value"),
+    }
+    if (!std.mem.eql(u8, computed, ebuf.items)) {
+        try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+        any_fail = true;
+    }
+}
+
+// ── {List,Set}Multimap<i64, i32> runner ─────────────────────────────────────
+//
+// Routes through the PRODUCTION I64I32{List,Set}Multimap. These back onto Zig's
+// std AutoHashMap (the STDLIB hasher), NOT the production OpenHashMap high-bit
+// fold — so this verifies full-range i64 keys keep their identity (stay distinct
+// and retrievable) through the stdlib map. It checks key identity, not
+// bucket-distribution quality. List keeps duplicate values; Set dedups.
+// i64 KEYS are decimal STRINGS (exceed 2^53)
+// parsed via parseI64Operand — never via f64. Generic over the multimap type:
+// both expose put / get(k)->[]const i32 / removeAll / containsKey / keysCount /
+// uniqueKeys(allocator).
+//
+// Assertions (identical to the other ports):
+//   distinct_key_count -> keysCount() (integer string)
+//   sorted_keys        -> DISTINCT keys, ascending i64, quoted decimal strings
+//   get_<k>            -> values for the key, ascending-sorted i32 array (sort a
+//                         COPY); absent/removed => []
+//   contains_key_<k>   -> bool
+fn runI64Multimap(
+    comptime M: type,
+    m: *M,
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const k = parseI64Operand(obj.get("key").?);
+            const v = @as(i32, @intCast(obj.get("value").?.integer));
+            m.put(k, v);
+        } else if (std.mem.eql(u8, op_name, "removeAll")) {
+            _ = m.removeAll(parseI64Operand(obj.get("key").?));
+        } else {
+            @panic("unknown i64-multimap op");
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        var known = true;
+        if (std.mem.eql(u8, key, "distinct_key_count")) {
+            try vw.print("{d}", .{m.keysCount()});
+        } else if (std.mem.eql(u8, key, "sorted_keys")) {
+            // DISTINCT keys, ascending i64, each a quoted decimal string —
+            // same serialization as the i64-HashMap sorted_keys. uniqueKeys
+            // allocates; free it.
+            const keys = m.uniqueKeys(allocator);
+            defer allocator.free(keys);
+            std.mem.sort(i64, keys, {}, struct {
+                pub fn lt(_: void, a: i64, b: i64) bool {
+                    return a < b;
+                }
+            }.lt);
+            try vw.writeAll("[");
+            for (keys, 0..) |k, i| {
+                if (i > 0) try vw.writeAll(",");
+                try vw.print("\"{d}\"", .{k});
+            }
+            try vw.writeAll("]");
+        } else if (std.mem.startsWith(u8, key, "get_")) {
+            const k = std.fmt.parseInt(i64, key[4..], 10) catch @panic("bad get_ i64 suffix");
+            // get() returns a BORROWED slice; copy before sorting (sort a COPY).
+            const src = m.get(k);
+            const vals = try allocator.alloc(i32, src.len);
+            defer allocator.free(vals);
+            @memcpy(vals, src);
+            std.mem.sort(i32, vals, {}, struct {
+                pub fn lt(_: void, a: i32, b: i32) bool {
+                    return a < b;
+                }
+            }.lt);
+            try vw.writeAll("[");
+            for (vals, 0..) |v, i| {
+                if (i > 0) try vw.writeAll(",");
+                try vw.print("{d}", .{v});
+            }
+            try vw.writeAll("]");
+        } else if (std.mem.startsWith(u8, key, "contains_key_")) {
+            const k = std.fmt.parseInt(i64, key[13..], 10) catch @panic("bad contains_key_ i64 suffix");
+            try vw.print("{s}", .{if (m.containsKey(k)) "true" else "false"});
+        } else {
+            known = false;
+        }
+        if (!known) continue; // unknown key -> skip
+        try emitI64Multimap(name, key, vbuf.items, expected, allocator, writer);
+    }
+}
+
+// Print a precomputed i64-multimap assertion value and compare against the
+// expected JSON value. `sorted_keys` expected is a decimal-string array
+// (rendered quoted); `get_<k>` is a plain i32 array (rendered UNQUOTED);
+// scalars are integers/bools.
+fn emitI64Multimap(
+    name: []const u8,
+    key: []const u8,
+    computed: []const u8,
+    expected: std.json.Value,
+    allocator: Allocator,
+    stdout: anytype,
+) !void {
+    try stdout.print("{s}: {s}\n", .{ key, computed });
+    var ebuf = std.array_list.Managed(u8).init(allocator);
+    defer ebuf.deinit();
+    const ew = ebuf.writer();
+    const is_keys = std.mem.eql(u8, key, "sorted_keys");
+    switch (expected) {
+        .bool => |b| try ew.writeAll(if (b) "true" else "false"),
+        .integer => |i| try ew.print("{d}", .{i}),
+        .number_string => |s| try ew.writeAll(s),
+        .array => |arr| {
+            try ew.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try ew.writeAll(",");
+                if (is_keys) {
+                    // sorted_keys elements are decimal STRINGS — render quoted.
+                    switch (e) {
+                        .string => |s| try ew.print("\"{s}\"", .{s}),
+                        .integer => |n| try ew.print("\"{d}\"", .{n}),
+                        .number_string => |s| try ew.print("\"{s}\"", .{s}),
+                        else => @panic("unexpected sorted_keys element"),
+                    }
+                } else {
+                    // get_<k> value-array elements are plain i32 — UNQUOTED.
+                    switch (e) {
+                        .integer => |n| try ew.print("{d}", .{n}),
+                        .number_string => |s| try ew.writeAll(s),
+                        else => @panic("unexpected get_ value-array element"),
+                    }
+                }
+            }
+            try ew.writeAll("]");
+        },
+        else => @panic("unexpected i64-multimap assertion expected value"),
     }
     if (!std.mem.eql(u8, computed, ebuf.items)) {
         try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
