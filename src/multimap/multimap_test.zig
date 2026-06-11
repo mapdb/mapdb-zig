@@ -243,3 +243,51 @@ test "ListMultimap(i32, i32): ensureUnusedCapacity propagates allocator error" {
     defer m.deinit();
     try std.testing.expectError(error.OutOfMemory, m.ensureUnusedCapacity(1024));
 }
+
+// Scaled KEY-IDENTITY stress test, NOT a hash-distribution test. The multimaps
+// back onto std.AutoHashMap, whose bucket distribution is not observable and
+// whose collisions are functionally invisible, so distribution quality cannot
+// be asserted behaviourally. What IS observable — and what the cross-language
+// validator only checks at 8 keys — is that a large family of keys sharing
+// identical low 32 bits and differing only in the high 32 bits (the family that
+// would collapse under a low-bits-only hash) each survives as a distinct,
+// correctly-valued entry through the AutoHashMap resize path.
+fn highBitKey(i: i64) i64 {
+    return (i << 32) | 1; // 1, 2^32+1, 2*2^32+1, ...
+}
+
+test "ListMultimap(i64, i32): high-32-bit-varying key family stays distinct at scale" {
+    const N: i64 = 5000;
+    var m = ListMultimap(i64, i32).init(std.testing.allocator);
+    defer m.deinit();
+    var i: i64 = 0;
+    while (i < N) : (i += 1) m.put(highBitKey(i), @intCast(i));
+    try std.testing.expectEqual(@as(usize, @intCast(N)), m.keysCount());
+    i = 0;
+    while (i < N) : (i += 1) {
+        const key = highBitKey(i);
+        try std.testing.expect(m.containsKey(key));
+        const vals = m.get(key);
+        try std.testing.expectEqual(@as(usize, 1), vals.len);
+        try std.testing.expectEqual(@as(i32, @intCast(i)), vals[0]);
+    }
+    try std.testing.expect(!m.containsKey(highBitKey(N)));
+}
+
+test "SetMultimap(i64, i32): high-32-bit-varying key family stays distinct at scale" {
+    const N: i64 = 5000;
+    var m = SetMultimap(i64, i32).init(std.testing.allocator);
+    defer m.deinit();
+    var i: i64 = 0;
+    while (i < N) : (i += 1) m.put(highBitKey(i), @intCast(i));
+    try std.testing.expectEqual(@as(usize, @intCast(N)), m.keysCount());
+    i = 0;
+    while (i < N) : (i += 1) {
+        const key = highBitKey(i);
+        try std.testing.expect(m.containsKey(key));
+        const vals = m.get(key);
+        try std.testing.expectEqual(@as(usize, 1), vals.len);
+        try std.testing.expectEqual(@as(i32, @intCast(i)), vals[0]);
+    }
+    try std.testing.expect(!m.containsKey(highBitKey(N)));
+}
