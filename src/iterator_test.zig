@@ -532,6 +532,80 @@ test "object.TreeSet.iterator yields ascending order" {
     try testing.expectEqual(@as(?i32, null), it.next());
 }
 
+// The object RB-tree iterators (TreeMap/TreeSet) are the first consumers to
+// walk the tree by its parent pointers for in-order traversal, so they must
+// survive the rotations and re-links of many inserts and deletes — not just a
+// handful of ascending keys. Stress with a deterministic pseudo-random churn
+// and assert iteration is strictly ascending and matches len() throughout.
+test "object.TreeSet.iterator survives randomized insert/remove churn" {
+    const a = testing.allocator;
+    var s = object.TreeSet(i32).init(a, object.naturalComparator(i32));
+    defer s.deinit();
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rand = prng.random();
+
+    var present = std.AutoHashMapUnmanaged(i32, void){};
+    defer present.deinit(a);
+
+    var op: usize = 0;
+    while (op < 4000) : (op += 1) {
+        const key = rand.intRangeAtMost(i32, -500, 500);
+        if (rand.boolean()) {
+            if (s.add(key)) try present.put(a, key, {});
+        } else {
+            if (s.remove(key)) _ = present.remove(key);
+        }
+    }
+
+    try testing.expectEqual(present.count(), s.len());
+    var it = s.iterator();
+    var count: usize = 0;
+    var prev: ?i32 = null;
+    while (it.next()) |v| {
+        if (prev) |p| try testing.expect(v > p); // strictly ascending, no dups
+        try testing.expect(present.contains(v));
+        prev = v;
+        count += 1;
+    }
+    try testing.expectEqual(s.len(), count);
+}
+
+test "object.TreeMap.iterator survives randomized insert/remove churn" {
+    const a = testing.allocator;
+    var m = object.TreeMap(i32, i64).init(a, object.naturalComparator(i32));
+    defer m.deinit();
+    var prng = std.Random.DefaultPrng.init(0xBADF00D);
+    const rand = prng.random();
+
+    var expected = std.AutoHashMapUnmanaged(i32, i64){};
+    defer expected.deinit(a);
+
+    var op: usize = 0;
+    while (op < 4000) : (op += 1) {
+        const key = rand.intRangeAtMost(i32, -500, 500);
+        if (rand.boolean()) {
+            const value: i64 = @as(i64, key) * 7;
+            _ = m.put(key, value);
+            try expected.put(a, key, value);
+        } else {
+            _ = m.remove(key);
+            _ = expected.remove(key);
+        }
+    }
+
+    try testing.expectEqual(expected.count(), m.len());
+    var it = m.iterator();
+    var count: usize = 0;
+    var prev: ?i32 = null;
+    while (it.next()) |e| {
+        if (prev) |p| try testing.expect(e.key > p); // strictly ascending keys
+        try testing.expectEqual(expected.get(e.key), @as(?i64, e.value));
+        prev = e.key;
+        count += 1;
+    }
+    try testing.expectEqual(m.len(), count);
+}
+
 fn hashI32(x: i32) u64 {
     return @as(u64, @bitCast(@as(i64, x)));
 }
