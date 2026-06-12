@@ -86,7 +86,7 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const M = HashMap(K, V);
-            var m = M.init(std.testing.allocator);
+            var m = try M.init(std.testing.allocator);
             defer m.deinit();
 
             const ks = samples(K);
@@ -96,8 +96,8 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
             // never assert "2 entries" for a key type with only one usable slot.
             const distinct_keys: usize = if (K == bool) 1 else 2;
 
-            _ = m.put(ks[0], vs[0]);
-            if (distinct_keys == 2) _ = m.put(ks[1], vs[1]);
+            _ = try m.put(ks[0], vs[0]);
+            if (distinct_keys == 2) _ = try m.put(ks[1], vs[1]);
 
             try std.testing.expectEqual(@as(?V, vs[0]), m.get(ks[0]));
             try std.testing.expect(m.containsKey(ks[0]));
@@ -123,32 +123,33 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
             try std.testing.expect(!m.containsKey(ks[0]));
 
             // select / reject over a freshly populated map
-            _ = m.put(ks[0], vs[0]);
-            if (distinct_keys == 2) _ = m.put(ks[1], vs[1]);
+            _ = try m.put(ks[0], vs[0]);
+            if (distinct_keys == 2) _ = try m.put(ks[1], vs[1]);
             const keep_all = struct {
-                fn f(_: K, _: V) bool {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f;
             const drop_all = struct {
-                fn f(_: K, _: V) bool {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f;
-            var sel = m.select(keep_all);
+            var ctx: u8 = 0;
+            var sel = try m.select(&ctx, keep_all);
             defer sel.deinit();
             try std.testing.expectEqual(@as(usize, distinct_keys), sel.len());
-            var rej = m.reject(drop_all);
+            var rej = try m.reject(&ctx, drop_all);
             defer rej.deinit();
             try std.testing.expectEqual(@as(usize, 0), rej.len());
 
             // count via iteration helper
             const counter = struct {
-                fn f(_: K, _: V) bool {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f;
-            try std.testing.expectEqual(distinct_keys, m.count(counter));
+            try std.testing.expectEqual(distinct_keys, m.count(&ctx, counter));
 
             m.clear();
             try std.testing.expect(m.isEmpty());
@@ -160,15 +161,15 @@ test "HashBiMap: parameterized forward+reverse round-trip over full axis" {
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const B = HashBiMap(K, V);
-            var m = B.init(std.testing.allocator);
+            var m = try B.init(std.testing.allocator);
             defer m.deinit();
 
             const ks = samples(K);
             const vs = samples(V);
             const distinct: usize = if (K == bool or V == bool) 1 else 2;
 
-            _ = m.put(ks[0], vs[0]);
-            if (distinct == 2) _ = m.put(ks[1], vs[1]);
+            _ = try m.put(ks[0], vs[0]);
+            if (distinct == 2) _ = try m.put(ks[1], vs[1]);
 
             // forward + reverse lookups
             try std.testing.expectEqual(@as(?V, vs[0]), m.get(ks[0]));
@@ -186,7 +187,7 @@ test "HashBiMap: parameterized forward+reverse round-trip over full axis" {
             }
 
             // inverse swaps key/value type and content
-            var inv = m.inverse();
+            var inv = try m.inverse();
             defer inv.deinit();
             try std.testing.expectEqual(@as(?K, ks[0]), inv.get(vs[0]));
 
@@ -201,11 +202,11 @@ test "HashBiMap: parameterized forward+reverse round-trip over full axis" {
 // ---------------------------------------------------------------------------
 
 test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
-    var m = agg.I32I32HashMap.init(std.testing.allocator);
+    var m = try agg.I32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
-    _ = m.put(3, 30);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
+    _ = try m.put(3, 30);
     try std.testing.expectEqual(@as(?i32, 10), m.get(1));
     try std.testing.expectEqual(@as(usize, 3), m.size());
     try std.testing.expectEqual(@as(i64, 60), m.sumOfValues());
@@ -215,69 +216,69 @@ test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
 }
 
 test "F32I32HashMap: NaN key and +/-0 key distinctness" {
-    var m = agg.F32I32HashMap.init(std.testing.allocator);
+    var m = try agg.F32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
 
     const nan = std.math.nan(f32);
-    _ = m.put(nan, 1);
+    _ = try m.put(nan, 1);
     // A NaN key must be retrievable by an identical-bit NaN (NaN-aware keyEql).
     try std.testing.expectEqual(@as(?i32, 1), m.get(nan));
 
     // +0.0 and -0.0 are distinct keys under total-order key equality.
-    _ = m.put(0.0, 100);
-    _ = m.put(-0.0, 200);
+    _ = try m.put(0.0, 100);
+    _ = try m.put(-0.0, 200);
     try std.testing.expectEqual(@as(?i32, 100), m.get(0.0));
     try std.testing.expectEqual(@as(?i32, 200), m.get(-0.0));
     try std.testing.expectEqual(@as(usize, 3), m.size());
 }
 
 test "F32F32HashMap: eql uses bit equality for float values" {
-    var a = agg.F32F32HashMap.init(std.testing.allocator);
+    var a = try agg.F32F32HashMap.init(std.testing.allocator);
     defer a.deinit();
-    var b = agg.F32F32HashMap.init(std.testing.allocator);
+    var b = try agg.F32F32HashMap.init(std.testing.allocator);
     defer b.deinit();
     const nan = std.math.nan(f32);
-    _ = a.put(1.0, nan);
-    _ = b.put(1.0, nan);
+    _ = try a.put(1.0, nan);
+    _ = try b.put(1.0, nan);
     // identical NaN bits => equal
     try std.testing.expect(a.eql(&b));
 
-    var c = agg.F32F32HashMap.init(std.testing.allocator);
+    var c = try agg.F32F32HashMap.init(std.testing.allocator);
     defer c.deinit();
-    _ = c.put(1.0, 0.0);
-    var d = agg.F32F32HashMap.init(std.testing.allocator);
+    _ = try c.put(1.0, 0.0);
+    var d = try agg.F32F32HashMap.init(std.testing.allocator);
     defer d.deinit();
-    _ = d.put(1.0, -0.0);
+    _ = try d.put(1.0, -0.0);
     // +0.0 vs -0.0 differ in bits => not equal
     try std.testing.expect(!c.eql(&d));
 }
 
 test "I64I32HashMap: high-bit-fold spread {1, 2^32+1} do not collide" {
-    var m = agg.I64I32HashMap.init(std.testing.allocator);
+    var m = try agg.I64I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     const a: i64 = 1;
     const b: i64 = (@as(i64, 1) << 32) + 1; // 2^32 + 1, differs from `a` only in the high 32 bits
-    _ = m.put(a, 111);
-    _ = m.put(b, 222);
+    _ = try m.put(a, 111);
+    _ = try m.put(b, 222);
     try std.testing.expectEqual(@as(usize, 2), m.size());
     try std.testing.expectEqual(@as(?i32, 111), m.get(a));
     try std.testing.expectEqual(@as(?i32, 222), m.get(b));
 }
 
 test "I32F64HashMap: float-value sumOfValues and addToValue add (not wrap)" {
-    var m = agg.I32F64HashMap.init(std.testing.allocator);
+    var m = try agg.I32F64HashMap.init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put(1, 1.5);
-    _ = m.put(2, 2.5);
+    _ = try m.put(1, 1.5);
+    _ = try m.put(2, 2.5);
     try std.testing.expectEqual(@as(f64, 4.0), m.sumOfValues());
     try std.testing.expectEqual(@as(f64, 3.0), m.addToValue(1, 1.5));
 }
 
 test "I32I32HashBiMap: inverse returns swapped-type map" {
-    var m = agg.I32I32HashBiMap.init(std.testing.allocator);
+    var m = try agg.I32I32HashBiMap.init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put(1, 100);
-    var inv = m.inverse();
+    _ = try m.put(1, 100);
+    var inv = try m.inverse();
     defer inv.deinit();
     try std.testing.expectEqual(@as(?i32, 1), inv.get(100));
     // inverse() type is HashBiMap(V, K); for symmetric (i32,i32) it is the
@@ -286,10 +287,10 @@ test "I32I32HashBiMap: inverse returns swapped-type map" {
 }
 
 test "I32F32HashBiMap: inverse returns F32I32HashBiMap (transposed type)" {
-    var m = agg.I32F32HashBiMap.init(std.testing.allocator);
+    var m = try agg.I32F32HashBiMap.init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put(7, 1.25);
-    var inv = m.inverse();
+    _ = try m.put(7, 1.25);
+    var inv = try m.inverse();
     defer inv.deinit();
     try std.testing.expectEqual(agg.F32I32HashBiMap, @TypeOf(inv));
     try std.testing.expectEqual(@as(?i32, 7), inv.get(1.25));

@@ -129,11 +129,11 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
             const vs = samples(V);
             const distinct: usize = if (K == bool) 1 else 2;
 
-            var mm = M.init(std.testing.allocator);
-            _ = mm.put(ks[0], vs[0]);
-            if (distinct == 2) _ = mm.put(ks[1], vs[1]);
+            var mm = try M.init(std.testing.allocator);
+            _ = try mm.put(ks[0], vs[0]);
+            if (distinct == 2) _ = try mm.put(ks[1], vs[1]);
 
-            var im = ImmutableHashMap(K, V).fromMutable(std.testing.allocator, &mm);
+            var im = try ImmutableHashMap(K, V).fromMutable(std.testing.allocator, &mm);
             defer im.deinit();
 
             // Snapshot is independent: mutate the source after the snapshot.
@@ -148,16 +148,16 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
             try std.testing.expectEqual(vs[0], im.getOrDefault(ks[0], vs[1]));
 
             // eql against an identical snapshot.
-            var mm2 = M.init(std.testing.allocator);
-            _ = mm2.put(ks[0], vs[0]);
-            if (distinct == 2) _ = mm2.put(ks[1], vs[1]);
-            var im2 = ImmutableHashMap(K, V).fromMutable(std.testing.allocator, &mm2);
+            var mm2 = try M.init(std.testing.allocator);
+            _ = try mm2.put(ks[0], vs[0]);
+            if (distinct == 2) _ = try mm2.put(ks[1], vs[1]);
+            var im2 = try ImmutableHashMap(K, V).fromMutable(std.testing.allocator, &mm2);
             defer im2.deinit();
             mm2.deinit();
             try std.testing.expect(im.eql(&im2));
 
             // toMutable yields an independent mutable copy.
-            var back = im.toMutable();
+            var back = try im.toMutable();
             defer back.deinit();
             try std.testing.expectEqual(@as(usize, distinct), back.len());
         }
@@ -167,7 +167,7 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
 test "ImmutableArrayList: parameterized read ops + numeric-gated sum/min/max" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var il = ImmutableArrayList(T).of(std.testing.allocator, &vs);
+        var il = try ImmutableArrayList(T).of(std.testing.allocator, &vs);
         defer il.deinit();
 
         try std.testing.expectEqual(@as(usize, 3), il.len());
@@ -193,11 +193,11 @@ test "ImmutableArrayList: parameterized read ops + numeric-gated sum/min/max" {
         }
 
         // eql against an identical list.
-        var il2 = ImmutableArrayList(T).of(std.testing.allocator, &vs);
+        var il2 = try ImmutableArrayList(T).of(std.testing.allocator, &vs);
         defer il2.deinit();
         try std.testing.expect(il.eql(&il2));
 
-        var back = il.toMutable();
+        var back = try il.toMutable();
         defer back.deinit();
         try std.testing.expectEqual(@as(usize, 3), back.len());
     }
@@ -209,16 +209,16 @@ test "ImmutableHashSet: parameterized dedup / contains / fromMutable independenc
         const vs = samples(T);
         const distinct: usize = if (T == bool) 2 else 3;
 
-        var ms = S.init(std.testing.allocator);
-        for (vs) |v| _ = ms.add(v);
-        var is = ImmutableHashSet(T).fromMutable(std.testing.allocator, &ms);
+        var ms = try S.init(std.testing.allocator);
+        for (vs) |v| _ = try ms.add(v);
+        var is = try ImmutableHashSet(T).fromMutable(std.testing.allocator, &ms);
         defer is.deinit();
         ms.deinit();
 
         try std.testing.expectEqual(distinct, is.len());
         try std.testing.expect(is.contains(vs[0]));
 
-        var back = is.toMutable();
+        var back = try is.toMutable();
         defer back.deinit();
         try std.testing.expectEqual(distinct, back.len());
     }
@@ -229,7 +229,7 @@ test "ImmutableHashBag: parameterized occurrence counting + independence" {
         const vs = samples(T);
         // of() with a duplicate of vs[0].
         const data = [_]T{ vs[0], vs[0], vs[1] };
-        var ib = ImmutableHashBag(T).of(std.testing.allocator, &data);
+        var ib = try ImmutableHashBag(T).of(std.testing.allocator, &data);
         defer ib.deinit();
 
         try std.testing.expectEqual(@as(usize, 2), ib.occurrencesOf(vs[0]));
@@ -238,7 +238,7 @@ test "ImmutableHashBag: parameterized occurrence counting + independence" {
         const distinct: usize = if (T == bool) 2 else 2;
         try std.testing.expectEqual(distinct, ib.sizeDistinct());
 
-        var back = ib.toMutable();
+        var back = try ib.toMutable();
         defer back.deinit();
         try std.testing.expectEqual(@as(usize, 3), back.totalSize());
     }
@@ -247,9 +247,9 @@ test "ImmutableHashBag: parameterized occurrence counting + independence" {
 test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var s1 = ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
+        var s1 = try ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
         defer s1.deinit();
-        var s2 = s1.push(vs[1]);
+        var s2 = try s1.push(vs[1]);
         defer s2.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), s1.len());
@@ -257,13 +257,13 @@ test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
         try std.testing.expectEqual(@as(?T, vs[1]), s2.peek());
         try std.testing.expect(s2.contains(vs[0]));
 
-        const r = s2.pop().?;
+        const r = (try s2.pop()).?;
         var s3 = r.stack;
         defer s3.deinit();
         try std.testing.expectEqual(vs[1], r.value);
         try std.testing.expectEqual(@as(usize, 1), s3.len());
 
-        var s4 = ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
+        var s4 = try ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
         defer s4.deinit();
         try std.testing.expect(s1.eql(&s4));
     }
@@ -272,11 +272,11 @@ test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
 test "ImmutableArrayDeque: parameterized withFirst/withLast/without persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var d1 = ImmutableArrayDeque(T).of(std.testing.allocator, &[_]T{vs[1]});
+        var d1 = try ImmutableArrayDeque(T).of(std.testing.allocator, &[_]T{vs[1]});
         defer d1.deinit();
-        var d2 = d1.withFirst(vs[0]);
+        var d2 = try d1.withFirst(vs[0]);
         defer d2.deinit();
-        var d3 = d2.withLast(vs[2]);
+        var d3 = try d2.withLast(vs[2]);
         defer d3.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), d1.len());
@@ -285,13 +285,13 @@ test "ImmutableArrayDeque: parameterized withFirst/withLast/without persistence"
         try std.testing.expectEqual(@as(?T, vs[2]), d3.peekLast());
         try std.testing.expect(d3.contains(vs[1]));
 
-        const rf = d3.withoutFirst().?;
+        const rf = (try d3.withoutFirst()).?;
         var df = rf.deque;
         defer df.deinit();
         try std.testing.expectEqual(vs[0], rf.value);
         try std.testing.expectEqual(@as(usize, 2), df.len());
 
-        const rl = d3.withoutLast().?;
+        const rl = (try d3.withoutLast()).?;
         var dl = rl.deque;
         defer dl.deinit();
         try std.testing.expectEqual(vs[2], rl.value);
@@ -301,18 +301,18 @@ test "ImmutableArrayDeque: parameterized withFirst/withLast/without persistence"
 test "ImmutablePriorityQueue: parameterized heap order + persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var q = ImmutablePriorityQueue(T).of(std.testing.allocator, &vs);
+        var q = try ImmutablePriorityQueue(T).of(std.testing.allocator, &vs);
         defer q.deinit();
         try std.testing.expectEqual(@as(usize, 3), q.len());
         try std.testing.expect(q.peek() != null);
         try std.testing.expect(q.contains(vs[0]));
 
-        var q2 = q.push(vs[2]);
+        var q2 = try q.push(vs[2]);
         defer q2.deinit();
         try std.testing.expectEqual(@as(usize, 3), q.len()); // original untouched
         try std.testing.expectEqual(@as(usize, 4), q2.len());
 
-        const r = q.pop().?;
+        const r = (try q.pop()).?;
         var q3 = r.queue;
         defer q3.deinit();
         try std.testing.expectEqual(@as(usize, 2), q3.len());
@@ -324,44 +324,44 @@ test "ImmutablePriorityQueue: parameterized heap order + persistence" {
 // ---------------------------------------------------------------------------
 
 test "ImmutableF32F32HashMap: eql uses bit equality for float values (NaN, ±0)" {
-    var a = hashmap.F32F32HashMap.init(std.testing.allocator);
+    var a = try hashmap.F32F32HashMap.init(std.testing.allocator);
     defer a.deinit();
     const nan = std.math.nan(f32);
-    _ = a.put(1.0, nan);
-    var ia = ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &a);
+    _ = try a.put(1.0, nan);
+    var ia = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &a);
     defer ia.deinit();
 
-    var b = hashmap.F32F32HashMap.init(std.testing.allocator);
+    var b = try hashmap.F32F32HashMap.init(std.testing.allocator);
     defer b.deinit();
-    _ = b.put(1.0, nan);
-    var ib = ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &b);
+    _ = try b.put(1.0, nan);
+    var ib = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &b);
     defer ib.deinit();
     // identical NaN bits => equal
     try std.testing.expect(ia.eql(&ib));
 
-    var c = hashmap.F32F32HashMap.init(std.testing.allocator);
+    var c = try hashmap.F32F32HashMap.init(std.testing.allocator);
     defer c.deinit();
-    _ = c.put(1.0, 0.0);
-    var ic = ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &c);
+    _ = try c.put(1.0, 0.0);
+    var ic = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &c);
     defer ic.deinit();
 
-    var d = hashmap.F32F32HashMap.init(std.testing.allocator);
+    var d = try hashmap.F32F32HashMap.init(std.testing.allocator);
     defer d.deinit();
-    _ = d.put(1.0, -0.0);
-    var id = ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &d);
+    _ = try d.put(1.0, -0.0);
+    var id = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &d);
     defer id.deinit();
     // +0.0 vs -0.0 differ in bits => not equal
     try std.testing.expect(!ic.eql(&id));
 }
 
 test "ImmutableF32HashMap key: NaN and ±0 distinctness survives snapshot" {
-    var m = hashmap.F32I32HashMap.init(std.testing.allocator);
+    var m = try hashmap.F32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     const nan = std.math.nan(f32);
-    _ = m.put(nan, 1);
-    _ = m.put(0.0, 100);
-    _ = m.put(-0.0, 200);
-    var im = ImmutableHashMap(f32, i32).fromMutable(std.testing.allocator, &m);
+    _ = try m.put(nan, 1);
+    _ = try m.put(0.0, 100);
+    _ = try m.put(-0.0, 200);
+    var im = try ImmutableHashMap(f32, i32).fromMutable(std.testing.allocator, &m);
     defer im.deinit();
     try std.testing.expectEqual(@as(?i32, 1), im.get(nan));
     try std.testing.expectEqual(@as(?i32, 100), im.get(0.0));
@@ -370,7 +370,7 @@ test "ImmutableF32HashMap key: NaN and ±0 distinctness survives snapshot" {
 }
 
 test "ImmutableF32ArrayList: contains uses bit equality (+0.0 != -0.0), totalCmp min/max" {
-    var il = ImmutableArrayList(f32).of(std.testing.allocator, &[_]f32{ 0.0, 2.0, -1.0 });
+    var il = try ImmutableArrayList(f32).of(std.testing.allocator, &[_]f32{ 0.0, 2.0, -1.0 });
     defer il.deinit();
     // +0.0 present, -0.0 absent under bit equality.
     try std.testing.expect(il.contains(0.0));
@@ -382,9 +382,9 @@ test "ImmutableF32ArrayList: contains uses bit equality (+0.0 != -0.0), totalCmp
 
 test "ImmutableF32PriorityQueue: float total-order min-heap via delegation" {
     // -0.0 sorts below +0.0 under total order; smallest must surface at peek.
-    var q = ImmutablePriorityQueue(f32).of(std.testing.allocator, &[_]f32{ 3.0, -0.0, 0.0, 1.0 });
+    var q = try ImmutablePriorityQueue(f32).of(std.testing.allocator, &[_]f32{ 3.0, -0.0, 0.0, 1.0 });
     defer q.deinit();
-    const r = q.pop().?;
+    const r = (try q.pop()).?;
     var q2 = r.queue;
     defer q2.deinit();
     // The popped (smallest) element is -0.0 under total order.
@@ -392,14 +392,14 @@ test "ImmutableF32PriorityQueue: float total-order min-heap via delegation" {
 }
 
 test "ImmutableI8ArrayList: sum widens to i64 (no i8 overflow)" {
-    var il = ImmutableArrayList(i8).of(std.testing.allocator, &[_]i8{ 100, 100, 100 });
+    var il = try ImmutableArrayList(i8).of(std.testing.allocator, &[_]i8{ 100, 100, 100 });
     defer il.deinit();
     // 300 would overflow i8 but the accumulator is i64.
     try std.testing.expectEqual(@as(i64, 300), il.sum());
 }
 
 test "ImmutableI64ArrayList: sum is plain i64 accumulation" {
-    var il = ImmutableArrayList(i64).of(std.testing.allocator, &[_]i64{ 10, 20, 30 });
+    var il = try ImmutableArrayList(i64).of(std.testing.allocator, &[_]i64{ 10, 20, 30 });
     defer il.deinit();
     try std.testing.expectEqual(@as(i64, 60), il.sum());
 }

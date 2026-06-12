@@ -38,16 +38,16 @@ test "Example_HTTPHeaders case-insensitive header map" {
     var headers = object.HashMapWithStrategy([]const u8, []const u8).init(allocator, strat);
     defer headers.deinit();
 
-    _ = headers.put("Content-Type", "application/json");
-    _ = headers.put("Content-Length", "42");
-    _ = headers.put("Authorization", "Bearer xyz");
+    _ = try headers.put("Content-Type", "application/json");
+    _ = try headers.put("Content-Length", "42");
+    _ = try headers.put("Authorization", "Bearer xyz");
 
     // Case-insensitive lookup
     try std.testing.expectEqualStrings("application/json", headers.get("content-type").?);
     try std.testing.expectEqualStrings("Bearer xyz", headers.get("AUTHORIZATION").?);
 
     // Overwriting with different case
-    _ = headers.put("content-TYPE", "text/html");
+    _ = try headers.put("content-TYPE", "text/html");
     try std.testing.expectEqual(@as(usize, 3), headers.len());
     try std.testing.expectEqualStrings("text/html", headers.get("Content-Type").?);
 }
@@ -64,10 +64,10 @@ test "Example_Leaderboard reverse-ordered TreeMap" {
     );
     defer board.deinit();
 
-    _ = board.put(100, "Alice");
-    _ = board.put(250, "Bob");
-    _ = board.put(175, "Charlie");
-    _ = board.put(50, "Dave");
+    _ = try board.put(100, "Alice");
+    _ = try board.put(250, "Bob");
+    _ = try board.put(175, "Charlie");
+    _ = try board.put(50, "Dave");
 
     // Under reverse comparator, min() returns the highest score.
     const top = board.min().?;
@@ -75,7 +75,7 @@ test "Example_Leaderboard reverse-ordered TreeMap" {
     try std.testing.expectEqualStrings("Bob", top.value);
 
     // Iterate in rank order (descending score).
-    const values = board.valuesToSlice(allocator);
+    const values = try board.valuesToSlice(allocator);
     defer allocator.free(values);
 
     try std.testing.expectEqual(@as(usize, 4), values.len);
@@ -101,12 +101,12 @@ test "Example_SortedByField TreeSet sorted by age" {
     var set = object.TreeSet(Person).init(allocator, &cmpByAge);
     defer set.deinit();
 
-    _ = set.add(.{ .name = "Charlie", .age = 42 });
-    _ = set.add(.{ .name = "Alice", .age = 25 });
-    _ = set.add(.{ .name = "Bob", .age = 33 });
-    _ = set.add(.{ .name = "Dave", .age = 19 });
+    _ = try set.add(.{ .name = "Charlie", .age = 42 });
+    _ = try set.add(.{ .name = "Alice", .age = 25 });
+    _ = try set.add(.{ .name = "Bob", .age = 33 });
+    _ = try set.add(.{ .name = "Dave", .age = 19 });
 
-    const sorted = set.toSlice(allocator);
+    const sorted = try set.toSlice(allocator);
     defer allocator.free(sorted);
 
     try std.testing.expectEqual(@as(usize, 4), sorted.len);
@@ -127,20 +127,20 @@ test "Example_RangeQuery TreeMap chronological iteration" {
     defer events.deinit();
 
     // Insert 10 events out of order.
-    _ = events.put(1700, "login");
-    _ = events.put(1500, "boot");
-    _ = events.put(1900, "logout");
-    _ = events.put(1600, "load-config");
-    _ = events.put(1800, "action");
-    _ = events.put(1550, "handshake");
-    _ = events.put(1750, "query");
-    _ = events.put(1650, "auth");
-    _ = events.put(1850, "write");
-    _ = events.put(1950, "shutdown");
+    _ = try events.put(1700, "login");
+    _ = try events.put(1500, "boot");
+    _ = try events.put(1900, "logout");
+    _ = try events.put(1600, "load-config");
+    _ = try events.put(1800, "action");
+    _ = try events.put(1550, "handshake");
+    _ = try events.put(1750, "query");
+    _ = try events.put(1650, "auth");
+    _ = try events.put(1850, "write");
+    _ = try events.put(1950, "shutdown");
 
     try std.testing.expectEqual(@as(usize, 10), events.len());
 
-    const keys = events.keysToSlice(allocator);
+    const keys = try events.keysToSlice(allocator);
     defer allocator.free(keys);
 
     // Verify strictly ascending chronological order.
@@ -178,9 +178,9 @@ test "Example_DeduplicationByField HashSet unique by name" {
     var unique = object.HashSetWithStrategy(Person).init(allocator, strat);
     defer unique.deinit();
 
-    _ = unique.add(.{ .name = "Alice", .age = 25 });
-    _ = unique.add(.{ .name = "Alice", .age = 99 }); // duplicate by name
-    _ = unique.add(.{ .name = "Bob", .age = 33 });
+    _ = try unique.add(.{ .name = "Alice", .age = 25 });
+    _ = try unique.add(.{ .name = "Alice", .age = 99 }); // duplicate by name
+    _ = try unique.add(.{ .name = "Bob", .age = 33 });
 
     try std.testing.expectEqual(@as(usize, 2), unique.len());
     try std.testing.expect(unique.contains(.{ .name = "Alice", .age = 0 }));

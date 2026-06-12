@@ -237,9 +237,12 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
 
     const Part = std.ArrayListUnmanaged(T);
     const Worker = struct {
-        fn run(in: []const T, pred: @TypeOf(predicate), alloc: Allocator, part: *Part) void {
+        fn run(in: []const T, pred: @TypeOf(predicate), alloc: Allocator, part: *Part, err: *?Allocator.Error) void {
             for (in) |*v| {
-                if (callPred(pred, v)) part.append(alloc, v.*) catch @panic("out of memory");
+                if (callPred(pred, v)) part.append(alloc, v.*) catch |e| {
+                    err.* = e;
+                    return;
+                };
             }
         }
     };
@@ -249,6 +252,10 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
     for (parts) |*p| p.* = .{};
     defer for (parts) |*p| p.deinit(allocator);
 
+    const errors = try allocator.alloc(?Allocator.Error, sections);
+    defer allocator.free(errors);
+    for (errors) |*e| e.* = null;
+
     var threads_buf: [200]std.Thread = undefined;
     var spawned: usize = 0;
     var i: usize = 0;
@@ -256,18 +263,21 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
         const b = sectionBounds(data.len, i, sections);
         const in = data[b.lo..b.hi];
         if (i + 1 == sections) {
-            Worker.run(in, predicate, allocator, &parts[i]);
+            Worker.run(in, predicate, allocator, &parts[i], &errors[i]);
             break;
         }
-        if (std.Thread.spawn(.{}, Worker.run, .{ in, predicate, allocator, &parts[i] })) |t| {
+        if (std.Thread.spawn(.{}, Worker.run, .{ in, predicate, allocator, &parts[i], &errors[i] })) |t| {
             threads_buf[spawned] = t;
             spawned += 1;
         } else |_| {
-            Worker.run(in, predicate, allocator, &parts[i]);
+            Worker.run(in, predicate, allocator, &parts[i], &errors[i]);
         }
     }
     var j: usize = 0;
     while (j < spawned) : (j += 1) threads_buf[j].join();
+    for (errors) |maybe_err| {
+        if (maybe_err) |err| return err;
+    }
 
     // Concatenate per-section results in section order to restore input order.
     var total: usize = 0;

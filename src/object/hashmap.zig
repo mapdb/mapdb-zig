@@ -27,8 +27,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         }
 
         /// Put a key-value pair. Returns the old value if the key was already present.
-        pub fn put(self: *Self, key: K, value: V) ?V {
-            const result = self.inner.fetchPut(self.allocator, key, value) catch @panic("out of memory");
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            const result = try self.inner.fetchPut(self.allocator, key, value);
             if (result) |kv| return kv.value;
             return null;
         }
@@ -60,13 +60,6 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            var it = self.inner.iterator();
-            while (it.next()) |entry| {
-                f(entry.key_ptr.*, entry.value_ptr.*);
-            }
-        }
-
         /// An entry yielded by `Iterator` — key and value by value.
         pub const IterEntry = struct { key: K, value: V };
 
@@ -89,8 +82,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
-            const slice = allocator.alloc(K, self.inner.count()) catch @panic("out of memory");
+        pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            const slice = try allocator.alloc(K, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -100,8 +93,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return slice;
         }
 
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
-            const slice = allocator.alloc(V, self.inner.count()) catch @panic("out of memory");
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
+            const slice = try allocator.alloc(V, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -111,26 +104,26 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return slice;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(entry.key_ptr.*, entry.value_ptr.*)) return true;
+                if (predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (!predicate(entry.key_ptr.*, entry.value_ptr.*)) return false;
+                if (!predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(entry.key_ptr.*, entry.value_ptr.*)) return false;
+                if (predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return false;
             }
             return true;
         }
@@ -146,8 +139,8 @@ test "HashMap basic" {
     var map = HashMap(i32, []const u8).init(allocator);
     defer map.deinit();
 
-    try std.testing.expectEqual(@as(?[]const u8, null), map.put(1, "one"));
-    try std.testing.expectEqual(@as(?[]const u8, null), map.put(2, "two"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try map.put(1, "one"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try map.put(2, "two"));
 
     try std.testing.expectEqual(@as(usize, 2), map.len());
     try std.testing.expect(map.containsKey(1));
@@ -159,8 +152,8 @@ test "HashMap put replaces" {
     var map = HashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    const old = map.put(1, 20);
+    _ = try map.put(1, 10);
+    const old = try map.put(1, 20);
     try std.testing.expectEqual(@as(?i32, 10), old);
     try std.testing.expectEqual(@as(?i32, 20), map.get(1));
 }
@@ -170,7 +163,7 @@ test "HashMap remove" {
     var map = HashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 10);
+    _ = try map.put(1, 10);
     const removed = map.remove(1);
     try std.testing.expectEqual(@as(?i32, 10), removed);
     try std.testing.expectEqual(@as(?i32, null), map.remove(1));
@@ -182,12 +175,12 @@ test "HashMap keysToSlice valuesToSlice" {
     var map = HashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
 
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
-    const values = map.valuesToSlice(allocator);
+    const values = try map.valuesToSlice(allocator);
     defer allocator.free(values);
 
     try std.testing.expectEqual(@as(usize, 2), keys.len);
@@ -199,23 +192,26 @@ test "HashMap anySatisfy allSatisfy noneSatisfy" {
     var map = HashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 2);
-    _ = map.put(2, 4);
+    _ = try map.put(1, 2);
+    _ = try map.put(2, 4);
 
     const valEven = struct {
-        fn f(_: i32, v: i32) bool {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return @rem(v, 2) == 0;
         }
     }.f;
     const valNeg = struct {
-        fn f(_: i32, v: i32) bool {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return v < 0;
         }
     }.f;
 
-    try std.testing.expect(map.allSatisfy(&valEven));
-    try std.testing.expect(map.anySatisfy(&valEven));
-    try std.testing.expect(map.noneSatisfy(&valNeg));
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    try std.testing.expect(map.allSatisfy(ctx, &valEven));
+    try std.testing.expect(map.anySatisfy(ctx, &valEven));
+    try std.testing.expect(map.noneSatisfy(ctx, &valNeg));
 }
 
 test "HashMap clear" {
@@ -223,7 +219,7 @@ test "HashMap clear" {
     var map = HashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 1);
+    _ = try map.put(1, 1);
     map.clear();
     try std.testing.expect(map.isEmpty());
 }

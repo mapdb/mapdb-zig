@@ -65,13 +65,13 @@ pub fn ImmutableArrayStack(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            const owned = allocator.dupe(T, values) catch @panic("out of memory");
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            const owned = try allocator.dupe(T, values);
             return .{ .items = owned, .allocator = allocator };
         }
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            return of(allocator, mutable.items.items);
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            return try of(allocator, mutable.items.items);
         }
 
         pub fn deinit(self: *Self) void {
@@ -123,8 +123,8 @@ pub fn ImmutableArrayStack(comptime T: type) type {
         }
 
         /// Returns a new immutable stack with the value pushed on top.
-        pub fn push(self: *const Self, value: T) Self {
-            const new_items = self.allocator.alloc(T, self.items.len + 1) catch @panic("out of memory");
+        pub fn push(self: *const Self, value: T) Allocator.Error!Self {
+            const new_items = try self.allocator.alloc(T, self.items.len + 1);
             @memcpy(new_items[0..self.items.len], self.items);
             new_items[self.items.len] = value;
             return .{ .items = new_items, .allocator = self.allocator };
@@ -132,18 +132,18 @@ pub fn ImmutableArrayStack(comptime T: type) type {
 
         /// Returns a new immutable stack without the top element, and the popped value.
         /// Returns null if empty.
-        pub fn pop(self: *const Self) ?struct { stack: Self, value: T } {
+        pub fn pop(self: *const Self) Allocator.Error!?struct { stack: Self, value: T } {
             if (self.items.len == 0) return null;
             const top = self.items[self.items.len - 1];
-            const new_items = self.allocator.dupe(T, self.items[0 .. self.items.len - 1]) catch @panic("out of memory");
+            const new_items = try self.allocator.dupe(T, self.items[0 .. self.items.len - 1]);
             return .{
                 .stack = .{ .items = new_items, .allocator = self.allocator },
                 .value = top,
             };
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            return Mutable.of(self.allocator, self.items);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            return try Mutable.of(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

@@ -70,8 +70,8 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
         }
 
         /// Put a key-value pair. Returns the old value if the key was already present.
-        pub fn put(self: *Self, key: K, value: V) ?V {
-            const result = self.inner.fetchPutContext(self.allocator, key, value, self.ctx) catch @panic("out of memory");
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            const result = try self.inner.fetchPutContext(self.allocator, key, value, self.ctx);
             if (result) |kv| return kv.value;
             return null;
         }
@@ -103,10 +103,10 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
+        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(entry.key_ptr.*, entry.value_ptr.*);
+                f(ctx, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
 
@@ -132,8 +132,8 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
-            const slice = allocator.alloc(K, self.inner.count()) catch @panic("out of memory");
+        pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            const slice = try allocator.alloc(K, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -143,8 +143,8 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
             return slice;
         }
 
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
-            const slice = allocator.alloc(V, self.inner.count()) catch @panic("out of memory");
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
+            const slice = try allocator.alloc(V, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -216,8 +216,8 @@ test "HashMapWithStrategy case-insensitive" {
     var map = HashMapWithStrategy([]const u8, i32).init(allocator, strat);
     defer map.deinit();
 
-    _ = map.put("Content-Type", 1);
-    _ = map.put("content-type", 2); // should overwrite
+    _ = try map.put("Content-Type", 1);
+    _ = try map.put("content-type", 2); // should overwrite
     try std.testing.expectEqual(@as(usize, 1), map.len());
     try std.testing.expectEqual(@as(?i32, 2), map.get("CONTENT-TYPE"));
 }
@@ -231,7 +231,7 @@ test "HashMapWithStrategy remove" {
     var map = HashMapWithStrategy([]const u8, i32).init(allocator, strat);
     defer map.deinit();
 
-    _ = map.put("x", 10);
+    _ = try map.put("x", 10);
     const removed = map.remove("x");
     try std.testing.expectEqual(@as(?i32, 10), removed);
     try std.testing.expect(map.isEmpty());
@@ -259,7 +259,7 @@ test "HashMapWithStrategy stress insert 1000 remove half" {
 
     var i: i32 = 0;
     while (i < 1000) : (i += 1) {
-        _ = map.put(i, i * 10);
+        _ = try map.put(i, i * 10);
     }
     try std.testing.expectEqual(@as(usize, 1000), map.len());
 

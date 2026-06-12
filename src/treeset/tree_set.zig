@@ -15,7 +15,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const float_order = @import("../float_order.zig");
 
 /// Total-ordering comparator for elements of type `T`.
@@ -51,21 +50,17 @@ pub fn TreeSet(comptime T: type) type {
         const TreapType = std.Treap(T, orderFn);
 
         treap: TreapType = .{},
-        config: AllocatorConfig,
+        allocator: Allocator,
         node_count: usize = 0,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .config = AllocatorConfig.init(allocator) };
-        }
-
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{ .config = config };
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
-            destroySubtree(self.treap.root, self.config.keysAllocator());
+            destroySubtree(self.treap.root, self.allocator);
         }
 
         fn destroySubtree(node_opt: ?*TreapType.Node, allocator: Allocator) void {
@@ -75,19 +70,19 @@ pub fn TreeSet(comptime T: type) type {
             allocator.destroy(node);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var set = init(allocator);
             for (values) |val| {
-                _ = set.add(val);
+                _ = try set.add(val);
             }
             return set;
         }
 
         /// Adds a value. Returns true if it was not already present.
-        pub fn add(self: *Self, value: T) bool {
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
             var entry = self.treap.getEntryFor(value);
             if (entry.node != null) return false;
-            const node = self.config.keysAllocator().create(TreapType.Node) catch @panic("out of memory");
+            const node = try self.allocator.create(TreapType.Node);
             entry.set(node);
             self.node_count += 1;
             return true;
@@ -98,7 +93,7 @@ pub fn TreeSet(comptime T: type) type {
             var entry = self.treap.getEntryFor(value);
             const node = entry.node orelse return false;
             entry.set(null);
-            self.config.keysAllocator().destroy(node);
+            self.allocator.destroy(node);
             self.node_count -= 1;
             return true;
         }
@@ -127,7 +122,7 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            destroySubtree(self.treap.root, self.config.keysAllocator());
+            destroySubtree(self.treap.root, self.allocator);
             self.treap.root = null;
             self.node_count = 0;
         }
@@ -137,8 +132,8 @@ pub fn TreeSet(comptime T: type) type {
         /// Probes that the allocator can serve `additional` node allocations.
         /// Returns `error.OutOfMemory` if the allocator fails.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const probe = try self.config.keysAllocator().alloc(TreapType.Node, additional);
-            self.config.keysAllocator().free(probe);
+            const probe = try self.allocator.alloc(TreapType.Node, additional);
+            self.allocator.free(probe);
         }
 
         /// Probes that the allocator can serve enough nodes for `new_capacity`
@@ -159,14 +154,14 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         /// Returns all values in sorted order. Caller must free the returned slice.
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var result = std.ArrayListUnmanaged(T){};
-            result.ensureTotalCapacity(allocator, self.node_count) catch @panic("out of memory");
+            try result.ensureTotalCapacity(allocator, self.node_count);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
                 result.appendAssumeCapacity(node.key);
             }
-            return result.toOwnedSlice(allocator) catch @panic("out of memory");
+            return result.toOwnedSlice(allocator);
         }
 
         // ---- Iteration ----
@@ -190,97 +185,92 @@ pub fn TreeSet(comptime T: type) type {
             return .{ .inner = TreapType.InorderIterator{ .current = self.treap.getMin() } };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
-            while (it.next()) |node| f(node.key);
-        }
-
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(node.key)) _ = result.add(node.key);
+                if (predicate(ctx, node.key)) _ = try result.add(node.key);
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!predicate(node.key)) _ = result.add(node.key);
+                if (!predicate(ctx, node.key)) _ = try result.add(node.key);
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(node.key)) return node.key;
+                if (predicate(ctx, node.key)) return node.key;
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(node.key)) return true;
+                if (predicate(ctx, node.key)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!predicate(node.key)) return false;
+                if (!predicate(ctx, node.key)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(node.key)) return false;
+                if (predicate(ctx, node.key)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(node.key)) c += 1;
+                if (predicate(ctx, node.key)) c += 1;
             }
             return c;
         }
 
         // ---- Set Operations ----
 
-        pub fn setUnion(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn setUnion(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it1 = TreapType.InorderIterator{ .current = self.treap.getMin() };
-            while (it1.next()) |node| _ = result.add(node.key);
+            while (it1.next()) |node| _ = try result.add(node.key);
             var it2 = TreapType.InorderIterator{ .current = other.treap.getMin() };
-            while (it2.next()) |node| _ = result.add(node.key);
+            while (it2.next()) |node| _ = try result.add(node.key);
             return result;
         }
 
-        pub fn intersect(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn intersect(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (other.contains(node.key)) _ = result.add(node.key);
+                if (other.contains(node.key)) _ = try result.add(node.key);
             }
             return result;
         }
 
-        pub fn difference(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn difference(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!other.contains(node.key)) _ = result.add(node.key);
+                if (!other.contains(node.key)) _ = try result.add(node.key);
             }
             return result;
         }
@@ -328,14 +318,14 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         /// Returns all elements in [from, to] inclusive. Caller must free.
-        pub fn rangeValues(self: *const Self, from: T, to: T, allocator: Allocator) []T {
+        pub fn rangeValues(self: *const Self, from: T, to: T, allocator: Allocator) Allocator.Error![]T {
             var result = std.ArrayListUnmanaged(T){};
             var it = TreapType.InorderIterator{ .current = self.ceilingNode(from) };
             while (it.next()) |node| {
                 if (orderFn(node.key, to) == .gt) break;
-                result.append(allocator, node.key) catch @panic("out of memory");
+                try result.append(allocator, node.key);
             }
-            return result.toOwnedSlice(allocator) catch @panic("out of memory");
+            return result.toOwnedSlice(allocator);
         }
 
         // ---- Formatting ----
@@ -355,8 +345,8 @@ pub fn TreeSet(comptime T: type) type {
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) *Self {
-            _ = self.add(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            _ = try self.add(value);
             return self;
         }
 

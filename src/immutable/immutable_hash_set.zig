@@ -66,26 +66,28 @@ pub fn ImmutableHashSet(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             // Deduplicate via the production set.
-            var mutable = Mutable.init(allocator);
-            for (values) |val| _ = mutable.add(val);
+            var mutable = try Mutable.init(allocator);
+            defer mutable.deinit();
+            for (values) |val| _ = try mutable.add(val);
             // Snapshot to owned slice.
             var buf: std.ArrayListUnmanaged(T) = .empty;
+            errdefer buf.deinit(allocator);
             for (0..mutable.inner.capacity) |i| {
-                if (mutable.inner.entries[i].occupied) buf.append(allocator, mutable.inner.entries[i].key) catch @panic("out of memory");
+                if (mutable.inner.entries[i].occupied) try buf.append(allocator, mutable.inner.entries[i].key);
             }
-            mutable.deinit();
-            const owned = buf.toOwnedSlice(allocator) catch @panic("out of memory");
+            const owned = try buf.toOwnedSlice(allocator);
             return .{ .items = owned, .allocator = allocator };
         }
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
             var buf: std.ArrayListUnmanaged(T) = .empty;
+            errdefer buf.deinit(allocator);
             for (0..mutable.inner.capacity) |i| {
-                if (mutable.inner.entries[i].occupied) buf.append(allocator, mutable.inner.entries[i].key) catch @panic("out of memory");
+                if (mutable.inner.entries[i].occupied) try buf.append(allocator, mutable.inner.entries[i].key);
             }
-            const owned = buf.toOwnedSlice(allocator) catch @panic("out of memory");
+            const owned = try buf.toOwnedSlice(allocator);
             return .{ .items = owned, .allocator = allocator };
         }
 
@@ -134,8 +136,8 @@ pub fn ImmutableHashSet(comptime T: type) type {
             return self.items;
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            return Mutable.of(self.allocator, self.items);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            return try Mutable.of(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

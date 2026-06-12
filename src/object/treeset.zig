@@ -45,8 +45,8 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         /// Add an element. Returns true if it was newly inserted, false if already present.
-        pub fn add(self: *Self, value: T) bool {
-            const old = self.inner.put(value, {});
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
+            const old = try self.inner.put(value, {});
             return old == null;
         }
 
@@ -85,15 +85,9 @@ pub fn TreeSet(comptime T: type) type {
             return m.key;
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            const wrapper = struct {
-                var func: *const fn (T) void = undefined;
-                fn call(k: T, _: void) void {
-                    func(k);
-                }
-            };
-            wrapper.func = f;
-            self.inner.forEach(&wrapper.call);
+        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
+            var it = self.iterator();
+            while (it.next()) |value| f(ctx, value);
         }
 
         /// Pull-based iterator yielding each element by value in ascending
@@ -115,8 +109,8 @@ pub fn TreeSet(comptime T: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
-            return self.inner.keysToSlice(allocator);
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            return try self.inner.keysToSlice(allocator);
         }
     };
 }
@@ -132,10 +126,10 @@ test "TreeSet basic add/contains" {
     var set = TreeSet(i32).init(allocator, strat.naturalComparator(i32));
     defer set.deinit();
 
-    try std.testing.expect(set.add(3));
-    try std.testing.expect(set.add(1));
-    try std.testing.expect(set.add(2));
-    try std.testing.expect(!set.add(1)); // duplicate
+    try std.testing.expect(try set.add(3));
+    try std.testing.expect(try set.add(1));
+    try std.testing.expect(try set.add(2));
+    try std.testing.expect(!(try set.add(1))); // duplicate
 
     try std.testing.expectEqual(@as(usize, 3), set.len());
     try std.testing.expect(set.contains(1));
@@ -149,11 +143,11 @@ test "TreeSet sorted order via toSlice" {
     var set = TreeSet(i32).init(allocator, strat.naturalComparator(i32));
     defer set.deinit();
 
-    _ = set.add(3);
-    _ = set.add(1);
-    _ = set.add(2);
+    _ = try set.add(3);
+    _ = try set.add(1);
+    _ = try set.add(2);
 
-    const slice = set.toSlice(allocator);
+    const slice = try set.toSlice(allocator);
     defer allocator.free(slice);
 
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 2, 3 }, slice);
@@ -164,9 +158,9 @@ test "TreeSet remove" {
     var set = TreeSet(i32).init(allocator, strat.naturalComparator(i32));
     defer set.deinit();
 
-    _ = set.add(1);
-    _ = set.add(2);
-    _ = set.add(3);
+    _ = try set.add(1);
+    _ = try set.add(2);
+    _ = try set.add(3);
 
     try std.testing.expect(set.remove(2));
     try std.testing.expect(!set.remove(99));
@@ -179,9 +173,9 @@ test "TreeSet min/max" {
     var set = TreeSet(i32).init(allocator, strat.naturalComparator(i32));
     defer set.deinit();
 
-    _ = set.add(5);
-    _ = set.add(1);
-    _ = set.add(9);
+    _ = try set.add(5);
+    _ = try set.add(1);
+    _ = try set.add(9);
 
     try std.testing.expectEqual(@as(?i32, 1), set.min());
     try std.testing.expectEqual(@as(?i32, 9), set.max());
@@ -192,7 +186,7 @@ test "TreeSet clear and isEmpty" {
     var set = TreeSet(i32).init(allocator, strat.naturalComparator(i32));
     defer set.deinit();
 
-    _ = set.add(1);
+    _ = try set.add(1);
     try std.testing.expect(!set.isEmpty());
     set.clear();
     try std.testing.expect(set.isEmpty());
@@ -205,7 +199,7 @@ test "TreeSet stress insert 1000 remove half" {
 
     var i: i32 = 0;
     while (i < 1000) : (i += 1) {
-        _ = set.add(i);
+        _ = try set.add(i);
     }
     try std.testing.expectEqual(@as(usize, 1000), set.len());
 
@@ -217,7 +211,7 @@ test "TreeSet stress insert 1000 remove half" {
     try std.testing.expectEqual(@as(usize, 500), set.len());
 
     // Verify remaining are odd and sorted
-    const slice = set.toSlice(allocator);
+    const slice = try set.toSlice(allocator);
     defer allocator.free(slice);
 
     try std.testing.expectEqual(@as(usize, 500), slice.len);

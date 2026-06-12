@@ -42,20 +42,20 @@ pub fn ArrayDeque(comptime T: type) type {
             self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var d = init(allocator);
-            d.items.appendSlice(d.allocator, values) catch @panic("out of memory");
+            try d.items.appendSlice(d.allocator, values);
             return d;
         }
 
         /// Adds a value to the front of the deque. O(n) due to shift.
-        pub fn addFirst(self: *Self, value: T) void {
-            self.items.insert(self.allocator, 0, value) catch @panic("out of memory");
+        pub fn addFirst(self: *Self, value: T) Allocator.Error!void {
+            try self.items.insert(self.allocator, 0, value);
         }
 
         /// Adds a value to the back of the deque. O(1) amortized.
-        pub fn addLast(self: *Self, value: T) void {
-            self.items.append(self.allocator, value) catch @panic("out of memory");
+        pub fn addLast(self: *Self, value: T) Allocator.Error!void {
+            try self.items.append(self.allocator, value);
         }
 
         /// Removes and returns the front element, or null if empty. O(n).
@@ -110,8 +110,8 @@ pub fn ArrayDeque(comptime T: type) type {
         }
 
         /// Returns an owned copy of the items in front-to-back order. Caller frees.
-        pub fn toOwnedSlice(self: *const Self, allocator: Allocator) []T {
-            const out = allocator.alloc(T, self.items.items.len) catch @panic("out of memory");
+        pub fn toOwnedSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            const out = try allocator.alloc(T, self.items.items.len);
             @memcpy(out, self.items.items);
             return out;
         }
@@ -137,20 +137,16 @@ pub fn ArrayDeque(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (self.items.items) |value| f(value);
-        }
-
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |value| {
-                if (predicate(value)) return true;
+                if (predicate(ctx, value)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |value| {
-                if (!predicate(value)) return false;
+                if (!predicate(ctx, value)) return false;
             }
             return true;
         }

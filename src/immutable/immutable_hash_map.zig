@@ -50,11 +50,12 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         const Self = @This();
         const Mutable = MutableType(K, V);
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            var inner = OpenHashMap(K, V).init(allocator, allocator, allocator) catch @panic("out of memory");
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            var inner = try OpenHashMap(K, V).init(allocator);
+            errdefer inner.deinit();
             for (0..mutable.inner.capacity) |i| {
                 if (mutable.inner.entries[i].occupied) {
-                    _ = inner.put(mutable.inner.entries[i].key, mutable.inner.entries[i].value) catch @panic("out of memory");
+                    _ = try inner.put(mutable.inner.entries[i].key, mutable.inner.entries[i].value);
                 }
             }
             return .{ .inner = inner, .allocator = allocator };
@@ -116,11 +117,12 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.inner.entries };
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            var mutable = Mutable.init(self.allocator);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            var mutable = try Mutable.init(self.allocator);
+            errdefer mutable.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    _ = mutable.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                    _ = try mutable.put(self.inner.entries[i].key, self.inner.entries[i].value);
                 }
             }
             return mutable;

@@ -382,7 +382,10 @@ pub fn main() !void {
         var ok = true;
         i = 0;
         while (i < 10000) : (i += 1) {
-            if (m.get(i * 16) == null) { ok = false; break; }
+            if (m.get(i * 16) == null) {
+                ok = false;
+                break;
+            }
         }
         try stdout.print("STRESS collision_keys   10000 ops  {d:.3}ms  all_found={}\n", .{ @as(f64, @floatFromInt(d)) / 1e6, ok });
     }

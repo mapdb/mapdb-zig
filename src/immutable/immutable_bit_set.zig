@@ -17,14 +17,14 @@ pub const ImmutableBitSet = struct {
 
     const BITS_PER_WORD: usize = 64;
 
-    pub fn empty(allocator: Allocator) ImmutableBitSet {
-        const owned = allocator.alloc(u64, 0) catch @panic("out of memory");
+    pub fn empty(allocator: Allocator) Allocator.Error!ImmutableBitSet {
+        const owned = try allocator.alloc(u64, 0);
         return .{ .words = owned, .bit_length = 0, .allocator = allocator };
     }
 
     /// Copies the words of `mutable` into an owned slice.
-    pub fn fromMutable(allocator: Allocator, mutable: *const BitSet) ImmutableBitSet {
-        const owned = allocator.dupe(u64, mutable.words.items) catch @panic("out of memory");
+    pub fn fromMutable(allocator: Allocator, mutable: *const BitSet) Allocator.Error!ImmutableBitSet {
+        const owned = try allocator.dupe(u64, mutable.words.items);
         return .{ .words = owned, .bit_length = mutable.bit_length, .allocator = allocator };
     }
 
@@ -69,27 +69,28 @@ pub const ImmutableBitSet = struct {
         return self.cardinality() == 0;
     }
 
-    pub fn toMutable(self: *const ImmutableBitSet) BitSet {
+    pub fn toMutable(self: *const ImmutableBitSet) Allocator.Error!BitSet {
         var m = BitSet.init(self.allocator);
-        m.words.appendSlice(self.allocator, self.words) catch @panic("out of memory");
+        errdefer m.deinit();
+        try m.words.appendSlice(self.allocator, self.words);
         m.bit_length = self.bit_length;
         return m;
     }
 
     /// Returns a new immutable BitSet with `bit` set to 1.
-    pub fn withBit(self: *const ImmutableBitSet, bit: usize) ImmutableBitSet {
-        var m = self.toMutable();
+    pub fn withBit(self: *const ImmutableBitSet, bit: usize) Allocator.Error!ImmutableBitSet {
+        var m = try self.toMutable();
         defer m.deinit();
-        m.set(bit);
-        return fromMutable(self.allocator, &m);
+        try m.set(bit);
+        return try fromMutable(self.allocator, &m);
     }
 
     /// Returns a new immutable BitSet with `bit` cleared.
-    pub fn withoutBit(self: *const ImmutableBitSet, bit: usize) ImmutableBitSet {
-        var m = self.toMutable();
+    pub fn withoutBit(self: *const ImmutableBitSet, bit: usize) Allocator.Error!ImmutableBitSet {
+        var m = try self.toMutable();
         defer m.deinit();
         m.clearBit(bit);
-        return fromMutable(self.allocator, &m);
+        return try fromMutable(self.allocator, &m);
     }
 
     /// Pull-based iterator yielding the indices of all set bits in ascending
@@ -144,7 +145,7 @@ pub const ImmutableBitSet = struct {
 };
 
 test "ImmutableBitSet: empty" {
-    var b = ImmutableBitSet.empty(std.testing.allocator);
+    var b = try ImmutableBitSet.empty(std.testing.allocator);
     defer b.deinit();
     try std.testing.expect(b.isEmpty());
     try std.testing.expectEqual(@as(usize, 0), b.len());
@@ -154,9 +155,9 @@ test "ImmutableBitSet: empty" {
 test "ImmutableBitSet: fromMutable and get" {
     var m = BitSet.init(std.testing.allocator);
     defer m.deinit();
-    m.set(3);
-    m.set(65);
-    var im = ImmutableBitSet.fromMutable(std.testing.allocator, &m);
+    try m.set(3);
+    try m.set(65);
+    var im = try ImmutableBitSet.fromMutable(std.testing.allocator, &m);
     defer im.deinit();
     try std.testing.expect(im.get(3));
     try std.testing.expect(im.get(65));
@@ -167,12 +168,12 @@ test "ImmutableBitSet: fromMutable and get" {
 test "ImmutableBitSet: persistent withBit/withoutBit" {
     var m = BitSet.init(std.testing.allocator);
     defer m.deinit();
-    m.set(1);
-    var b1 = ImmutableBitSet.fromMutable(std.testing.allocator, &m);
+    try m.set(1);
+    var b1 = try ImmutableBitSet.fromMutable(std.testing.allocator, &m);
     defer b1.deinit();
-    var b2 = b1.withBit(5);
+    var b2 = try b1.withBit(5);
     defer b2.deinit();
-    var b3 = b2.withoutBit(1);
+    var b3 = try b2.withoutBit(1);
     defer b3.deinit();
     try std.testing.expect(b1.get(1));
     try std.testing.expect(!b1.get(5));
@@ -183,12 +184,12 @@ test "ImmutableBitSet: persistent withBit/withoutBit" {
 test "ImmutableBitSet: toMutable independence" {
     var m = BitSet.init(std.testing.allocator);
     defer m.deinit();
-    m.set(2);
-    var im = ImmutableBitSet.fromMutable(std.testing.allocator, &m);
+    try m.set(2);
+    var im = try ImmutableBitSet.fromMutable(std.testing.allocator, &m);
     defer im.deinit();
-    var m2 = im.toMutable();
+    var m2 = try im.toMutable();
     defer m2.deinit();
-    m2.set(10);
+    try m2.set(10);
     try std.testing.expect(!im.get(10));
     try std.testing.expect(m2.get(10));
 }

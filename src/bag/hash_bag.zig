@@ -14,7 +14,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
 
 /// Bag (multiset) of `T` values with occurrence counting.
@@ -24,22 +23,18 @@ pub fn HashBag(comptime T: type) type {
     return struct {
         counts: OpenHashMap(T, usize),
         size: usize,
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         /// (value, count) pair returned by `topOccurrences`.
         pub const OccurrenceEntry = struct { value: T, count: usize };
 
-        pub fn init(allocator: Allocator) Self {
-            return initWithConfig(AllocatorConfig.init(allocator));
-        }
-
-        pub fn initWithConfig(config: AllocatorConfig) Self {
+        pub fn init(allocator: Allocator) Allocator.Error!Self {
             return .{
-                .counts = OpenHashMap(T, usize).init(config.keysAllocator(), config.indexAllocator(), config.keysAllocator()) catch @panic("out of memory"),
+                .counts = try OpenHashMap(T, usize).init(allocator),
                 .size = 0,
-                .config = config,
+                .allocator = allocator,
             };
         }
 
@@ -47,20 +42,20 @@ pub fn HashBag(comptime T: type) type {
             self.counts.deinit();
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            var bag = init(allocator);
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var bag = try init(allocator);
             for (values) |val| {
-                bag.add(val);
+                try bag.add(val);
             }
             return bag;
         }
 
         /// Add one occurrence of the value.
-        pub fn add(self: *Self, value: T) void {
+        pub fn add(self: *Self, value: T) Allocator.Error!void {
             if (self.counts.getPtr(value)) |count_ptr| {
                 count_ptr.* += 1;
             } else {
-                _ = self.counts.put(value, 1) catch @panic("out of memory");
+                _ = try self.counts.put(value, 1);
             }
             self.size += 1;
         }
@@ -139,9 +134,9 @@ pub fn HashBag(comptime T: type) type {
         }
 
         /// Add multiple occurrences of a value.
-        pub fn addOccurrences(self: *Self, value: T, n: usize) void {
+        pub fn addOccurrences(self: *Self, value: T, n: usize) Allocator.Error!void {
             var i: usize = 0;
-            while (i < n) : (i += 1) self.add(value);
+            while (i < n) : (i += 1) try self.add(value);
         }
 
         /// Remove up to n occurrences. Returns number actually removed.
@@ -196,21 +191,11 @@ pub fn HashBag(comptime T: type) type {
             return .{ .entries = self.counts.entries };
         }
 
-        /// Calls f(value, count) for each distinct value.
-        pub fn forEachWithOccurrences(self: *const Self, f: *const fn (T, usize) void) void {
+        /// Calls f(ctx, value, count) for each distinct value.
+        pub fn forEachWithOccurrences(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T, usize) void) void {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    f(self.counts.entries[i].key, self.counts.entries[i].value);
-                }
-            }
-        }
-
-        /// Calls f(value) for each element (including duplicates).
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    var j: usize = 0;
-                    while (j < self.counts.entries[i].value) : (j += 1) f(self.counts.entries[i].key);
+                    f(ctx, self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
         }
@@ -218,77 +203,77 @@ pub fn HashBag(comptime T: type) type {
         // ---- Functional Operations ----
 
         /// Returns a new bag with only elements satisfying the predicate (preserving counts).
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (predicate(self.counts.entries[i].key)) result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                    if (predicate(ctx, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
             return result;
         }
 
         /// Returns a new bag with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (!predicate(self.counts.entries[i].key)) result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                    if (!predicate(ctx, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
             return result;
         }
 
         /// Returns the first distinct value satisfying the predicate, or null.
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (predicate(self.counts.entries[i].key)) return self.counts.entries[i].key;
+                    if (predicate(ctx, self.counts.entries[i].key)) return self.counts.entries[i].key;
                 }
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
-            return self.detect(predicate) != null;
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+            return self.detect(ctx, predicate) != null;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (!predicate(self.counts.entries[i].key)) return false;
+                    if (!predicate(ctx, self.counts.entries[i].key)) return false;
                 }
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
-            return self.detect(predicate) == null;
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+            return self.detect(ctx, predicate) == null;
         }
 
         // ---- Conversion ----
 
         /// Returns all elements (with duplicates) as an allocated slice.
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
                     var j: usize = 0;
-                    while (j < self.counts.entries[i].value) : (j += 1) buf.append(allocator, self.counts.entries[i].key) catch @panic("out of memory");
+                    while (j < self.counts.entries[i].value) : (j += 1) try buf.append(allocator, self.counts.entries[i].key);
                 }
             }
-            return buf.toOwnedSlice(allocator) catch @panic("out of memory");
+            return buf.toOwnedSlice(allocator);
         }
 
         /// Creates an immutable snapshot of this bag.
-        pub fn toImmutable(self: *const Self) ImmutableType(T) {
-            return ImmutableType(T).fromMutable(self.config.base, self);
+        pub fn toImmutable(self: *const Self) Allocator.Error!ImmutableType(T) {
+            return ImmutableType(T).fromMutable(self.allocator, self);
         }
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) *Self {
-            self.add(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            try self.add(value);
             return self;
         }
 
@@ -297,8 +282,8 @@ pub fn HashBag(comptime T: type) type {
             return self;
         }
 
-        pub fn withAll(self: *Self, values: []const T) *Self {
-            for (values) |val| self.add(val);
+        pub fn withAll(self: *Self, values: []const T) Allocator.Error!*Self {
+            for (values) |val| try self.add(val);
             return self;
         }
 
@@ -311,12 +296,12 @@ pub fn HashBag(comptime T: type) type {
 
         /// Returns the top n values by occurrence count as (value, count) pairs.
         /// Caller owns the returned slice.
-        pub fn topOccurrences(self: *const Self, allocator: Allocator, n: usize) []OccurrenceEntry {
+        pub fn topOccurrences(self: *const Self, allocator: Allocator, n: usize) Allocator.Error![]OccurrenceEntry {
             const Entry = OccurrenceEntry;
             var buf: std.ArrayListUnmanaged(Entry) = .empty;
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    buf.append(allocator, .{ .value = self.counts.entries[i].key, .count = self.counts.entries[i].value }) catch @panic("out of memory");
+                    try buf.append(allocator, .{ .value = self.counts.entries[i].key, .count = self.counts.entries[i].value });
                 }
             }
             // Sort by count descending
@@ -326,7 +311,7 @@ pub fn HashBag(comptime T: type) type {
                 }
             }.f);
             const limit = @min(n, buf.items.len);
-            const result = allocator.alloc(Entry, limit) catch @panic("out of memory");
+            const result = try allocator.alloc(Entry, limit);
             @memcpy(result, buf.items[0..limit]);
             buf.deinit(allocator);
             return result;

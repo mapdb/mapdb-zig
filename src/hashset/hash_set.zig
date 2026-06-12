@@ -14,36 +14,24 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashSet = @import("../hash_table.zig").OpenHashSet;
 
 /// Hash set of unique `T` values.
 ///
 /// Backed by OpenHashSet(T) — O(1) average add/remove/contains.
-/// Supports separate allocators for keys and index structures via AllocatorConfig.
 pub fn HashSet(comptime T: type) type {
     return struct {
         inner: OpenHashSet(T),
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Self {
+        pub fn init(allocator: Allocator) Allocator.Error!Self {
             return .{
-                .inner = OpenHashSet(T).init(allocator, allocator) catch @panic("out of memory"),
-                .config = AllocatorConfig.init(allocator),
-            };
-        }
-
-        /// Create with fine-grained allocator control.
-        /// config.keysAllocator() is used for the hash table / items array.
-        /// config.indexAllocator() is used for the hash table index buckets.
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{
-                .inner = OpenHashSet(T).init(config.keysAllocator(), config.indexAllocator()) catch @panic("out of memory"),
-                .config = config,
+                .inner = try OpenHashSet(T).init(allocator),
+                .allocator = allocator,
             };
         }
 
@@ -51,22 +39,22 @@ pub fn HashSet(comptime T: type) type {
             self.inner.deinit();
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            var set = init(allocator);
-            for (values) |val| _ = set.add(val);
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var set = try init(allocator);
+            for (values) |val| _ = try set.add(val);
             return set;
         }
 
         // ---- Core Operations ----
 
         /// Adds a value. Returns true if it was not already present.
-        pub fn add(self: *Self, value: T) bool {
-            return self.inner.add(value) catch @panic("out of memory");
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
+            return self.inner.add(value);
         }
 
         /// Adds all values from a slice.
-        pub fn addAll(self: *Self, values: []const T) void {
-            for (values) |val| _ = self.add(val);
+        pub fn addAll(self: *Self, values: []const T) Allocator.Error!void {
+            for (values) |val| _ = try self.add(val);
         }
 
         /// Removes a value. Returns true if it was present.
@@ -138,93 +126,83 @@ pub fn HashSet(comptime T: type) type {
             return .{ .entries = self.inner.entries };
         }
 
-        /// Calls f for each element.
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
-                    f(value);
-                }
-            }
-        }
-
         // ---- Functional Operations ----
 
         /// Returns a new set with only elements satisfying the predicate.
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(value)) _ = result.add(value);
+                    if (predicate(ctx, value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
         /// Returns a new set with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!predicate(value)) _ = result.add(value);
+                    if (!predicate(ctx, value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
         /// Returns the first element satisfying the predicate, or null.
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(value)) return value;
+                    if (predicate(ctx, value)) return value;
                 }
             }
             return null;
         }
 
         /// Returns true if any element satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(value)) return true;
+                    if (predicate(ctx, value)) return true;
                 }
             }
             return false;
         }
 
         /// Returns true if all elements satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!predicate(value)) return false;
+                    if (!predicate(ctx, value)) return false;
                 }
             }
             return true;
         }
 
         /// Returns true if no element satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(value)) return false;
+                    if (predicate(ctx, value)) return false;
                 }
             }
             return true;
         }
 
         /// Returns the count of elements satisfying the predicate.
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(value)) c += 1;
+                    if (predicate(ctx, value)) c += 1;
                 }
             }
             return c;
@@ -232,57 +210,57 @@ pub fn HashSet(comptime T: type) type {
 
         // ---- Set Operations ----
 
-        pub fn setUnion(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn setUnion(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    _ = result.add(value);
+                    _ = try result.add(value);
                 }
             }
             for (0..other.inner.capacity) |i| {
                 if (other.inner.entries[i].occupied) {
                     const value = other.inner.entries[i].key;
-                    _ = result.add(value);
+                    _ = try result.add(value);
                 }
             }
             return result;
         }
 
-        pub fn intersect(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn intersect(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (other.contains(value)) _ = result.add(value);
+                    if (other.contains(value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
-        pub fn difference(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn difference(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!other.contains(value)) _ = result.add(value);
+                    if (!other.contains(value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
-        pub fn symmetricDifference(self: *const Self, other: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn symmetricDifference(self: *const Self, other: *const Self) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!other.contains(value)) _ = result.add(value);
+                    if (!other.contains(value)) _ = try result.add(value);
                 }
             }
             for (0..other.inner.capacity) |i| {
                 if (other.inner.entries[i].occupied) {
                     const value = other.inner.entries[i].key;
-                    if (!self.contains(value)) _ = result.add(value);
+                    if (!self.contains(value)) _ = try result.add(value);
                 }
             }
             return result;
@@ -291,27 +269,27 @@ pub fn HashSet(comptime T: type) type {
         // ---- Conversion ----
 
         /// Returns all elements as an allocated slice. Caller owns the slice.
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    buf.append(allocator, value) catch @panic("out of memory");
+                    try buf.append(allocator, value);
                 }
             }
-            return buf.toOwnedSlice(allocator) catch @panic("out of memory");
+            return buf.toOwnedSlice(allocator);
         }
 
         /// Creates an immutable snapshot of this set.
-        pub fn toImmutable(self: *const Self) ImmutableType(T) {
-            return ImmutableType(T).fromMutable(self.config.base, self);
+        pub fn toImmutable(self: *const Self) Allocator.Error!ImmutableType(T) {
+            return ImmutableType(T).fromMutable(self.allocator, self);
         }
 
         // ---- Fluent API ----
 
         /// Returns the set after adding a value (fluent).
-        pub fn with(self: *Self, value: T) *Self {
-            _ = self.add(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            _ = try self.add(value);
             return self;
         }
 
@@ -322,8 +300,8 @@ pub fn HashSet(comptime T: type) type {
         }
 
         /// Adds all values from a slice (fluent).
-        pub fn withAll(self: *Self, values: []const T) *Self {
-            self.addAll(values);
+        pub fn withAll(self: *Self, values: []const T) Allocator.Error!*Self {
+            try self.addAll(values);
             return self;
         }
 

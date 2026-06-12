@@ -64,9 +64,9 @@ pub fn PriorityQueue(comptime T: type) type {
             self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var q = init(allocator);
-            q.items.appendSlice(q.allocator, values) catch @panic("out of memory");
+            try q.items.appendSlice(q.allocator, values);
             if (q.items.items.len > 1) {
                 var i: usize = q.items.items.len / 2;
                 while (i > 0) {
@@ -78,8 +78,8 @@ pub fn PriorityQueue(comptime T: type) type {
         }
 
         /// Pushes a value onto the heap. O(log n).
-        pub fn push(self: *Self, value: T) void {
-            self.items.append(self.allocator, value) catch @panic("out of memory");
+        pub fn push(self: *Self, value: T) Allocator.Error!void {
+            try self.items.append(self.allocator, value);
             self.siftUp(self.items.items.len - 1);
         }
 
@@ -150,8 +150,8 @@ pub fn PriorityQueue(comptime T: type) type {
         }
 
         /// Drains the heap into a caller-owned slice in ascending order.
-        pub fn drainSorted(self: *Self, allocator: Allocator) []T {
-            const out = allocator.alloc(T, self.items.items.len) catch @panic("out of memory");
+        pub fn drainSorted(self: *Self, allocator: Allocator) Allocator.Error![]T {
+            const out = try allocator.alloc(T, self.items.items.len);
             var i: usize = 0;
             while (self.pop()) |v| : (i += 1) {
                 out[i] = v;

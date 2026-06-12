@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const float_order = @import("../float_order.zig");
 
 /// Total-ordering comparator for tree-map keys of type `K`.
@@ -57,21 +56,17 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
     return struct {
         keys: std.ArrayListUnmanaged(K) = .empty,
         vals: std.ArrayListUnmanaged(V) = .empty,
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .config = AllocatorConfig.init(allocator) };
-        }
-
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{ .config = config };
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
-            self.keys.deinit(self.config.keysAllocator());
-            self.vals.deinit(self.config.valuesAllocator());
+            self.keys.deinit(self.allocator);
+            self.vals.deinit(self.allocator);
         }
 
         fn orderFn(a: K, b: K) std.math.Order {
@@ -96,15 +91,20 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         }
 
         /// Inserts a key-value pair. Returns the old value if the key existed.
-        pub fn put(self: *Self, key: K, value: V) ?V {
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
             const result = self.findIndex(key);
             if (result.found) {
                 const old = self.vals.items[result.index];
                 self.vals.items[result.index] = value;
                 return old;
             }
-            self.keys.insert(self.config.keysAllocator(), result.index, key) catch @panic("out of memory");
-            self.vals.insert(self.config.valuesAllocator(), result.index, value) catch @panic("out of memory");
+            try self.keys.ensureUnusedCapacity(self.allocator, 1);
+            try self.vals.ensureUnusedCapacity(self.allocator, 1);
+            try self.keys.insert(self.allocator, result.index, key);
+            self.vals.insert(self.allocator, result.index, value) catch |err| {
+                _ = self.keys.orderedRemove(result.index);
+                return err;
+            };
             return null;
         }
 
@@ -155,15 +155,15 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         /// entries without reallocating. Returns `error.OutOfMemory` if the
         /// allocator fails.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            try self.keys.ensureUnusedCapacity(self.config.keysAllocator(), additional);
-            try self.vals.ensureUnusedCapacity(self.config.valuesAllocator(), additional);
+            try self.keys.ensureUnusedCapacity(self.allocator, additional);
+            try self.vals.ensureUnusedCapacity(self.allocator, additional);
         }
 
         /// Ensures both internal buffers' total capacity is at least
         /// `new_capacity`.
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
-            try self.keys.ensureTotalCapacity(self.config.keysAllocator(), new_capacity);
-            try self.vals.ensureTotalCapacity(self.config.valuesAllocator(), new_capacity);
+            try self.keys.ensureTotalCapacity(self.allocator, new_capacity);
+            try self.vals.ensureTotalCapacity(self.allocator, new_capacity);
         }
 
         pub fn min(self: *const Self) ?struct { key: K, value: V } {
@@ -213,68 +213,64 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .keys = self.keys.items, .vals = self.vals.items };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            for (self.keys.items, self.vals.items) |k, val| f(k, val);
+        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
+            for (self.keys.items) |k| f(ctx, k);
         }
 
-        pub fn forEachKey(self: *const Self, f: *const fn (K) void) void {
-            for (self.keys.items) |k| f(k);
-        }
-
-        pub fn forEachValue(self: *const Self, f: *const fn (V) void) void {
-            for (self.vals.items) |val| f(val);
+        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
+            for (self.vals.items) |val| f(ctx, val);
         }
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, predicate: *const fn (K, V) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(k, val)) _ = result.put(k, val);
+                if (predicate(ctx, k, val)) _ = try result.put(k, val);
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, predicate: *const fn (K, V) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.keys.items, self.vals.items) |k, val| {
-                if (!predicate(k, val)) _ = result.put(k, val);
+                if (!predicate(ctx, k, val)) _ = try result.put(k, val);
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, predicate: *const fn (K, V) bool) ?struct { key: K, value: V } {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) ?struct { key: K, value: V } {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(k, val)) return .{ .key = k, .value = val };
+                if (predicate(ctx, k, val)) return .{ .key = k, .value = val };
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(k, val)) return true;
+                if (predicate(ctx, k, val)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (!predicate(k, val)) return false;
+                if (!predicate(ctx, k, val)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(k, val)) return false;
+                if (predicate(ctx, k, val)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (K, V) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
             var c: usize = 0;
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(k, val)) c += 1;
+                if (predicate(ctx, k, val)) c += 1;
             }
             return c;
         }
@@ -325,8 +321,8 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         // ---- Fluent API ----
 
-        pub fn withKeyValue(self: *Self, key: K, value: V) *Self {
-            _ = self.put(key, value);
+        pub fn withKeyValue(self: *Self, key: K, value: V) Allocator.Error!*Self {
+            _ = try self.put(key, value);
             return self;
         }
 

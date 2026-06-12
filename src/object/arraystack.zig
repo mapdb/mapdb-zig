@@ -39,8 +39,8 @@ pub fn ArrayStack(comptime T: type) type {
             self.inner.deinit(self.allocator);
         }
 
-        pub fn push(self: *Self, item: T) void {
-            self.inner.append(self.allocator, item) catch @panic("out of memory");
+        pub fn push(self: *Self, item: T) Allocator.Error!void {
+            try self.inner.append(self.allocator, item);
         }
 
         /// Pop the top element. Returns null if the stack is empty.
@@ -112,9 +112,9 @@ test "ArrayStack basic" {
     var stack = ArrayStack(i32).init(allocator);
     defer stack.deinit();
 
-    stack.push(1);
-    stack.push(2);
-    stack.push(3);
+    try stack.push(1);
+    try stack.push(2);
+    try stack.push(3);
 
     try std.testing.expectEqual(@as(usize, 3), stack.len());
     try std.testing.expect(!stack.isEmpty());
@@ -132,9 +132,9 @@ test "ArrayStack peekAt" {
     var stack = ArrayStack(i32).init(allocator);
     defer stack.deinit();
 
-    stack.push(10);
-    stack.push(20);
-    stack.push(30);
+    try stack.push(10);
+    try stack.push(20);
+    try stack.push(30);
 
     try std.testing.expectEqual(@as(?i32, 30), stack.peekAt(0));
     try std.testing.expectEqual(@as(?i32, 20), stack.peekAt(1));
@@ -147,8 +147,8 @@ test "ArrayStack contains" {
     var stack = ArrayStack(i32).init(allocator);
     defer stack.deinit();
 
-    stack.push(5);
-    stack.push(10);
+    try stack.push(5);
+    try stack.push(10);
 
     try std.testing.expect(stack.contains(5));
     try std.testing.expect(stack.contains(10));
@@ -160,8 +160,8 @@ test "ArrayStack clear" {
     var stack = ArrayStack(i32).init(allocator);
     defer stack.deinit();
 
-    stack.push(1);
-    stack.push(2);
+    try stack.push(1);
+    try stack.push(2);
     stack.clear();
 
     try std.testing.expect(stack.isEmpty());

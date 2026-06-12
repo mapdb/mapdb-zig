@@ -29,8 +29,8 @@ pub fn LinkedHashSet(comptime T: type) type {
         }
 
         /// Add an element. Returns true if it was newly inserted, false if already present.
-        pub fn add(self: *Self, value: T) bool {
-            const result = self.inner.fetchPut(self.allocator, value, {}) catch @panic("out of memory");
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
+            const result = try self.inner.fetchPut(self.allocator, value, {});
             return result == null;
         }
 
@@ -55,17 +55,11 @@ pub fn LinkedHashSet(comptime T: type) type {
         }
 
         /// Returns elements in insertion order.
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             const keys = self.inner.keys();
-            const slice = allocator.alloc(T, keys.len) catch @panic("out of memory");
+            const slice = try allocator.alloc(T, keys.len);
             @memcpy(slice, keys);
             return slice;
-        }
-
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (self.inner.keys()) |k| {
-                f(k);
-            }
         }
 
         /// Pull-based iterator yielding each element by value in insertion order.
@@ -89,64 +83,64 @@ pub fn LinkedHashSet(comptime T: type) type {
             return .{ .keys = self.inner.keys() };
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.keys()) |k| {
-                if (predicate(k)) return true;
+                if (predicate(ctx, k)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.keys()) |k| {
-                if (!predicate(k)) return false;
+                if (!predicate(ctx, k)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.keys()) |k| {
-                if (predicate(k)) return false;
+                if (predicate(ctx, k)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             for (self.inner.keys()) |k| {
-                if (predicate(k)) c += 1;
+                if (predicate(ctx, k)) c += 1;
             }
             return c;
         }
 
         /// Returns a new set containing elements in either self or other.
-        pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             for (self.inner.keys()) |k| {
-                _ = result.add(k);
+                _ = try result.add(k);
             }
             for (other.inner.keys()) |k| {
-                _ = result.add(k);
+                _ = try result.add(k);
             }
             return result;
         }
 
         /// Returns a new set containing elements in both self and other.
-        pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             for (self.inner.keys()) |k| {
                 if (other.contains(k)) {
-                    _ = result.add(k);
+                    _ = try result.add(k);
                 }
             }
             return result;
         }
 
         /// Returns a new set containing elements in self but not in other.
-        pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             for (self.inner.keys()) |k| {
                 if (!other.contains(k)) {
-                    _ = result.add(k);
+                    _ = try result.add(k);
                 }
             }
             return result;
@@ -163,9 +157,9 @@ test "LinkedHashSet basic" {
     var set = LinkedHashSet(i32).init(allocator);
     defer set.deinit();
 
-    try std.testing.expect(set.add(1));
-    try std.testing.expect(set.add(2));
-    try std.testing.expect(!set.add(1)); // duplicate
+    try std.testing.expect(try set.add(1));
+    try std.testing.expect(try set.add(2));
+    try std.testing.expect(!try set.add(1)); // duplicate
 
     try std.testing.expectEqual(@as(usize, 2), set.len());
     try std.testing.expect(set.contains(1));
@@ -177,11 +171,11 @@ test "LinkedHashSet insertion order" {
     var set = LinkedHashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(3);
-    _ = set.add(1);
-    _ = set.add(4);
+    _ = try set.add(3);
+    _ = try set.add(1);
+    _ = try set.add(4);
 
-    const slice = set.toSlice(allocator);
+    const slice = try set.toSlice(allocator);
     defer allocator.free(slice);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 3, 1, 4 }, slice);
 }
@@ -191,14 +185,14 @@ test "LinkedHashSet remove preserves order" {
     var set = LinkedHashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(1);
-    _ = set.add(2);
-    _ = set.add(3);
+    _ = try set.add(1);
+    _ = try set.add(2);
+    _ = try set.add(3);
 
     try std.testing.expect(set.remove(2));
     try std.testing.expect(!set.remove(2));
 
-    const slice = set.toSlice(allocator);
+    const slice = try set.toSlice(allocator);
     defer allocator.free(slice);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 3 }, slice);
 }
@@ -210,25 +204,25 @@ test "LinkedHashSet union intersect difference" {
     var b = LinkedHashSet(i32).init(allocator);
     defer b.deinit();
 
-    _ = a.add(1);
-    _ = a.add(2);
-    _ = a.add(3);
-    _ = b.add(2);
-    _ = b.add(3);
-    _ = b.add(4);
+    _ = try a.add(1);
+    _ = try a.add(2);
+    _ = try a.add(3);
+    _ = try b.add(2);
+    _ = try b.add(3);
+    _ = try b.add(4);
 
-    var u = a.setUnion(&b, allocator);
+    var u = try a.setUnion(&b, allocator);
     defer u.deinit();
     try std.testing.expectEqual(@as(usize, 4), u.len());
-    const u_slice = u.toSlice(allocator);
+    const u_slice = try u.toSlice(allocator);
     defer allocator.free(u_slice);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 2, 3, 4 }, u_slice);
 
-    var inter = a.intersect(&b, allocator);
+    var inter = try a.intersect(&b, allocator);
     defer inter.deinit();
     try std.testing.expectEqual(@as(usize, 2), inter.len());
 
-    var diff = a.difference(&b, allocator);
+    var diff = try a.difference(&b, allocator);
     defer diff.deinit();
     try std.testing.expectEqual(@as(usize, 1), diff.len());
     try std.testing.expect(diff.contains(1));
@@ -239,25 +233,28 @@ test "LinkedHashSet anySatisfy allSatisfy noneSatisfy count" {
     var set = LinkedHashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(2);
-    _ = set.add(4);
-    _ = set.add(6);
+    _ = try set.add(2);
+    _ = try set.add(4);
+    _ = try set.add(6);
 
     const isEven = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
     const isNeg = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return x < 0;
         }
     }.f;
 
-    try std.testing.expect(set.allSatisfy(&isEven));
-    try std.testing.expect(set.anySatisfy(&isEven));
-    try std.testing.expect(set.noneSatisfy(&isNeg));
-    try std.testing.expectEqual(@as(usize, 3), set.count(&isEven));
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    try std.testing.expect(set.allSatisfy(ctx, &isEven));
+    try std.testing.expect(set.anySatisfy(ctx, &isEven));
+    try std.testing.expect(set.noneSatisfy(ctx, &isNeg));
+    try std.testing.expectEqual(@as(usize, 3), set.count(ctx, &isEven));
 }
 
 test "LinkedHashSet clear" {
@@ -265,7 +262,7 @@ test "LinkedHashSet clear" {
     var set = LinkedHashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(1);
+    _ = try set.add(1);
     set.clear();
 
     try std.testing.expect(set.isEmpty());

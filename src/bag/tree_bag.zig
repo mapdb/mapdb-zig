@@ -17,7 +17,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const float_order = @import("../float_order.zig");
 
 /// Total-ordering comparator for elements of type `T`.
@@ -66,22 +65,18 @@ pub fn TreeBag(comptime T: type) type {
         }
 
         treap: TreapType = .{},
-        config: AllocatorConfig,
+        allocator: Allocator,
         total_size: usize = 0,
         distinct_count: usize = 0,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return initWithConfig(AllocatorConfig.init(allocator));
-        }
-
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{ .config = config };
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
-            destroySubtree(self.treap.root, self.config.keysAllocator());
+            destroySubtree(self.treap.root, self.allocator);
         }
 
         fn destroySubtree(node_opt: ?*TreapType.Node, allocator: Allocator) void {
@@ -91,12 +86,12 @@ pub fn TreeBag(comptime T: type) type {
             allocator.destroy(bagNodeFromTreapNode(node));
         }
 
-        fn addOccurrences(self: *Self, value: T, occ: usize) void {
+        fn addOccurrences(self: *Self, value: T, occ: usize) Allocator.Error!void {
             var entry = self.treap.getEntryFor(value);
             if (entry.node) |treap_node| {
                 bagNodeFromTreapNode(treap_node).occ += occ;
             } else {
-                const bag_node = self.config.keysAllocator().create(BagNode) catch @panic("out of memory");
+                const bag_node = try self.allocator.create(BagNode);
                 bag_node.occ = occ;
                 entry.set(&bag_node.treap_node);
                 self.distinct_count += 1;
@@ -105,8 +100,8 @@ pub fn TreeBag(comptime T: type) type {
         }
 
         /// Add one occurrence of the value.
-        pub fn add(self: *Self, value: T) void {
-            self.addOccurrences(value, 1);
+        pub fn add(self: *Self, value: T) Allocator.Error!void {
+            try self.addOccurrences(value, 1);
         }
 
         /// Remove one occurrence. Returns true if the value was present.
@@ -117,7 +112,7 @@ pub fn TreeBag(comptime T: type) type {
             bag_node.occ -= 1;
             if (bag_node.occ == 0) {
                 entry.set(null);
-                self.config.keysAllocator().destroy(bag_node);
+                self.allocator.destroy(bag_node);
                 self.distinct_count -= 1;
             }
             self.total_size -= 1;
@@ -131,7 +126,7 @@ pub fn TreeBag(comptime T: type) type {
             const bag_node = bagNodeFromTreapNode(treap_node);
             self.total_size -= bag_node.occ;
             entry.set(null);
-            self.config.keysAllocator().destroy(bag_node);
+            self.allocator.destroy(bag_node);
             self.distinct_count -= 1;
             return true;
         }
@@ -177,7 +172,7 @@ pub fn TreeBag(comptime T: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            destroySubtree(self.treap.root, self.config.keysAllocator());
+            destroySubtree(self.treap.root, self.allocator);
             self.treap.root = null;
             self.total_size = 0;
             self.distinct_count = 0;
@@ -188,8 +183,8 @@ pub fn TreeBag(comptime T: type) type {
         /// Probes that the allocator can serve `additional` node allocations.
         /// Returns `error.OutOfMemory` if the allocator fails.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const probe = try self.config.keysAllocator().alloc(BagNode, additional);
-            self.config.keysAllocator().free(probe);
+            const probe = try self.allocator.alloc(BagNode, additional);
+            self.allocator.free(probe);
         }
 
         /// Probes that the allocator can serve enough nodes for `new_capacity`
@@ -241,94 +236,84 @@ pub fn TreeBag(comptime T: type) type {
             return .{ .inner = TreapType.InorderIterator{ .current = self.treap.getMin() } };
         }
 
-        /// Calls f(value) for each element (including duplicates).
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
+        /// Calls f(ctx, value, count) for each distinct value.
+        pub fn forEachWithOccurrences(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T, usize) void) void {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
-                const occ = bagNodeFromTreapNode(treap_node).occ;
-                var j: usize = 0;
-                while (j < occ) : (j += 1) f(treap_node.key);
-            }
-        }
-
-        /// Calls f(value, count) for each distinct value.
-        pub fn forEachWithOccurrences(self: *const Self, f: *const fn (T, usize) void) void {
-            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
-            while (it.next()) |treap_node| {
-                f(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
+                f(ctx, treap_node.key, bagNodeFromTreapNode(treap_node).occ);
             }
         }
 
         // ---- Functional Operations ----
 
         /// Returns a new bag with only elements satisfying the predicate (preserving counts).
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
-                if (predicate(treap_node.key)) {
-                    result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
+                if (predicate(ctx, treap_node.key)) {
+                    try result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
                 }
             }
             return result;
         }
 
         /// Returns a new bag with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
-                if (!predicate(treap_node.key)) {
-                    result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
+                if (!predicate(ctx, treap_node.key)) {
+                    try result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
                 }
             }
             return result;
         }
 
         /// Returns the first distinct value satisfying the predicate, or null.
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
-                if (predicate(treap_node.key)) return treap_node.key;
+                if (predicate(ctx, treap_node.key)) return treap_node.key;
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
-            return self.detect(predicate) != null;
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+            return self.detect(ctx, predicate) != null;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
-                if (!predicate(treap_node.key)) return false;
+                if (!predicate(ctx, treap_node.key)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
-            return self.detect(predicate) == null;
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+            return self.detect(ctx, predicate) == null;
         }
 
         // ---- Conversion ----
 
         /// Returns all elements (with duplicates) as an allocated slice, in sorted order.
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf = std.ArrayListUnmanaged(T){};
-            buf.ensureTotalCapacity(allocator, self.total_size) catch @panic("out of memory");
+            try buf.ensureTotalCapacity(allocator, self.total_size);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
                 const occ = bagNodeFromTreapNode(treap_node).occ;
                 var j: usize = 0;
                 while (j < occ) : (j += 1) buf.appendAssumeCapacity(treap_node.key);
             }
-            return buf.toOwnedSlice(allocator) catch @panic("out of memory");
+            return buf.toOwnedSlice(allocator);
         }
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) *Self {
-            self.add(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            try self.add(value);
             return self;
         }
 

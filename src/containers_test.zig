@@ -91,23 +91,23 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
         var l = arraylist.ArrayList(T).init(testing.allocator);
         defer l.deinit();
         try testing.expect(l.isEmpty());
-        l.push(s[0]);
-        l.push(s[1]);
-        l.push(s[0]);
+        try l.push(s[0]);
+        try l.push(s[1]);
+        try l.push(s[0]);
         try testing.expectEqual(@as(usize, 3), l.len());
         try testing.expectEqual(@as(usize, 3), l.size());
         try testing.expect(l.contains(s[0]));
         try testing.expect(l.contains(s[1]));
         try testing.expectEqual(@as(?usize, 0), l.indexOf(s[0]));
 
-        var d = l.distinct();
+        var d = try l.distinct();
         defer d.deinit();
         try testing.expectEqual(@as(usize, 2), d.len());
 
         try testing.expect(l.remove(s[0]));
         try testing.expectEqual(@as(usize, 2), l.len());
 
-        var l2 = arraylist.ArrayList(T).of(testing.allocator, l.toSlice());
+        var l2 = try arraylist.ArrayList(T).of(testing.allocator, l.toSlice());
         defer l2.deinit();
         try testing.expect(l.eql(&l2));
     }
@@ -116,7 +116,7 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
 test "ArrayList: min/max/sort under canonical ordering" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var l = arraylist.ArrayList(T).of(testing.allocator, &[_]T{ s[1], s[0] });
+        var l = try arraylist.ArrayList(T).of(testing.allocator, &[_]T{ s[1], s[0] });
         defer l.deinit();
         try testing.expectEqual(@as(?T, s[0]), l.min());
         try testing.expectEqual(@as(?T, s[1]), l.max());
@@ -130,24 +130,24 @@ test "ArrayList: min/max/sort under canonical ordering" {
 test "ArrayList: sum reduction type and value per element type" {
     // float: returns T, plain summation
     {
-        var l = arraylist.ArrayList(f32).of(testing.allocator, &[_]f32{ 1.5, 2.5 });
+        var l = try arraylist.ArrayList(f32).of(testing.allocator, &[_]f32{ 1.5, 2.5 });
         defer l.deinit();
         try testing.expectEqual(@as(f32, 4.0), l.sum());
     }
     {
-        var l = arraylist.ArrayList(f64).of(testing.allocator, &[_]f64{ 1.5, 2.5 });
+        var l = try arraylist.ArrayList(f64).of(testing.allocator, &[_]f64{ 1.5, 2.5 });
         defer l.deinit();
         try testing.expectEqual(@as(f64, 4.0), l.sum());
     }
     // bool: i64, count of trues
     {
-        var l = arraylist.ArrayList(bool).of(testing.allocator, &[_]bool{ true, false, true });
+        var l = try arraylist.ArrayList(bool).of(testing.allocator, &[_]bool{ true, false, true });
         defer l.deinit();
         try testing.expectEqual(@as(i64, 2), l.sum());
     }
     // int widening: i64 accumulator (avoids i8 overflow)
     {
-        var l = arraylist.ArrayList(i8).of(testing.allocator, &[_]i8{ 100, 100, 100 });
+        var l = try arraylist.ArrayList(i8).of(testing.allocator, &[_]i8{ 100, 100, 100 });
         defer l.deinit();
         try testing.expectEqual(@as(i64, 300), l.sum());
     }
@@ -158,15 +158,15 @@ test "ArrayList: marquee — f32 NaN bit-equality + signed-zero distinct + i64 s
     var l = arraylist.ArrayList(f32).init(testing.allocator);
     defer l.deinit();
     const nan = std.math.nan(f32);
-    l.push(nan);
-    l.push(-0.0);
+    try l.push(nan);
+    try l.push(-0.0);
     try testing.expect(l.contains(nan));
     // +0.0 and -0.0 are distinct under bit equality.
     try testing.expect(l.contains(-0.0));
     try testing.expect(!l.contains(0.0));
 
     // i64 sum-widening: values that would overflow i32 sum correctly.
-    var big = arraylist.ArrayList(i32).of(testing.allocator, &[_]i32{ 2_000_000_000, 2_000_000_000 });
+    var big = try arraylist.ArrayList(i32).of(testing.allocator, &[_]i32{ 2_000_000_000, 2_000_000_000 });
     defer big.deinit();
     try testing.expectEqual(@as(i64, 4_000_000_000), big.sum());
 }
@@ -174,21 +174,21 @@ test "ArrayList: marquee — f32 NaN bit-equality + signed-zero distinct + i64 s
 test "HashSet: parameterized add/contains/remove/set-ops" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var set = hashset.HashSet(T).init(testing.allocator);
+        var set = try hashset.HashSet(T).init(testing.allocator);
         defer set.deinit();
-        try testing.expect(set.add(s[0]));
-        try testing.expect(!set.add(s[0]));
-        try testing.expect(set.add(s[1]));
+        try testing.expect(try set.add(s[0]));
+        try testing.expect(!(try set.add(s[0])));
+        try testing.expect(try set.add(s[1]));
         try testing.expectEqual(@as(usize, 2), set.len());
         try testing.expect(set.contains(s[1]));
         try testing.expect(set.remove(s[0]));
         try testing.expect(!set.contains(s[0]));
 
-        var a = hashset.HashSet(T).of(testing.allocator, &[_]T{s[0]});
+        var a = try hashset.HashSet(T).of(testing.allocator, &[_]T{s[0]});
         defer a.deinit();
-        var b = hashset.HashSet(T).of(testing.allocator, &[_]T{s[1]});
+        var b = try hashset.HashSet(T).of(testing.allocator, &[_]T{s[1]});
         defer b.deinit();
-        var u = a.setUnion(&b);
+        var u = try a.setUnion(&b);
         defer u.deinit();
         try testing.expectEqual(@as(usize, 2), u.len());
     }
@@ -199,8 +199,8 @@ test "Stack: parameterized LIFO + contains + eql" {
         const s = samples(T);
         var st = stack.ArrayStack(T).init(testing.allocator);
         defer st.deinit();
-        st.push(s[0]);
-        st.push(s[1]);
+        try st.push(s[0]);
+        try st.push(s[1]);
         try testing.expectEqual(@as(?T, s[1]), st.peek());
         try testing.expectEqual(@as(?T, s[1]), st.pop());
         try testing.expect(st.contains(s[0]));
@@ -214,8 +214,8 @@ test "Deque: parameterized ends + contains + eql" {
         const s = samples(T);
         var d = deque.ArrayDeque(T).init(testing.allocator);
         defer d.deinit();
-        d.addLast(s[1]);
-        d.addFirst(s[0]);
+        try d.addLast(s[1]);
+        try d.addFirst(s[0]);
         try testing.expectEqual(@as(?T, s[0]), d.peekFirst());
         try testing.expectEqual(@as(?T, s[1]), d.peekLast());
         try testing.expect(d.contains(s[0]));
@@ -230,8 +230,8 @@ test "PriorityQueue: parameterized min-heap order + contains" {
         const s = samples(T);
         var q = priority_queue.PriorityQueue(T).init(testing.allocator);
         defer q.deinit();
-        q.push(s[1]);
-        q.push(s[0]);
+        try q.push(s[1]);
+        try q.push(s[0]);
         try testing.expectEqual(@as(?T, s[0]), q.peek());
         try testing.expect(q.contains(s[1]));
         try testing.expectEqual(@as(?T, s[0]), q.pop());
@@ -243,11 +243,11 @@ test "PriorityQueue: parameterized min-heap order + contains" {
 test "TreeSet: parameterized sorted ops + min/max + ceiling/floor" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var set = treeset.TreeSet(T).of(testing.allocator, &[_]T{ s[1], s[0] });
+        var set = try treeset.TreeSet(T).of(testing.allocator, &[_]T{ s[1], s[0] });
         defer set.deinit();
         try testing.expectEqual(@as(?T, s[0]), set.min());
         try testing.expectEqual(@as(?T, s[1]), set.max());
-        const items = set.toSlice(testing.allocator);
+        const items = try set.toSlice(testing.allocator);
         defer testing.allocator.free(items);
         try testing.expectEqual(s[0], items[0]);
         try testing.expectEqual(s[1], items[1]);
@@ -259,11 +259,11 @@ test "TreeSet: parameterized sorted ops + min/max + ceiling/floor" {
 test "HashBag/TreeBag: parameterized count semantics" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var hb = bag.HashBag(T).init(testing.allocator);
+        var hb = try bag.HashBag(T).init(testing.allocator);
         defer hb.deinit();
-        hb.add(s[0]);
-        hb.add(s[0]);
-        hb.add(s[1]);
+        try hb.add(s[0]);
+        try hb.add(s[0]);
+        try hb.add(s[1]);
         try testing.expectEqual(@as(usize, 2), hb.occurrencesOf(s[0]));
         try testing.expectEqual(@as(usize, 1), hb.occurrencesOf(s[1]));
         try testing.expectEqual(@as(usize, 3), hb.totalSize());
@@ -273,9 +273,9 @@ test "HashBag/TreeBag: parameterized count semantics" {
 
         var tb = bag.TreeBag(T).init(testing.allocator);
         defer tb.deinit();
-        tb.add(s[1]);
-        tb.add(s[0]);
-        tb.add(s[0]);
+        try tb.add(s[1]);
+        try tb.add(s[0]);
+        try tb.add(s[0]);
         try testing.expectEqual(@as(usize, 2), tb.occurrencesOf(s[0]));
         try testing.expectEqual(@as(usize, 3), tb.totalSize());
         try testing.expectEqual(@as(usize, 2), tb.sizeDistinct());
@@ -293,15 +293,15 @@ test "TreeSet: f32 total order — NaN sorts to end, -0.0 and +0.0 distinct" {
     var set = treeset.TreeSet(f32).init(testing.allocator);
     defer set.deinit();
     const nan = std.math.nan(f32);
-    _ = set.add(1.0);
-    _ = set.add(nan);
-    _ = set.add(-0.0);
-    _ = set.add(0.0);
-    _ = set.add(-1.0);
+    _ = try set.add(1.0);
+    _ = try set.add(nan);
+    _ = try set.add(-0.0);
+    _ = try set.add(0.0);
+    _ = try set.add(-1.0);
     // -0.0 and +0.0 are distinct keys under totalOrder.
     try testing.expectEqual(@as(usize, 5), set.len());
 
-    const items = set.toSlice(testing.allocator);
+    const items = try set.toSlice(testing.allocator);
     defer testing.allocator.free(items);
     // totalOrder: -1.0 < -0.0 < +0.0 < 1.0 < NaN
     try testing.expectEqual(@as(f32, -1.0), items[0]);
@@ -312,7 +312,7 @@ test "TreeSet: f32 total order — NaN sorts to end, -0.0 and +0.0 distinct" {
 }
 
 test "PriorityQueue: f32 ordering pops ascending including negatives" {
-    var q = priority_queue.PriorityQueue(f32).of(testing.allocator, &[_]f32{ 3.0, -1.0, 2.0, -5.0 });
+    var q = try priority_queue.PriorityQueue(f32).of(testing.allocator, &[_]f32{ 3.0, -1.0, 2.0, -5.0 });
     defer q.deinit();
     try testing.expectEqual(@as(?f32, -5.0), q.pop());
     try testing.expectEqual(@as(?f32, -1.0), q.pop());
@@ -323,8 +323,8 @@ test "PriorityQueue: f32 ordering pops ascending including negatives" {
 test "TreeBag: f32 -0.0 / +0.0 distinct, NaN bit-equal in eql" {
     var b = bag.TreeBag(f32).init(testing.allocator);
     defer b.deinit();
-    b.add(-0.0);
-    b.add(0.0);
+    try b.add(-0.0);
+    try b.add(0.0);
     // Distinct keys under totalOrder.
     try testing.expectEqual(@as(usize, 2), b.sizeDistinct());
     try testing.expectEqual(@as(usize, 1), b.occurrencesOf(-0.0));

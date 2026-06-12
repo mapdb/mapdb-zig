@@ -60,8 +60,8 @@ pub fn HashSetWithStrategy(comptime T: type) type {
         }
 
         /// Add an element. Returns true if it was newly inserted, false if already present.
-        pub fn add(self: *Self, value: T) bool {
-            const result = self.inner.fetchPutContext(self.allocator, value, {}, self.ctx) catch @panic("out of memory");
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
+            const result = try self.inner.fetchPutContext(self.allocator, value, {}, self.ctx);
             return result == null;
         }
 
@@ -86,10 +86,10 @@ pub fn HashSetWithStrategy(comptime T: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
+        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(entry.key_ptr.*);
+                f(ctx, entry.key_ptr.*);
             }
         }
 
@@ -112,8 +112,8 @@ pub fn HashSetWithStrategy(comptime T: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
-            const slice = allocator.alloc(T, self.inner.count()) catch @panic("out of memory");
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            const slice = try allocator.alloc(T, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -169,9 +169,9 @@ test "HashSetWithStrategy basic add/contains" {
     var set = HashSetWithStrategy([]const u8).init(allocator, strat);
     defer set.deinit();
 
-    try std.testing.expect(set.add("hello"));
-    try std.testing.expect(set.add("world"));
-    try std.testing.expect(!set.add("hello")); // duplicate
+    try std.testing.expect(try set.add("hello"));
+    try std.testing.expect(try set.add("world"));
+    try std.testing.expect(!(try set.add("hello"))); // duplicate
 
     try std.testing.expectEqual(@as(usize, 2), set.len());
     try std.testing.expect(set.contains("hello"));
@@ -187,9 +187,9 @@ test "HashSetWithStrategy case-insensitive" {
     var set = HashSetWithStrategy([]const u8).init(allocator, strat);
     defer set.deinit();
 
-    try std.testing.expect(set.add("Hello"));
-    try std.testing.expect(!set.add("hello")); // duplicate by case
-    try std.testing.expect(!set.add("HELLO")); // duplicate by case
+    try std.testing.expect(try set.add("Hello"));
+    try std.testing.expect(!(try set.add("hello"))); // duplicate by case
+    try std.testing.expect(!(try set.add("HELLO"))); // duplicate by case
     try std.testing.expectEqual(@as(usize, 1), set.len());
     try std.testing.expect(set.contains("hElLo"));
 }
@@ -203,7 +203,7 @@ test "HashSetWithStrategy remove" {
     var set = HashSetWithStrategy([]const u8).init(allocator, strat);
     defer set.deinit();
 
-    _ = set.add("a");
+    _ = try set.add("a");
     try std.testing.expect(set.remove("a"));
     try std.testing.expect(!set.remove("a"));
     try std.testing.expect(set.isEmpty());
@@ -218,7 +218,7 @@ test "HashSetWithStrategy clear" {
     var set = HashSetWithStrategy([]const u8).init(allocator, strat);
     defer set.deinit();
 
-    _ = set.add("x");
+    _ = try set.add("x");
     set.clear();
     try std.testing.expect(set.isEmpty());
 }
@@ -245,7 +245,7 @@ test "HashSetWithStrategy stress insert 1000 remove half" {
 
     var i: i32 = 0;
     while (i < 1000) : (i += 1) {
-        _ = set.add(i);
+        _ = try set.add(i);
     }
     try std.testing.expectEqual(@as(usize, 1000), set.len());
 

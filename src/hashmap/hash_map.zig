@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
 const immutable = @import("../immutable/immutable.zig");
 
@@ -60,37 +59,27 @@ fn ImmutableType(comptime K: type, comptime V: type) type {
 /// Hash map from `K` keys to `V` values.
 ///
 /// Custom open-addressing with linear probing and Robin Hood backward-shift deletion.
-/// Supports separate allocators for keys, values, and index buckets via AllocatorConfig.
 pub fn HashMap(comptime K: type, comptime V: type) type {
     return struct {
         inner: OpenHashMap(K, V),
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Self {
-            return initWithConfig(AllocatorConfig.init(allocator));
-        }
-
-        /// Create with pre-allocated capacity.
-        pub fn initWithCapacity(allocator: Allocator, capacity: usize) Self {
+        pub fn init(allocator: Allocator) Allocator.Error!Self {
             return .{
-                .inner = OpenHashMap(K, V).initCapacity(allocator, capacity) catch @panic("out of memory"),
-                .config = AllocatorConfig.init(allocator),
+                .inner = try OpenHashMap(K, V).init(allocator),
+                .allocator = allocator,
             };
         }
 
-        /// Create with fine-grained allocator control.
-        pub fn initWithConfig(config: AllocatorConfig) Self {
+        /// Create with pre-allocated capacity.
+        pub fn initWithCapacity(allocator: Allocator, capacity: usize) Allocator.Error!Self {
             return .{
-                .inner = OpenHashMap(K, V).init(
-                    config.keysAllocator(),
-                    config.valuesAllocator(),
-                    config.indexAllocator(),
-                ) catch @panic("out of memory"),
-                .config = config,
+                .inner = try OpenHashMap(K, V).initCapacity(allocator, capacity),
+                .allocator = allocator,
             };
         }
 
@@ -101,8 +90,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         // ---- Core Operations ----
 
         /// Inserts a key-value pair. Returns the old value if the key was already present.
-        pub fn put(self: *Self, key: K, value: V) ?V {
-            return self.inner.put(key, value) catch @panic("out of memory");
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            return self.inner.put(key, value);
         }
 
         /// Returns the value for the key, or null.
@@ -136,17 +125,17 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             key: K,
 
             /// Inserts the default value if the key is absent. Returns the current value.
-            pub fn orInsert(self: Entry, default_value: V) V {
+            pub fn orInsert(self: Entry, default_value: V) Allocator.Error!V {
                 if (self.map_ptr.get(self.key)) |existing| return existing;
-                _ = self.map_ptr.put(self.key, default_value);
+                _ = try self.map_ptr.put(self.key, default_value);
                 return default_value;
             }
 
             /// Inserts the value from the function if the key is absent.
-            pub fn orInsertWith(self: Entry, f: *const fn () V) V {
+            pub fn orInsertWith(self: Entry, f: *const fn () V) Allocator.Error!V {
                 if (self.map_ptr.get(self.key)) |existing| return existing;
                 const val = f();
-                _ = self.map_ptr.put(self.key, val);
+                _ = try self.map_ptr.put(self.key, val);
                 return val;
             }
 
@@ -224,97 +213,93 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.inner.entries };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            self.inner.forEach(f);
+        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
+            self.inner.forEachKey(ctx, f);
         }
 
-        pub fn forEachKey(self: *const Self, f: *const fn (K) void) void {
-            self.inner.forEachKey(f);
-        }
-
-        pub fn forEachValue(self: *const Self, f: *const fn (V) void) void {
-            self.inner.forEachValue(f);
+        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
+            self.inner.forEachValue(ctx, f);
         }
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, predicate: *const fn (K, V) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (predicate(self.inner.entries[i].key, self.inner.entries[i].value))
-                        _ = result.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                    if (predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
+                        _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
                 }
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, predicate: *const fn (K, V) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+            var result = try init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (!predicate(self.inner.entries[i].key, self.inner.entries[i].value))
-                        _ = result.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                    if (!predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
+                        _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
                 }
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, predicate: *const fn (K, V) bool) ?struct { key: K, value: V } {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) ?struct { key: K, value: V } {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (predicate(self.inner.entries[i].key, self.inner.entries[i].value))
+                    if (predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
                         return .{ .key = self.inner.entries[i].key, .value = self.inner.entries[i].value };
                 }
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(self.inner.entries[i].key, self.inner.entries[i].value)) return true;
+                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and !predicate(self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.entries[i].occupied and !predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (K, V) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(self.inner.entries[i].key, self.inner.entries[i].value)) c += 1;
+                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) c += 1;
             }
             return c;
         }
 
-        pub fn injectInto(self: *const Self, initial: V, f: *const fn (V, K, V) V) V {
+        pub fn injectInto(self: *const Self, ctx: *anyopaque, initial: V, f: *const fn (ctx: *anyopaque, V, K, V) V) V {
             var acc = initial;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) acc = f(acc, self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.entries[i].occupied) acc = f(ctx, acc, self.inner.entries[i].key, self.inner.entries[i].value);
             }
             return acc;
         }
 
         // ---- Key/Value Collection ----
 
-        pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
-            return self.inner.keysToSlice(allocator) catch @panic("out of memory");
+        pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            return self.inner.keysToSlice(allocator);
         }
 
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
-            return self.inner.valuesToSlice(allocator) catch @panic("out of memory");
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
+            return self.inner.valuesToSlice(allocator);
         }
 
         // ---- Numeric Value Operations ----
@@ -351,7 +336,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// Adds `delta` to the value for `key` (inserting `delta` if absent).
         /// Integer values wrap on overflow per the spec; float values add.
         pub const addToValue = if (isNumericValue(V)) struct {
-            fn f(self: *Self, key: K, delta: V) V {
+            fn f(self: *Self, key: K, delta: V) Allocator.Error!V {
                 if (self.inner.getPtr(key)) |val_ptr| {
                     if (@typeInfo(V) == .float) {
                         val_ptr.* += delta;
@@ -360,7 +345,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
                     }
                     return val_ptr.*;
                 } else {
-                    _ = self.put(key, delta);
+                    _ = try self.put(key, delta);
                     return delta;
                 }
             }
@@ -368,14 +353,14 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         // ---- Conversion ----
 
-        pub fn toImmutable(self: *const Self) ImmutableType(K, V) {
-            return ImmutableType(K, V).fromMutable(self.config.base, self);
+        pub fn toImmutable(self: *const Self) Allocator.Error!ImmutableType(K, V) {
+            return ImmutableType(K, V).fromMutable(self.allocator, self);
         }
 
         // ---- Fluent API ----
 
-        pub fn withKeyValue(self: *Self, key: K, value: V) *Self {
-            _ = self.put(key, value);
+        pub fn withKeyValue(self: *Self, key: K, value: V) Allocator.Error!*Self {
+            _ = try self.put(key, value);
             return self;
         }
 
@@ -391,10 +376,10 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         // ---- Mutation Helpers ----
 
-        pub fn updateValue(self: *Self, key: K, initial: V, f: *const fn (V) V) V {
+        pub fn updateValue(self: *Self, key: K, initial: V, f: *const fn (V) V) Allocator.Error!V {
             const current = self.get(key) orelse initial;
             const new_value = f(current);
-            _ = self.put(key, new_value);
+            _ = try self.put(key, new_value);
             return new_value;
         }
 

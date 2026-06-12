@@ -39,16 +39,16 @@ pub fn main() !void {
 }
 
 fn probeMapNaN(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var m = F32I32HashMap.init(allocator);
+    var m = try F32I32HashMap.init(allocator);
     defer m.deinit();
 
-    _ = m.put(nan_f32, 1);
+    _ = try m.put(nan_f32, 1);
     try stdout.print("map_nan_size_after_put1: {d}\n", .{m.size()});
 
-    _ = m.put(nan_f32, 2);
+    _ = try m.put(nan_f32, 2);
     try stdout.print("map_nan_size_after_put2: {d}\n", .{m.size()});
 
-    _ = m.put(nan_f32, 3);
+    _ = try m.put(nan_f32, 3);
     try stdout.print("map_nan_size_after_put3: {d}\n", .{m.size()});
 
     const v = m.get(nan_f32);
@@ -63,11 +63,11 @@ fn probeMapNaN(allocator: std.mem.Allocator, stdout: anytype) !void {
 }
 
 fn probeMapNegZero(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var m = F32I32HashMap.init(allocator);
+    var m = try F32I32HashMap.init(allocator);
     defer m.deinit();
 
-    _ = m.put(@as(f32, 0.0), 100);
-    _ = m.put(@as(f32, -0.0), 200);
+    _ = try m.put(@as(f32, 0.0), 100);
+    _ = try m.put(@as(f32, -0.0), 200);
 
     try stdout.print("map_zero_size: {d}\n", .{m.size()});
 
@@ -90,11 +90,11 @@ fn probeMapNegZero(allocator: std.mem.Allocator, stdout: anytype) !void {
 }
 
 fn probeMapInfinity(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var m = F32I32HashMap.init(allocator);
+    var m = try F32I32HashMap.init(allocator);
     defer m.deinit();
 
-    _ = m.put(pos_inf, 111);
-    _ = m.put(neg_inf, 222);
+    _ = try m.put(pos_inf, 111);
+    _ = try m.put(neg_inf, 222);
 
     try stdout.print("map_inf_size: {d}\n", .{m.size()});
 
@@ -108,35 +108,35 @@ fn probeMapInfinity(allocator: std.mem.Allocator, stdout: anytype) !void {
 }
 
 fn probeSetNaN(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var s = F32HashSet.init(allocator);
+    var s = try F32HashSet.init(allocator);
     defer s.deinit();
 
-    _ = s.add(nan_f32);
-    _ = s.add(nan_f32);
-    _ = s.add(nan_f32);
+    _ = try s.add(nan_f32);
+    _ = try s.add(nan_f32);
+    _ = try s.add(nan_f32);
     try stdout.print("set_nan_size: {d}\n", .{s.size()});
     try stdout.print("set_nan_contains: {}\n", .{s.contains(nan_f32)});
 }
 
 fn probeSetNegZero(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var s = F32HashSet.init(allocator);
+    var s = try F32HashSet.init(allocator);
     defer s.deinit();
 
-    _ = s.add(@as(f32, 0.0));
-    _ = s.add(@as(f32, -0.0));
+    _ = try s.add(@as(f32, 0.0));
+    _ = try s.add(@as(f32, -0.0));
     try stdout.print("set_zero_size: {d}\n", .{s.size()});
     try stdout.print("set_pos_zero_contains: {}\n", .{s.contains(@as(f32, 0.0))});
     try stdout.print("set_neg_zero_contains: {}\n", .{s.contains(@as(f32, -0.0))});
 }
 
 fn probeSetMixed(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var s = F32HashSet.init(allocator);
+    var s = try F32HashSet.init(allocator);
     defer s.deinit();
 
-    _ = s.add(@as(f32, 1.0));
-    _ = s.add(nan_f32);
-    _ = s.add(pos_inf);
-    _ = s.add(neg_inf);
-    _ = s.add(@as(f32, 0.0));
+    _ = try s.add(@as(f32, 1.0));
+    _ = try s.add(nan_f32);
+    _ = try s.add(pos_inf);
+    _ = try s.add(neg_inf);
+    _ = try s.add(@as(f32, 0.0));
     try stdout.print("set_mixed_size: {d}\n", .{s.size()});
 }

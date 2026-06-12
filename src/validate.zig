@@ -59,12 +59,12 @@ fn parseCollectionKind(name: []const u8) ?CollectionKind {
     return null;
 }
 
-fn initCollection(kind: CollectionKind, allocator: Allocator) Collection {
+fn initCollection(kind: CollectionKind, allocator: Allocator) !Collection {
     return switch (kind) {
-        .hash_map => .{ .hash_map = I32I32HashMap.init(allocator) },
+        .hash_map => .{ .hash_map = try I32I32HashMap.init(allocator) },
         .array_list => .{ .array_list = I32ArrayList.init(allocator) },
-        .hash_set => .{ .hash_set = I32HashSet.init(allocator) },
-        .hash_bag => .{ .hash_bag = I32HashBag.init(allocator) },
+        .hash_set => .{ .hash_set = try I32HashSet.init(allocator) },
+        .hash_bag => .{ .hash_bag = try I32HashBag.init(allocator) },
         .tree_set => .{ .tree_set = I32TreeSet.init(allocator) },
         .tree_map => .{ .tree_map = I32I32TreeMap.init(allocator) },
         .array_stack => .{ .array_stack = I32ArrayStack.init(allocator) },
@@ -90,7 +90,7 @@ fn jsonToI32(val: std.json.Value) ?i32 {
     };
 }
 
-fn applyOperation(coll: *Collection, op: std.json.Value) void {
+fn applyOperation(coll: *Collection, op: std.json.Value) !void {
     const obj = op.object;
     const op_name = obj.get("op").?.string;
 
@@ -98,18 +98,18 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
         const key = jsonToI32(obj.get("key").?).?;
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
-            .hash_map => |*m| _ = m.put(key, value),
-            .tree_map => |*m| _ = m.put(key, value),
+            .hash_map => |*m| _ = try m.put(key, value),
+            .tree_map => |*m| _ = try m.put(key, value),
             else => {},
         }
     } else if (std.mem.eql(u8, op_name, "add")) {
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
-            .array_list => |*l| l.add(value),
-            .hash_set => |*s| _ = s.add(value),
-            .hash_bag => |*b| b.add(value),
-            .tree_set => |*s| _ = s.add(value),
-            .array_stack => |*s| s.push(value),
+            .array_list => |*l| try l.add(value),
+            .hash_set => |*s| _ = try s.add(value),
+            .hash_bag => |*b| try b.add(value),
+            .tree_set => |*s| _ = try s.add(value),
+            .array_stack => |*s| try s.push(value),
             else => {},
         }
     } else if (std.mem.eql(u8, op_name, "add_at")) {
@@ -117,7 +117,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
             .array_list => |*l| {
-                l.items.insert(l.config.itemsAllocator(), index, value) catch @panic("out of memory");
+                try l.items.insert(l.allocator, index, value);
             },
             else => {},
         }
@@ -129,7 +129,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
         const delta = jsonToI32(obj.get("delta").?).?;
         switch (coll.*) {
             .hash_map => |*m| {
-                _ = m.addToValue(key, delta);
+                _ = try m.addToValue(key, delta);
             },
             else => {},
         }
@@ -176,8 +176,8 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
     } else if (std.mem.eql(u8, op_name, "push")) {
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
-            .array_stack => |*s| s.push(value),
-            .array_list => |*l| l.push(value),
+            .array_stack => |*s| try s.push(value),
+            .array_list => |*l| try l.push(value),
             else => {},
         }
     } else if (std.mem.eql(u8, op_name, "pop")) {
@@ -190,32 +190,32 @@ fn applyOperation(coll: *Collection, op: std.json.Value) void {
 
 /// Get a sorted slice of values from an element-based collection.
 /// Caller owns the returned slice.
-fn getItemSlice(coll: *Collection, allocator: Allocator) []i32 {
+fn getItemSlice(coll: *Collection, allocator: Allocator) ![]i32 {
     switch (coll.*) {
         .array_list => |*l| {
             const src = l.toSlice();
-            const copy = allocator.alloc(i32, src.len) catch @panic("oom");
+            const copy = try allocator.alloc(i32, src.len);
             @memcpy(copy, src);
             return copy;
         },
         .hash_set => |*s| {
-            return s.toSlice(allocator);
+            return try s.toSlice(allocator);
         },
         .hash_bag => |*b| {
-            return b.toSlice(allocator);
+            return try b.toSlice(allocator);
         },
         .tree_set => |*s| {
             // toSlice(allocator) now owns the return — no extra copy needed.
-            return s.toSlice(allocator);
+            return try s.toSlice(allocator);
         },
         .array_stack => |*s| {
             const src = s.toSlice();
-            const copy = allocator.alloc(i32, src.len) catch @panic("oom");
+            const copy = try allocator.alloc(i32, src.len);
             @memcpy(copy, src);
             return copy;
         },
         else => {
-            return allocator.alloc(i32, 0) catch @panic("oom");
+            return try allocator.alloc(i32, 0);
         },
     }
 }
@@ -240,10 +240,10 @@ fn writeI32(writer: anytype, val: i32) !void {
 // Wrapping i32 reductions passed to the production I32ArrayList.injectInto, so
 // the harness exercises the production fold path with i32-seed-width wrapping
 // (algorithms.md "Integer overflow contract").
-fn injectAddWrapI32(acc: i32, v: i32) i32 {
+fn injectAddWrapI32(_: *anyopaque, acc: i32, v: i32) i32 {
     return acc +% v;
 }
-fn injectMulWrapI32(acc: i32, v: i32) i32 {
+fn injectMulWrapI32(_: *anyopaque, acc: i32, v: i32) i32 {
     return acc *% v;
 }
 
@@ -533,7 +533,7 @@ fn evaluateAssertion(
     else if (std.mem.eql(u8, key, "sorted_keys")) {
         switch (coll.*) {
             .hash_map => |*m| {
-                const keys = m.keysToSlice(allocator);
+                const keys = try m.keysToSlice(allocator);
                 defer allocator.free(keys);
                 try writeSortedArray(writer, keys);
             },
@@ -548,7 +548,7 @@ fn evaluateAssertion(
     else if (std.mem.eql(u8, key, "sorted_values")) {
         switch (coll.*) {
             .hash_map => |*m| {
-                const vals = m.valuesToSlice(allocator);
+                const vals = try m.valuesToSlice(allocator);
                 defer allocator.free(vals);
                 try writeSortedArray(writer, vals);
             },
@@ -561,7 +561,7 @@ fn evaluateAssertion(
     }
     // --- to_sorted_array ---
     else if (std.mem.eql(u8, key, "to_sorted_array")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         try writeSortedArray(writer, items);
     }
@@ -571,10 +571,10 @@ fn evaluateAssertion(
     // contract"). Routed through the production I32ArrayList.injectInto.
     else if (std.mem.eql(u8, key, "inject_into_sum")) {
         switch (coll.*) {
-            .array_list => |*l| try writeI32(writer, l.injectInto(0, injectAddWrapI32)),
+            .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 0, injectAddWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 0;
-                for (s.toSlice()) |item| acc = injectAddWrapI32(acc, item);
+                for (s.toSlice()) |item| acc = injectAddWrapI32(undefined, acc, item);
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -583,10 +583,10 @@ fn evaluateAssertion(
     // --- inject_into_product (i32 wrapping fold, via production injectInto) ---
     else if (std.mem.eql(u8, key, "inject_into_product")) {
         switch (coll.*) {
-            .array_list => |*l| try writeI32(writer, l.injectInto(1, injectMulWrapI32)),
+            .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 1, injectMulWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 1;
-                for (s.toSlice()) |item| acc = injectMulWrapI32(acc, item);
+                for (s.toSlice()) |item| acc = injectMulWrapI32(undefined, acc, item);
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -614,7 +614,7 @@ fn evaluateAssertion(
     // --- select_gt_N ---
     else if (std.mem.startsWith(u8, key, "select_gt_")) {
         const threshold = parseThreshold(key, "select_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
         // (std.array_list.Managed). The allocator-carrying init(alloc) form
@@ -622,10 +622,10 @@ fn evaluateAssertion(
         var result = std.array_list.Managed(i32).init(allocator);
         defer result.deinit();
         for (items) |item| {
-            if (item > threshold) result.append(item) catch @panic("oom");
+            if (item > threshold) try result.append(item);
         }
         const slice = result.items;
-        const copy = allocator.alloc(i32, slice.len) catch @panic("oom");
+        const copy = try allocator.alloc(i32, slice.len);
         defer allocator.free(copy);
         @memcpy(copy, slice);
         try writeSortedArray(writer, copy);
@@ -633,7 +633,7 @@ fn evaluateAssertion(
     // --- reject_gt_N ---
     else if (std.mem.startsWith(u8, key, "reject_gt_")) {
         const threshold = parseThreshold(key, "reject_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
         // (std.array_list.Managed). The allocator-carrying init(alloc) form
@@ -641,10 +641,10 @@ fn evaluateAssertion(
         var result = std.array_list.Managed(i32).init(allocator);
         defer result.deinit();
         for (items) |item| {
-            if (item <= threshold) result.append(item) catch @panic("oom");
+            if (item <= threshold) try result.append(item);
         }
         const slice = result.items;
-        const copy = allocator.alloc(i32, slice.len) catch @panic("oom");
+        const copy = try allocator.alloc(i32, slice.len);
         defer allocator.free(copy);
         @memcpy(copy, slice);
         try writeSortedArray(writer, copy);
@@ -652,7 +652,7 @@ fn evaluateAssertion(
     // --- detect_gt_N ---
     else if (std.mem.startsWith(u8, key, "detect_gt_")) {
         const threshold = parseThreshold(key, "detect_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var found: ?i32 = null;
         for (items) |item| {
@@ -666,7 +666,7 @@ fn evaluateAssertion(
     // --- count_gt_N ---
     else if (std.mem.startsWith(u8, key, "count_gt_")) {
         const threshold = parseThreshold(key, "count_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var c: i64 = 0;
         for (items) |item| {
@@ -677,7 +677,7 @@ fn evaluateAssertion(
     // --- count_lt_N ---
     else if (std.mem.startsWith(u8, key, "count_lt_")) {
         const threshold = parseThreshold(key, "count_lt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var c: i64 = 0;
         for (items) |item| {
@@ -687,7 +687,7 @@ fn evaluateAssertion(
     }
     // --- count_even ---
     else if (std.mem.eql(u8, key, "count_even")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var c: i64 = 0;
         for (items) |item| {
@@ -697,7 +697,7 @@ fn evaluateAssertion(
     }
     // --- count_odd ---
     else if (std.mem.eql(u8, key, "count_odd")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var c: i64 = 0;
         for (items) |item| {
@@ -707,7 +707,7 @@ fn evaluateAssertion(
     }
     // --- any_satisfy_even ---
     else if (std.mem.eql(u8, key, "any_satisfy_even")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var found = false;
         for (items) |item| {
@@ -720,7 +720,7 @@ fn evaluateAssertion(
     }
     // --- all_satisfy_even ---
     else if (std.mem.eql(u8, key, "all_satisfy_even")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var all = true;
         for (items) |item| {
@@ -733,7 +733,7 @@ fn evaluateAssertion(
     }
     // --- none_satisfy_odd ---
     else if (std.mem.eql(u8, key, "none_satisfy_odd")) {
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var none = true;
         for (items) |item| {
@@ -747,7 +747,7 @@ fn evaluateAssertion(
     // --- any_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "any_satisfy_gt_")) {
         const threshold = parseThreshold(key, "any_satisfy_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var found = false;
         for (items) |item| {
@@ -761,7 +761,7 @@ fn evaluateAssertion(
     // --- all_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "all_satisfy_gt_")) {
         const threshold = parseThreshold(key, "all_satisfy_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var all = true;
         for (items) |item| {
@@ -775,7 +775,7 @@ fn evaluateAssertion(
     // --- none_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "none_satisfy_gt_")) {
         const threshold = parseThreshold(key, "none_satisfy_gt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var none = true;
         for (items) |item| {
@@ -789,7 +789,7 @@ fn evaluateAssertion(
     // --- none_satisfy_lt_N ---
     else if (std.mem.startsWith(u8, key, "none_satisfy_lt_")) {
         const threshold = parseThreshold(key, "none_satisfy_lt_").?;
-        const items = getItemSlice(coll, allocator);
+        const items = try getItemSlice(coll, allocator);
         defer allocator.free(items);
         var none = true;
         for (items) |item| {
@@ -807,13 +807,13 @@ fn evaluateAssertion(
                 .hash_set => |*s| {
                     switch (oc.*) {
                         .hash_set => |*os| {
-                            var result = s.setUnion(os);
+                            var result = try s.setUnion(os);
                             defer result.deinit();
                             if (std.mem.eql(u8, key, "union_size")) {
                                 const sz: i64 = @intCast(result.len());
                                 try writeI64(writer, sz);
                             } else {
-                                const slice = result.toSlice(allocator);
+                                const slice = try result.toSlice(allocator);
                                 defer allocator.free(slice);
                                 try writeSortedArray(writer, slice);
                             }
@@ -834,13 +834,13 @@ fn evaluateAssertion(
                 .hash_set => |*s| {
                     switch (oc.*) {
                         .hash_set => |*os| {
-                            var result = s.intersect(os);
+                            var result = try s.intersect(os);
                             defer result.deinit();
                             if (std.mem.eql(u8, key, "intersect_size")) {
                                 const sz: i64 = @intCast(result.len());
                                 try writeI64(writer, sz);
                             } else {
-                                const slice = result.toSlice(allocator);
+                                const slice = try result.toSlice(allocator);
                                 defer allocator.free(slice);
                                 try writeSortedArray(writer, slice);
                             }
@@ -861,13 +861,13 @@ fn evaluateAssertion(
                 .hash_set => |*s| {
                     switch (oc.*) {
                         .hash_set => |*os| {
-                            var result = s.difference(os);
+                            var result = try s.difference(os);
                             defer result.deinit();
                             if (std.mem.eql(u8, key, "difference_size")) {
                                 const sz: i64 = @intCast(result.len());
                                 try writeI64(writer, sz);
                             } else {
-                                const slice = result.toSlice(allocator);
+                                const slice = try result.toSlice(allocator);
                                 defer allocator.free(slice);
                                 try writeSortedArray(writer, slice);
                             }
@@ -888,13 +888,13 @@ fn evaluateAssertion(
                 .hash_set => |*s| {
                     switch (oc.*) {
                         .hash_set => |*os| {
-                            var result = s.symmetricDifference(os);
+                            var result = try s.symmetricDifference(os);
                             defer result.deinit();
                             if (std.mem.eql(u8, key, "symmetric_difference_size")) {
                                 const sz: i64 = @intCast(result.len());
                                 try writeI64(writer, sz);
                             } else {
-                                const slice = result.toSlice(allocator);
+                                const slice = try result.toSlice(allocator);
                                 defer allocator.free(slice);
                                 try writeSortedArray(writer, slice);
                             }
@@ -1011,12 +1011,12 @@ pub fn main() !void {
     };
 
     // Initialize main collection
-    var coll = initCollection(kind, allocator);
+    var coll = try initCollection(kind, allocator);
     defer deinitCollection(&coll);
 
     // Apply operations
     for (operations.items) |op| {
-        applyOperation(&coll, op);
+        try applyOperation(&coll, op);
     }
 
     // Initialize "other" collection if present (for set operations)
@@ -1028,10 +1028,10 @@ pub fn main() !void {
             std.debug.print("Unknown other collection type: {s}\n", .{other_type});
             std.process.exit(1);
         };
-        other_coll = initCollection(other_kind, allocator);
+        other_coll = try initCollection(other_kind, allocator);
         const other_ops = other_obj.get("operations").?.array;
         for (other_ops.items) |op| {
-            applyOperation(&other_coll.?, op);
+            try applyOperation(&other_coll.?, op);
         }
     }
     defer {
@@ -1183,7 +1183,7 @@ fn runF32HashMap(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var m = F32I32HashMap.init(allocator);
+    var m = try F32I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
         const obj = op.object;
@@ -1191,7 +1191,7 @@ fn runF32HashMap(
         if (std.mem.eql(u8, op_name, "put")) {
             const k = parseF32Value(obj.get("key").?);
             const v = @as(i32, @intCast(obj.get("value").?.integer));
-            _ = m.put(k, v);
+            _ = try m.put(k, v);
         } else if (std.mem.eql(u8, op_name, "remove")) {
             _ = m.remove(parseF32Value(obj.get("key").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
@@ -1214,7 +1214,7 @@ fn runF32HashMap(
             const probe = parseF32Label(key[9..]);
             try vw.print("{s}", .{if (m.containsKey(probe)) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted_keys")) {
-            const keys = m.keysToSlice(allocator);
+            const keys = try m.keysToSlice(allocator);
             defer allocator.free(keys);
             sortF32Total(keys);
             try vw.writeAll("[");
@@ -1262,13 +1262,13 @@ fn runF32HashSet(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var set = F32HashSet.init(allocator);
+    var set = try F32HashSet.init(allocator);
     defer set.deinit();
     for (operations.items) |op| {
         const obj = op.object;
         const op_name = obj.get("op").?.string;
         if (std.mem.eql(u8, op_name, "add")) {
-            _ = set.add(parseF32Value(obj.get("value").?));
+            _ = try set.add(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "remove")) {
             _ = set.remove(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
@@ -1288,7 +1288,7 @@ fn runF32HashSet(
             const probe = parseF32Label(key[9..]);
             try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
-            const vals = set.toSlice(allocator);
+            const vals = try set.toSlice(allocator);
             defer allocator.free(vals);
             sortF32Total(vals);
             try vw.writeAll("[");
@@ -1324,7 +1324,7 @@ fn runF32TreeSet(
         const obj = op.object;
         const op_name = obj.get("op").?.string;
         if (std.mem.eql(u8, op_name, "add")) {
-            _ = set.add(parseF32Value(obj.get("value").?));
+            _ = try set.add(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "remove")) {
             _ = set.remove(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
@@ -1349,7 +1349,7 @@ fn runF32TreeSet(
             try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
             // In-order traversal straight from the production treap.
-            const vals = set.toSlice(allocator);
+            const vals = try set.toSlice(allocator);
             defer allocator.free(vals);
             try vw.writeAll("[");
             for (vals, 0..) |v, i| {
@@ -1380,7 +1380,7 @@ fn runF32ArrayList(
         const obj = op.object;
         const op_name = obj.get("op").?.string;
         if (std.mem.eql(u8, op_name, "add")) {
-            list.add(parseF32Value(obj.get("value").?));
+            try list.add(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
             list.clear();
         }
@@ -1409,7 +1409,7 @@ fn runF32ArrayList(
             // original element order is preserved for any later assertions.
             var sorted_list = F32ArrayList.init(allocator);
             defer sorted_list.deinit();
-            for (values) |v| sorted_list.add(v);
+            for (values) |v| try sorted_list.add(v);
             sorted_list.sort();
             const buf = sorted_list.toSlice();
             try vw.writeAll("[");
@@ -1450,7 +1450,7 @@ fn runI64HashMap(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var m = I64I32HashMap.init(allocator);
+    var m = try I64I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
         const obj = op.object;
@@ -1458,7 +1458,7 @@ fn runI64HashMap(
         if (std.mem.eql(u8, op_name, "put")) {
             const k = parseI64Operand(obj.get("key").?);
             const v = @as(i32, @intCast(obj.get("value").?.integer));
-            _ = m.put(k, v);
+            _ = try m.put(k, v);
         } else if (std.mem.eql(u8, op_name, "remove")) {
             _ = m.remove(parseI64Operand(obj.get("key").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
@@ -1478,7 +1478,7 @@ fn runI64HashMap(
         } else if (std.mem.eql(u8, key, "sorted_keys")) {
             // i64 keys exceed 2^53: serialize each as a plain decimal STRING in
             // a quoted array, sorted numerically as i64 ascending.
-            const keys = m.keysToSlice(allocator);
+            const keys = try m.keysToSlice(allocator);
             defer allocator.free(keys);
             std.mem.sort(i64, keys, {}, struct {
                 pub fn lt(_: void, a: i64, b: i64) bool {
@@ -1581,7 +1581,7 @@ fn runI64Multimap(
         if (std.mem.eql(u8, op_name, "put")) {
             const k = parseI64Operand(obj.get("key").?);
             const v = @as(i32, @intCast(obj.get("value").?.integer));
-            m.put(k, v);
+            _ = try m.put(k, v);
         } else if (std.mem.eql(u8, op_name, "removeAll")) {
             _ = m.removeAll(parseI64Operand(obj.get("key").?));
         } else {
@@ -1600,7 +1600,7 @@ fn runI64Multimap(
             // DISTINCT keys, ascending i64, each a quoted decimal string —
             // same serialization as the i64-HashMap sorted_keys. uniqueKeys
             // allocates; free it.
-            const keys = m.uniqueKeys(allocator);
+            const keys = try m.uniqueKeys(allocator);
             defer allocator.free(keys);
             std.mem.sort(i64, keys, {}, struct {
                 pub fn lt(_: void, a: i64, b: i64) bool {

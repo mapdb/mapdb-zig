@@ -105,8 +105,8 @@ test "TreeMap: parameterized sorted iteration, min, max, range, navigation" {
             defer m.deinit();
 
             // Insert in reverse key order; tree must store them sorted.
-            _ = m.put(ks[1], vs[1]);
-            _ = m.put(ks[0], vs[0]);
+            _ = try m.put(ks[1], vs[1]);
+            _ = try m.put(ks[0], vs[0]);
 
             const keys = m.keysSlice();
             try std.testing.expectEqual(@as(usize, 2), keys.len);
@@ -143,14 +143,15 @@ test "TreeMap: parameterized functional ops, fluent API, eql" {
 
             var a = TreeMap(K, V).init(std.testing.allocator);
             defer a.deinit();
-            _ = a.withKeyValue(ks[0], vs[0]).withKeyValue(ks[1], vs[1]);
+            _ = try a.withKeyValue(ks[0], vs[0]);
+            _ = try a.withKeyValue(ks[1], vs[1]);
             try std.testing.expectEqual(@as(usize, 2), a.size());
 
             // Insertion-order independence of eql (TreeMap is always sorted).
             var b = TreeMap(K, V).init(std.testing.allocator);
             defer b.deinit();
-            _ = b.put(ks[1], vs[1]);
-            _ = b.put(ks[0], vs[0]);
+            _ = try b.put(ks[1], vs[1]);
+            _ = try b.put(ks[0], vs[0]);
             try std.testing.expect(a.eql(&b));
 
             // withoutKey drops an entry.
@@ -159,24 +160,25 @@ test "TreeMap: parameterized functional ops, fluent API, eql" {
             try std.testing.expect(!a.eql(&b));
 
             // count predicate over b (matches everything).
-            const total = b.count(struct {
-                fn f(_: K, _: V) bool {
+            var ctx: u8 = 0;
+            const total = b.count(&ctx, struct {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f);
             try std.testing.expectEqual(@as(usize, 2), total);
-            try std.testing.expect(b.anySatisfy(struct {
-                fn f(_: K, _: V) bool {
+            try std.testing.expect(b.anySatisfy(&ctx, struct {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f));
-            try std.testing.expect(b.allSatisfy(struct {
-                fn f(_: K, _: V) bool {
+            try std.testing.expect(b.allSatisfy(&ctx, struct {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return true;
                 }
             }.f));
-            try std.testing.expect(b.noneSatisfy(struct {
-                fn f(_: K, _: V) bool {
+            try std.testing.expect(b.noneSatisfy(&ctx, struct {
+                fn f(_: *anyopaque, _: K, _: V) bool {
                     return false;
                 }
             }.f));
@@ -203,13 +205,13 @@ test "TreeMap(f32, i32) key: IEEE 754 total order — NaN at the end, -0 vs +0 d
     const pinf = std.math.inf(f32);
 
     // Insert in a deliberately scrambled order.
-    _ = m.put(nan, 7);
-    _ = m.put(0.0, 100);
-    _ = m.put(-0.0, 200);
-    _ = m.put(1.0, 1);
-    _ = m.put(-1.0, -1);
-    _ = m.put(pinf, 9);
-    _ = m.put(ninf, 8);
+    _ = try m.put(nan, 7);
+    _ = try m.put(0.0, 100);
+    _ = try m.put(-0.0, 200);
+    _ = try m.put(1.0, 1);
+    _ = try m.put(-1.0, -1);
+    _ = try m.put(pinf, 9);
+    _ = try m.put(ninf, 8);
 
     // -0.0 and +0.0 are bit-distinct keys: both retained.
     try std.testing.expectEqual(@as(usize, 7), m.len());
@@ -238,9 +240,9 @@ test "TreeMap(f64, i32) key: NaN/-0/+0 total order on f64 width" {
     var m = TreeMap(f64, i32).init(std.testing.allocator);
     defer m.deinit();
     const nan = std.math.nan(f64);
-    _ = m.put(nan, 1);
-    _ = m.put(-0.0, 2);
-    _ = m.put(0.0, 3);
+    _ = try m.put(nan, 1);
+    _ = try m.put(-0.0, 2);
+    _ = try m.put(0.0, 3);
     try std.testing.expectEqual(@as(usize, 3), m.len());
     const keys = m.keysSlice();
     try std.testing.expect(keys[0] == 0.0 and std.math.signbit(keys[0])); // -0.0
@@ -251,11 +253,11 @@ test "TreeMap(f64, i32) key: NaN/-0/+0 total order on f64 width" {
 test "TreeMap(i32, f32) value: eql uses exact-bit float equality (-0 != +0)" {
     var a = TreeMap(i32, f32).init(std.testing.allocator);
     defer a.deinit();
-    _ = a.put(1, 0.0);
+    _ = try a.put(1, 0.0);
 
     var b = TreeMap(i32, f32).init(std.testing.allocator);
     defer b.deinit();
-    _ = b.put(1, -0.0);
+    _ = try b.put(1, -0.0);
 
     // 0.0 == -0.0 numerically, but their bits differ -> eql must report unequal.
     try std.testing.expect(!a.eql(&b));
@@ -263,25 +265,25 @@ test "TreeMap(i32, f32) value: eql uses exact-bit float equality (-0 != +0)" {
     // Identical bits -> equal.
     var c = TreeMap(i32, f32).init(std.testing.allocator);
     defer c.deinit();
-    _ = c.put(1, 0.0);
+    _ = try c.put(1, 0.0);
     try std.testing.expect(a.eql(&c));
 
     // NaN with identical bits compares equal under bit-equality.
     const nan = std.math.nan(f32);
     var d = TreeMap(i32, f32).init(std.testing.allocator);
     defer d.deinit();
-    _ = d.put(1, nan);
+    _ = try d.put(1, nan);
     var e = TreeMap(i32, f32).init(std.testing.allocator);
     defer e.deinit();
-    _ = e.put(1, nan);
+    _ = try e.put(1, nan);
     try std.testing.expect(d.eql(&e));
 }
 
 test "TreeMap(bool, i32) key: false sorts before true" {
     var m = TreeMap(bool, i32).init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put(true, 10);
-    _ = m.put(false, 20);
+    _ = try m.put(true, 10);
+    _ = try m.put(false, 20);
     const keys = m.keysSlice();
     try std.testing.expectEqual(false, keys[0]);
     try std.testing.expectEqual(true, keys[1]);
@@ -292,9 +294,9 @@ test "TreeMap(bool, i32) key: false sorts before true" {
 test "TreeMap(char, i32) key: u21 natural order" {
     var m = TreeMap(u21, i32).init(std.testing.allocator);
     defer m.deinit();
-    _ = m.put('z', 1);
-    _ = m.put('a', 2);
-    _ = m.put('m', 3);
+    _ = try m.put('z', 1);
+    _ = try m.put('a', 2);
+    _ = try m.put('m', 3);
     const keys = m.keysSlice();
     try std.testing.expectEqual(@as(u21, 'a'), keys[0]);
     try std.testing.expectEqual(@as(u21, 'm'), keys[1]);

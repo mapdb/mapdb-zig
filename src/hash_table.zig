@@ -66,15 +66,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         capacity: usize,
         alloc: Allocator,
 
-        pub fn init(
-            keys_alloc: Allocator,
-            values_alloc: Allocator,
-            index_alloc: Allocator,
-        ) Allocator.Error!Self {
-            // Use first allocator for the unified entries array
-            _ = values_alloc;
-            _ = index_alloc;
-            return initCapacity(keys_alloc, DEFAULT_CAPACITY);
+        pub fn init(alloc: Allocator) Allocator.Error!Self {
+            return initCapacity(alloc, DEFAULT_CAPACITY);
         }
 
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
@@ -269,21 +262,15 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             self.size = 0;
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
+        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(self.entries[i].key, self.entries[i].value);
+                if (self.entries[i].occupied) f(ctx, self.entries[i].key);
             }
         }
 
-        pub fn forEachKey(self: *const Self, f: *const fn (K) void) void {
+        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(self.entries[i].key);
-            }
-        }
-
-        pub fn forEachValue(self: *const Self, f: *const fn (V) void) void {
-            for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(self.entries[i].value);
+                if (self.entries[i].occupied) f(ctx, self.entries[i].value);
             }
         }
 
@@ -335,12 +322,8 @@ pub fn OpenHashSet(comptime K: type) type {
         capacity: usize,
         alloc: Allocator,
 
-        pub fn init(
-            keys_alloc: Allocator,
-            index_alloc: Allocator,
-        ) Allocator.Error!Self {
-            _ = index_alloc;
-            return initCapacity(keys_alloc, DEFAULT_CAPACITY);
+        pub fn init(alloc: Allocator) Allocator.Error!Self {
+            return initCapacity(alloc, DEFAULT_CAPACITY);
         }
 
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
@@ -492,12 +475,6 @@ pub fn OpenHashSet(comptime K: type) type {
             self.size = 0;
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K) void) void {
-            for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(self.entries[i].key);
-            }
-        }
-
         pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             const result = try allocator.alloc(K, self.size);
             var idx: usize = 0;
@@ -550,7 +527,7 @@ fn valEql(comptime V: type, a: V, b: V) bool {
 // ---------------------------------------------------------------------------
 
 test "map: insert, get, remove" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     try std.testing.expectEqual(@as(?i32, null), try m.put(1, 10));
     try std.testing.expectEqual(@as(?i32, null), try m.put(2, 20));
@@ -564,7 +541,7 @@ test "map: insert, get, remove" {
 }
 
 test "map: resize" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..200) |i| {
         _ = try m.put(@intCast(i), @intCast(i * 10));
@@ -576,7 +553,7 @@ test "map: resize" {
 }
 
 test "map: delete heavy" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..50000) |i| {
         _ = try m.put(@intCast(i), @intCast(i));
@@ -591,7 +568,7 @@ test "map: delete heavy" {
 }
 
 test "map: float keys" {
-    var m = try OpenHashMap(f32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(f32, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1.5, 10);
     _ = try m.put(2.5, 20);
@@ -600,7 +577,7 @@ test "map: float keys" {
 }
 
 test "map: bool keys" {
-    var m = try OpenHashMap(bool, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(bool, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(true, 1);
     _ = try m.put(false, 0);
@@ -609,7 +586,7 @@ test "map: bool keys" {
 }
 
 test "set: add, remove, contains" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator, std.testing.allocator);
+    var s = try OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     try std.testing.expect(try s.add(1));
     try std.testing.expect(try s.add(2));
@@ -622,7 +599,7 @@ test "set: add, remove, contains" {
 }
 
 test "set: resize" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator, std.testing.allocator);
+    var s = try OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     for (0..200) |i| {
         _ = try s.add(@intCast(i));
@@ -634,7 +611,7 @@ test "set: resize" {
 }
 
 test "map: getPtr" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 10);
     if (m.getPtr(1)) |ptr| {
@@ -644,7 +621,7 @@ test "map: getPtr" {
 }
 
 test "map: ensureCapacity grows and subsequent puts do not resize" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     try m.ensureCapacity(1000);
     const reserved_cap = m.capacity;
@@ -661,7 +638,7 @@ test "map: ensureCapacity grows and subsequent puts do not resize" {
 }
 
 test "map: ensureCapacity is idempotent when capacity already sufficient" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     const initial_cap = m.capacity;
     try m.ensureCapacity(1);
@@ -675,7 +652,7 @@ test "map: ensureCapacity propagates allocator errors" {
 }
 
 test "map: ensureCapacity on populated map preserves entries" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..10) |i| {
         _ = try m.put(@intCast(i), @intCast(i));
@@ -689,7 +666,7 @@ test "map: ensureCapacity on populated map preserves entries" {
 }
 
 test "set: ensureCapacity grows and subsequent adds do not resize" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator, std.testing.allocator);
+    var s = try OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     try s.ensureCapacity(500);
     const reserved_cap = s.capacity;
@@ -739,7 +716,7 @@ test "hashKey: i64 high-32-bit family stores/reads through production map" {
     // Same family, but observed through the real OpenHashMap: every key must
     // insert and read back independently (correctness held even before the
     // fold; this guards the fold change against a placement regression).
-    var map = try OpenHashMap(i64, i32).init(std.testing.allocator, std.testing.allocator, std.testing.allocator);
+    var map = try OpenHashMap(i64, i32).init(std.testing.allocator);
     defer map.deinit();
     var i: usize = 0;
     while (i < 64) : (i += 1) {

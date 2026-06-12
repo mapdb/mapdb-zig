@@ -28,11 +28,11 @@ pub fn HashBag(comptime T: type) type {
             self.inner.deinit(self.allocator);
         }
 
-        pub fn add(self: *Self, value: T) void {
+        pub fn add(self: *Self, value: T) Allocator.Error!void {
             if (self.inner.getPtr(value)) |count_ptr| {
                 count_ptr.* += 1;
             } else {
-                self.inner.put(self.allocator, value, 1) catch @panic("out of memory");
+                try self.inner.put(self.allocator, value, 1);
             }
             self.total_size += 1;
         }
@@ -66,10 +66,10 @@ pub fn HashBag(comptime T: type) type {
             return true;
         }
 
-        pub fn forEachWithOccurrences(self: *const Self, f: *const fn (T, usize) void) void {
+        pub fn forEachWithOccurrences(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T, usize) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(entry.key_ptr.*, entry.value_ptr.*);
+                f(ctx, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
 
@@ -124,9 +124,9 @@ test "HashBag basic" {
     var bag = HashBag(i32).init(allocator);
     defer bag.deinit();
 
-    bag.add(1);
-    bag.add(1);
-    bag.add(2);
+    try bag.add(1);
+    try bag.add(1);
+    try bag.add(2);
 
     try std.testing.expectEqual(@as(usize, 3), bag.len());
     try std.testing.expectEqual(@as(usize, 2), bag.sizeDistinct());
@@ -140,9 +140,9 @@ test "HashBag removeOne" {
     var bag = HashBag(i32).init(allocator);
     defer bag.deinit();
 
-    bag.add(5);
-    bag.add(5);
-    bag.add(5);
+    try bag.add(5);
+    try bag.add(5);
+    try bag.add(5);
 
     try std.testing.expect(bag.removeOne(5));
     try std.testing.expectEqual(@as(usize, 2), bag.occurrencesOf(5));
@@ -160,7 +160,7 @@ test "HashBag contains" {
     var bag = HashBag(i32).init(allocator);
     defer bag.deinit();
 
-    bag.add(42);
+    try bag.add(42);
     try std.testing.expect(bag.contains(42));
     try std.testing.expect(!bag.contains(0));
 }
@@ -170,8 +170,8 @@ test "HashBag clear" {
     var bag = HashBag(i32).init(allocator);
     defer bag.deinit();
 
-    bag.add(1);
-    bag.add(2);
+    try bag.add(1);
+    try bag.add(2);
     bag.clear();
 
     try std.testing.expectEqual(@as(usize, 0), bag.len());

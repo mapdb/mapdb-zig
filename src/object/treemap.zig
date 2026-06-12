@@ -76,9 +76,9 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         }
 
         /// Put a key-value pair. Returns the old value if the key was already present.
-        pub fn put(self: *Self, key: K, value: V) ?V {
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
             if (self.root == null) {
-                const n = self.allocator.create(Node) catch @panic("out of memory");
+                const n = try self.allocator.create(Node);
                 n.* = .{ .key = key, .value = value, .color = .black };
                 self.root = n;
                 self.size += 1;
@@ -92,7 +92,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                         if (current.left) |left| {
                             current = left;
                         } else {
-                            const n = self.allocator.create(Node) catch @panic("out of memory");
+                            const n = try self.allocator.create(Node);
                             n.* = .{ .key = key, .value = value, .parent = current };
                             current.left = n;
                             self.fixAfterInsert(n);
@@ -104,7 +104,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                         if (current.right) |right| {
                             current = right;
                         } else {
-                            const n = self.allocator.create(Node) catch @panic("out of memory");
+                            const n = try self.allocator.create(Node);
                             n.* = .{ .key = key, .value = value, .parent = current };
                             current.right = n;
                             self.fixAfterInsert(n);
@@ -167,15 +167,15 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .key = n.key, .value = n.value };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            self.inOrder(self.root, f);
+        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
+            self.inOrder(self.root, ctx, f);
         }
 
-        fn inOrder(self: *const Self, node: ?*Node, f: *const fn (K, V) void) void {
+        fn inOrder(self: *const Self, node: ?*Node, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
             const n = node orelse return;
-            self.inOrder(n.left, f);
-            f(n.key, n.value);
-            self.inOrder(n.right, f);
+            self.inOrder(n.left, ctx, f);
+            f(ctx, n.key, n.value);
+            self.inOrder(n.right, ctx, f);
         }
 
         /// An entry yielded by `Iterator` — key and value by value.
@@ -222,8 +222,8 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .current = start };
         }
 
-        pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
-            const slice = allocator.alloc(K, self.size) catch @panic("out of memory");
+        pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            const slice = try allocator.alloc(K, self.size);
             var i: usize = 0;
             self.inOrderCollectKeys(self.root, slice, &i);
             return slice;
@@ -237,8 +237,8 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             self.inOrderCollectKeys(n.right, slice, i);
         }
 
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
-            const slice = allocator.alloc(V, self.size) catch @panic("out of memory");
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
+            const slice = try allocator.alloc(V, self.size);
             var i: usize = 0;
             self.inOrderCollectValues(self.root, slice, &i);
             return slice;
@@ -519,7 +519,7 @@ test "TreeMap put overwrites" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(1, 10);
+    _ = try map.put(1, 10);
     const old = map.put(1, 20);
     try std.testing.expectEqual(@as(?i32, 10), old);
     try std.testing.expectEqual(@as(?i32, 20), map.get(1));
@@ -531,9 +531,9 @@ test "TreeMap remove" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
-    _ = map.put(3, 30);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
+    _ = try map.put(3, 30);
 
     const removed = map.remove(2);
     try std.testing.expectEqual(@as(?i32, 20), removed);
@@ -546,7 +546,7 @@ test "TreeMap containsKey" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(5, 50);
+    _ = try map.put(5, 50);
     try std.testing.expect(map.containsKey(5));
     try std.testing.expect(!map.containsKey(6));
 }
@@ -556,9 +556,9 @@ test "TreeMap min/max" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(5, 50);
-    _ = map.put(1, 10);
-    _ = map.put(9, 90);
+    _ = try map.put(5, 50);
+    _ = try map.put(1, 10);
+    _ = try map.put(9, 90);
 
     const m = map.min().?;
     try std.testing.expectEqual(@as(i32, 1), m.key);
@@ -574,11 +574,11 @@ test "TreeMap sorted order via keysToSlice" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(3, 30);
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
+    _ = try map.put(3, 30);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
 
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
 
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 2, 3 }, keys);
@@ -589,11 +589,11 @@ test "TreeMap reverse comparator" {
     var map = TreeMap(i32, i32).init(allocator, strat.reverseComparator(i32));
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    _ = map.put(3, 30);
-    _ = map.put(2, 20);
+    _ = try map.put(1, 10);
+    _ = try map.put(3, 30);
+    _ = try map.put(2, 20);
 
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
 
     try std.testing.expectEqualSlices(i32, &[_]i32{ 3, 2, 1 }, keys);
@@ -604,8 +604,8 @@ test "TreeMap clear and isEmpty" {
     var map = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
     try std.testing.expect(!map.isEmpty());
 
     map.clear();
@@ -620,7 +620,7 @@ test "TreeMap stress insert 1000 remove half" {
 
     var i: i32 = 0;
     while (i < 1000) : (i += 1) {
-        _ = map.put(i, i * 10);
+        _ = try map.put(i, i * 10);
     }
     try std.testing.expectEqual(@as(usize, 1000), map.len());
 
@@ -632,7 +632,7 @@ test "TreeMap stress insert 1000 remove half" {
     try std.testing.expectEqual(@as(usize, 500), map.len());
 
     // Verify remaining are odd and sorted
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
 
     try std.testing.expectEqual(@as(usize, 500), keys.len);

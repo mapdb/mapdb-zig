@@ -65,13 +65,13 @@ pub fn ImmutableArrayDeque(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            const owned = allocator.dupe(T, values) catch @panic("out of memory");
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            const owned = try allocator.dupe(T, values);
             return .{ .items = owned, .allocator = allocator };
         }
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            return of(allocator, mutable.items.items);
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            return try of(allocator, mutable.items.items);
         }
 
         pub fn deinit(self: *Self) void {
@@ -128,26 +128,26 @@ pub fn ImmutableArrayDeque(comptime T: type) type {
         }
 
         /// Returns a new immutable deque with `value` prepended at the front.
-        pub fn withFirst(self: *const Self, value: T) Self {
-            const new_items = self.allocator.alloc(T, self.items.len + 1) catch @panic("out of memory");
+        pub fn withFirst(self: *const Self, value: T) Allocator.Error!Self {
+            const new_items = try self.allocator.alloc(T, self.items.len + 1);
             new_items[0] = value;
             @memcpy(new_items[1..], self.items);
             return .{ .items = new_items, .allocator = self.allocator };
         }
 
         /// Returns a new immutable deque with `value` appended at the back.
-        pub fn withLast(self: *const Self, value: T) Self {
-            const new_items = self.allocator.alloc(T, self.items.len + 1) catch @panic("out of memory");
+        pub fn withLast(self: *const Self, value: T) Allocator.Error!Self {
+            const new_items = try self.allocator.alloc(T, self.items.len + 1);
             @memcpy(new_items[0..self.items.len], self.items);
             new_items[self.items.len] = value;
             return .{ .items = new_items, .allocator = self.allocator };
         }
 
         /// Returns a new deque without the front element, and the removed value.
-        pub fn withoutFirst(self: *const Self) ?struct { deque: Self, value: T } {
+        pub fn withoutFirst(self: *const Self) Allocator.Error!?struct { deque: Self, value: T } {
             if (self.items.len == 0) return null;
             const first = self.items[0];
-            const new_items = self.allocator.dupe(T, self.items[1..]) catch @panic("out of memory");
+            const new_items = try self.allocator.dupe(T, self.items[1..]);
             return .{
                 .deque = .{ .items = new_items, .allocator = self.allocator },
                 .value = first,
@@ -155,22 +155,22 @@ pub fn ImmutableArrayDeque(comptime T: type) type {
         }
 
         /// Returns a new deque without the back element, and the removed value.
-        pub fn withoutLast(self: *const Self) ?struct { deque: Self, value: T } {
+        pub fn withoutLast(self: *const Self) Allocator.Error!?struct { deque: Self, value: T } {
             if (self.items.len == 0) return null;
             const last = self.items[self.items.len - 1];
-            const new_items = self.allocator.dupe(T, self.items[0 .. self.items.len - 1]) catch @panic("out of memory");
+            const new_items = try self.allocator.dupe(T, self.items[0 .. self.items.len - 1]);
             return .{
                 .deque = .{ .items = new_items, .allocator = self.allocator },
                 .value = last,
             };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (self.items) |value| f(value);
+        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
+            for (self.items) |value| f(ctx, value);
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            return Mutable.of(self.allocator, self.items);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            return try Mutable.of(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

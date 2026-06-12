@@ -35,7 +35,7 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// mapping is removed. If the value already maps to a different key, the
         /// old key's forward mapping is removed.
         /// Returns the previous value associated with the key, if any.
-        pub fn put(self: *Self, key: K, value: V) ?V {
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
             // Remove any existing mapping for this value (bijection enforcement)
             if (self.inverse.get(value)) |existing_key| {
                 _ = self.forward.fetchRemove(existing_key);
@@ -49,8 +49,8 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
                 _ = self.inverse.fetchRemove(existing_value);
             }
 
-            self.forward.put(self.allocator, key, value) catch @panic("out of memory");
-            self.inverse.put(self.allocator, value, key) catch @panic("out of memory");
+            try self.forward.put(self.allocator, key, value);
+            try self.inverse.put(self.allocator, value, key);
 
             return old_value;
         }
@@ -98,13 +98,6 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             self.inverse.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            var it = self.forward.iterator();
-            while (it.next()) |entry| {
-                f(entry.key_ptr.*, entry.value_ptr.*);
-            }
-        }
-
         /// An entry yielded by `Iterator` — key and value by value.
         pub const IterEntry = struct { key: K, value: V };
 
@@ -138,8 +131,8 @@ test "HashBiMap basic" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    try std.testing.expectEqual(@as(?i32, null), bimap.put(1, 10));
-    try std.testing.expectEqual(@as(?i32, null), bimap.put(2, 20));
+    try std.testing.expectEqual(@as(?i32, null), try bimap.put(1, 10));
+    try std.testing.expectEqual(@as(?i32, null), try bimap.put(2, 20));
 
     try std.testing.expectEqual(@as(usize, 2), bimap.len());
     try std.testing.expect(bimap.containsKey(1));
@@ -151,8 +144,8 @@ test "HashBiMap get and getInverse" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    _ = bimap.put(1, 100);
-    _ = bimap.put(2, 200);
+    _ = try bimap.put(1, 100);
+    _ = try bimap.put(2, 200);
 
     try std.testing.expectEqual(@as(?i32, 100), bimap.get(1));
     try std.testing.expectEqual(@as(?i32, 1), bimap.getInverse(100));
@@ -165,11 +158,11 @@ test "HashBiMap bijection enforcement" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    _ = bimap.put(1, 100);
-    _ = bimap.put(2, 200);
+    _ = try bimap.put(1, 100);
+    _ = try bimap.put(2, 200);
 
     // Reassign value 100 to key 2 — key 1 should be removed
-    _ = bimap.put(2, 100);
+    _ = try bimap.put(2, 100);
 
     try std.testing.expectEqual(@as(usize, 1), bimap.len());
     try std.testing.expect(!bimap.containsKey(1));
@@ -182,8 +175,8 @@ test "HashBiMap put replaces old value" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    _ = bimap.put(1, 10);
-    const old = bimap.put(1, 20);
+    _ = try bimap.put(1, 10);
+    const old = try bimap.put(1, 20);
     try std.testing.expectEqual(@as(?i32, 10), old);
     try std.testing.expectEqual(@as(?i32, 20), bimap.get(1));
     try std.testing.expect(!bimap.containsValue(10));
@@ -194,8 +187,8 @@ test "HashBiMap remove and removeInverse" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    _ = bimap.put(1, 100);
-    _ = bimap.put(2, 200);
+    _ = try bimap.put(1, 100);
+    _ = try bimap.put(2, 200);
 
     const removed = bimap.remove(1);
     try std.testing.expectEqual(@as(?i32, 100), removed);
@@ -211,7 +204,7 @@ test "HashBiMap clear" {
     var bimap = HashBiMap(i32, i32).init(allocator);
     defer bimap.deinit();
 
-    _ = bimap.put(1, 10);
+    _ = try bimap.put(1, 10);
     bimap.clear();
     try std.testing.expect(bimap.isEmpty());
 }

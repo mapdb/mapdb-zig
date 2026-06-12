@@ -28,10 +28,10 @@ test "F32I32TreeMap: NaN + negatives keep keys findable (zig.md repro)" {
     defer m.deinit();
 
     const nan = std.math.nan(f32);
-    _ = m.put(nan, 100);
-    _ = m.put(2.0, 200);
-    _ = m.put(-0.5, 300);
-    _ = m.put(-1.0, 400);
+    _ = try m.put(nan, 100);
+    _ = try m.put(2.0, 200);
+    _ = try m.put(-0.5, 300);
+    _ = try m.put(-1.0, 400);
 
     // The headline failure: 2.0 was lost in the buggy bit-compare tree.
     try testing.expectEqual(@as(?i32, 200), m.get(2.0));
@@ -51,7 +51,7 @@ test "F32I32TreeMap: brute-ish NaN/negative mix stays findable" {
         nan, -inf, inf, -3.5, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.5, 0.0, 7.25, -9.0,
     };
     for (keys, 0..) |k, i| {
-        _ = m.put(k, @as(i32, @intCast(i)));
+        _ = try m.put(k, @as(i32, @intCast(i)));
     }
     // Every inserted key must be retrievable with its exact value.
     for (keys, 0..) |k, i| {
@@ -68,13 +68,13 @@ test "F32TreeSet: +0.0 and -0.0 are distinct keys" {
     var s = F32TreeSet.init(testing.allocator);
     defer s.deinit();
 
-    try testing.expect(s.add(0.0)); // newly inserted
-    try testing.expect(s.add(-0.0)); // distinct → newly inserted
+    try testing.expect(try s.add(0.0)); // newly inserted
+    try testing.expect(try s.add(-0.0)); // distinct → newly inserted
     try testing.expectEqual(@as(usize, 2), s.size());
     try testing.expect(s.contains(0.0));
     try testing.expect(s.contains(-0.0));
     // Re-adding the same signed zero is a no-op.
-    try testing.expect(!s.add(0.0));
+    try testing.expect(!(try s.add(0.0)));
     try testing.expectEqual(@as(usize, 2), s.size());
 }
 
@@ -87,20 +87,20 @@ test "F64TreeSet: distinct NaN payloads are distinct keys" {
     try testing.expect(std.math.isNan(qnan));
     try testing.expect(std.math.isNan(qnan2));
 
-    try testing.expect(s.add(qnan));
-    try testing.expect(s.add(qnan2)); // different payload → distinct
+    try testing.expect(try s.add(qnan));
+    try testing.expect(try s.add(qnan2)); // different payload → distinct
     try testing.expectEqual(@as(usize, 2), s.size());
     try testing.expect(s.contains(qnan));
     try testing.expect(s.contains(qnan2));
-    try testing.expect(!s.add(qnan)); // same payload → no-op
+    try testing.expect(!(try s.add(qnan))); // same payload → no-op
     try testing.expectEqual(@as(usize, 2), s.size());
 }
 
 test "F64I32TreeMap: ±0 distinct keys in a map" {
     var m = F64I32TreeMap.init(testing.allocator);
     defer m.deinit();
-    _ = m.put(0.0, 1);
-    _ = m.put(-0.0, 2);
+    _ = try m.put(0.0, 1);
+    _ = try m.put(-0.0, 2);
     try testing.expectEqual(@as(usize, 2), m.size());
     try testing.expectEqual(@as(?i32, 1), m.get(0.0));
     try testing.expectEqual(@as(?i32, 2), m.get(-0.0));
@@ -126,18 +126,18 @@ test "I32Interval: ordinary len() is exact (cap does not perturb small ranges)" 
 // ── Bug 3: addToValue wraps at the value width ──────────────────────────
 
 test "I32I32HashMap.addToValue wraps i32 MAX + 1 to i32 MIN" {
-    var m = I32I32HashMap.init(testing.allocator);
+    var m = try I32I32HashMap.init(testing.allocator);
     defer m.deinit();
-    _ = m.put(7, std.math.maxInt(i32));
+    _ = try m.put(7, std.math.maxInt(i32));
     const result = m.addToValue(7, 1);
     try testing.expectEqual(@as(i32, std.math.minInt(i32)), result);
     try testing.expectEqual(@as(?i32, std.math.minInt(i32)), m.get(7));
 }
 
 test "I32I32HashMap.addToValue wraps i32 MIN - 1 to i32 MAX" {
-    var m = I32I32HashMap.init(testing.allocator);
+    var m = try I32I32HashMap.init(testing.allocator);
     defer m.deinit();
-    _ = m.put(9, std.math.minInt(i32));
+    _ = try m.put(9, std.math.minInt(i32));
     const result = m.addToValue(9, -1);
     try testing.expectEqual(@as(i32, std.math.maxInt(i32)), result);
 }
@@ -147,19 +147,19 @@ test "I32I32HashMap.addToValue wraps i32 MIN - 1 to i32 MAX" {
 // Capacity 16 at 0.75 load factor = 12 entries. The 12th distinct insert must
 // trigger a resize (strictly below 0.75), so capacity must have grown.
 test "I32I32HashMap: 12th insert into capacity-16 grows (strictly < 0.75)" {
-    var m = I32I32HashMap.init(testing.allocator);
+    var m = try I32I32HashMap.init(testing.allocator);
     defer m.deinit();
     try testing.expectEqual(@as(usize, 16), m.inner.capacity);
 
     // Insert 11 distinct keys — should stay at capacity 16 (11/16 < 0.75).
     var k: i32 = 0;
     while (k < 11) : (k += 1) {
-        _ = m.put(k, k);
+        _ = try m.put(k, k);
     }
     try testing.expectEqual(@as(usize, 16), m.inner.capacity);
 
     // The 12th distinct key would make load factor exactly 0.75 → must resize.
-    _ = m.put(11, 11);
+    _ = try m.put(11, 11);
     try testing.expect(m.inner.capacity > 16);
     try testing.expectEqual(@as(usize, 12), m.len());
 }

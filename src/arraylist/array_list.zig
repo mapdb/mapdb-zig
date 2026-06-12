@@ -19,7 +19,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const float_order = @import("../float_order.zig");
 
 /// Bit-aware equality. Float members compare by reinterpreting to the same-width
@@ -51,11 +50,10 @@ fn elemOrder(comptime T: type, a: T, b: T) std.math.Order {
 /// Resizable array-backed list of `T` values.
 ///
 /// Specialized for `T` — no boxing, contiguous memory layout.
-/// Supports both simple single-allocator and advanced multi-allocator construction.
 pub fn ArrayList(comptime T: type) type {
     return struct {
         items: std.ArrayListUnmanaged(T) = .empty,
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
@@ -63,36 +61,31 @@ pub fn ArrayList(comptime T: type) type {
         /// `i64` (widening) for `bool` / `char` / integer elements.
         const SumType = if (@typeInfo(T) == .float) T else i64;
 
-        /// Create with a single allocator for all internal structures.
+        /// Create with an allocator for all internal structures.
         pub fn init(allocator: Allocator) Self {
-            return .{ .config = AllocatorConfig.init(allocator) };
-        }
-
-        /// Create with an AllocatorConfig for fine-grained allocator control.
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{ .config = config };
+            return .{ .allocator = allocator };
         }
 
         /// Release all allocated memory.
         pub fn deinit(self: *Self) void {
-            self.items.deinit(self.config.itemsAllocator());
+            self.items.deinit(self.allocator);
         }
 
         /// Create a list from a slice of values.
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var list = init(allocator);
-            list.items.appendSlice(list.config.itemsAllocator(), values) catch @panic("out of memory");
+            try list.items.appendSlice(list.allocator, values);
             return list;
         }
 
         /// Appends a value to the end of the list.
-        pub fn push(self: *Self, value: T) void {
-            self.items.append(self.config.itemsAllocator(), value) catch @panic("out of memory");
+        pub fn push(self: *Self, value: T) Allocator.Error!void {
+            try self.items.append(self.allocator, value);
         }
 
         /// Appends all values from a slice.
-        pub fn pushAll(self: *Self, values: []const T) void {
-            self.items.appendSlice(self.config.itemsAllocator(), values) catch @panic("out of memory");
+        pub fn pushAll(self: *Self, values: []const T) Allocator.Error!void {
+            try self.items.appendSlice(self.allocator, values);
         }
 
         /// Returns the element at the given index, or null if out of bounds.
@@ -154,13 +147,13 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Alias for push() — matches Go/Java Add naming.
-        pub fn add(self: *Self, value: T) void {
-            self.push(value);
+        pub fn add(self: *Self, value: T) Allocator.Error!void {
+            try self.push(value);
         }
 
         /// Alias for pushAll() — matches Go/Java AddAll naming.
-        pub fn addAll(self: *Self, values: []const T) void {
-            self.pushAll(values);
+        pub fn addAll(self: *Self, values: []const T) Allocator.Error!void {
+            try self.pushAll(values);
         }
 
         /// Removes all elements.
@@ -175,70 +168,70 @@ pub fn ArrayList(comptime T: type) type {
         /// Pair this with the infallible `push` / `with` methods to get an
         /// opt-in allocation-failure handling path.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            return self.items.ensureUnusedCapacity(self.config.itemsAllocator(), additional);
+            return self.items.ensureUnusedCapacity(self.allocator, additional);
         }
 
         /// Ensures the list's total capacity is at least `new_capacity`.
         /// Idempotent. Returns `error.OutOfMemory` if the allocator fails.
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
-            return self.items.ensureTotalCapacity(self.config.itemsAllocator(), new_capacity);
+            return self.items.ensureTotalCapacity(self.allocator, new_capacity);
         }
 
         /// Returns a new list with only elements satisfying the predicate.
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.items.items) |item| {
-                if (predicate(item)) result.push(item);
+                if (predicate(ctx, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns a new list with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.items.items) |item| {
-                if (!predicate(item)) result.push(item);
+                if (!predicate(ctx, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns the first element satisfying the predicate, or null.
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             for (self.items.items) |item| {
-                if (predicate(item)) return item;
+                if (predicate(ctx, item)) return item;
             }
             return null;
         }
 
         /// Returns true if any element satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(item)) return true;
+                if (predicate(ctx, item)) return true;
             }
             return false;
         }
 
         /// Returns true if all elements satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (!predicate(item)) return false;
+                if (!predicate(ctx, item)) return false;
             }
             return true;
         }
 
         /// Returns true if no element satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(item)) return false;
+                if (predicate(ctx, item)) return false;
             }
             return true;
         }
 
         /// Returns the count of elements satisfying the predicate.
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             for (self.items.items) |item| {
-                if (predicate(item)) c += 1;
+                if (predicate(ctx, item)) c += 1;
             }
             return c;
         }
@@ -297,12 +290,12 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Returns a new list with elements in reverse order.
-        pub fn reversed(self: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn reversed(self: *const Self) Allocator.Error!Self {
+            var result = init(self.allocator);
             var i = self.items.items.len;
             while (i > 0) {
                 i -= 1;
-                result.push(self.items.items[i]);
+                try result.push(self.items.items[i]);
             }
             return result;
         }
@@ -330,35 +323,30 @@ pub fn ArrayList(comptime T: type) type {
         };
 
         /// Returns a pull-based iterator over the elements in insertion order.
-        /// Non-allocating.
+        /// Non-allocating. Use this instead of a push-based forEach.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .items = self.items.items };
         }
 
-        /// Calls f for each element.
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (self.items.items) |item| f(item);
-        }
-
-        /// Calls f(index, value) for each element.
-        pub fn forEachWithIndex(self: *const Self, f: *const fn (usize, T) void) void {
-            for (self.items.items, 0..) |item, i| f(i, item);
+        /// Calls f(ctx, index, value) for each element.
+        pub fn forEachWithIndex(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, usize, T) void) void {
+            for (self.items.items, 0..) |item, i| f(ctx, i, item);
         }
 
         // ---- Advanced Operations ----
 
         /// Fold/reduce over all elements.
-        pub fn injectInto(self: *const Self, initial: T, f: *const fn (T, T) T) T {
+        pub fn injectInto(self: *const Self, ctx: *anyopaque, initial: T, f: *const fn (ctx: *anyopaque, T, T) T) T {
             var acc = initial;
-            for (self.items.items) |item| acc = f(acc, item);
+            for (self.items.items) |item| acc = f(ctx, acc, item);
             return acc;
         }
 
         /// Returns a new list with duplicate elements removed (preserving first occurrence order).
-        pub fn distinct(self: *const Self) Self {
-            var result = init(self.config.base);
+        pub fn distinct(self: *const Self) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.items.items) |item| {
-                if (!result.contains(item)) result.push(item);
+                if (!result.contains(item)) try result.push(item);
             }
             return result;
         }
@@ -384,15 +372,15 @@ pub fn ArrayList(comptime T: type) type {
         // ---- Conversion ----
 
         /// Creates an immutable snapshot of this list.
-        pub fn toImmutable(self: *const Self) ImmutableType(T) {
-            return ImmutableType(T).fromMutable(self.config.base, self);
+        pub fn toImmutable(self: *const Self) Allocator.Error!ImmutableType(T) {
+            return ImmutableType(T).fromMutable(self.allocator, self);
         }
 
         // ---- Fluent API ----
 
         /// Appends a value (fluent).
-        pub fn with(self: *Self, value: T) *Self {
-            self.push(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            try self.push(value);
             return self;
         }
 
@@ -403,8 +391,8 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Appends all values (fluent).
-        pub fn withAll(self: *Self, values: []const T) *Self {
-            self.pushAll(values);
+        pub fn withAll(self: *Self, values: []const T) Allocator.Error!*Self {
+            try self.pushAll(values);
             return self;
         }
 

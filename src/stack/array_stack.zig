@@ -13,7 +13,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 
 /// Bit-aware equality. Float members compare by reinterpreting to the same-width
 /// unsigned integer; non-float members use plain `==`.
@@ -29,31 +28,27 @@ fn elemEql(comptime T: type, a: T, b: T) bool {
 pub fn ArrayStack(comptime T: type) type {
     return struct {
         items: std.ArrayListUnmanaged(T) = .empty,
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .config = AllocatorConfig.init(allocator) };
-        }
-
-        pub fn initWithConfig(config: AllocatorConfig) Self {
-            return .{ .config = config };
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
-            self.items.deinit(self.config.itemsAllocator());
+            self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var stack = init(allocator);
-            stack.items.appendSlice(stack.config.itemsAllocator(), values) catch @panic("out of memory");
+            try stack.items.appendSlice(stack.allocator, values);
             return stack;
         }
 
         /// Pushes a value onto the top of the stack.
-        pub fn push(self: *Self, value: T) void {
-            self.items.append(self.config.itemsAllocator(), value) catch @panic("out of memory");
+        pub fn push(self: *Self, value: T) Allocator.Error!void {
+            try self.items.append(self.allocator, value);
         }
 
         /// Removes and returns the top element, or null if empty.
@@ -96,12 +91,12 @@ pub fn ArrayStack(comptime T: type) type {
         /// Ensures that `additional` more items can be pushed without a
         /// reallocation.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            return self.items.ensureUnusedCapacity(self.config.itemsAllocator(), additional);
+            return self.items.ensureUnusedCapacity(self.allocator, additional);
         }
 
         /// Ensures the stack's total capacity is at least `new_capacity`.
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
-            return self.items.ensureTotalCapacity(self.config.itemsAllocator(), new_capacity);
+            return self.items.ensureTotalCapacity(self.allocator, new_capacity);
         }
 
         pub fn contains(self: *const Self, value: T) bool {
@@ -111,16 +106,16 @@ pub fn ArrayStack(comptime T: type) type {
             return false;
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(item)) return true;
+                if (predicate(ctx, item)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (!predicate(item)) return false;
+                if (!predicate(ctx, item)) return false;
             }
             return true;
         }
@@ -148,57 +143,52 @@ pub fn ArrayStack(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
-        /// Calls f for each element (bottom to top).
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            for (self.items.items) |item| f(item);
-        }
-
         // ---- Functional Operations ----
 
         /// Returns a new stack with only elements satisfying the predicate.
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.items.items) |item| {
-                if (predicate(item)) result.push(item);
+                if (predicate(ctx, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns a new stack with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
-            var result = init(self.config.base);
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+            var result = init(self.allocator);
             for (self.items.items) |item| {
-                if (!predicate(item)) result.push(item);
+                if (!predicate(ctx, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns the first element satisfying the predicate, or null.
-        pub fn detect(self: *const Self, predicate: *const fn (T) bool) ?T {
+        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
             for (self.items.items) |item| {
-                if (predicate(item)) return item;
+                if (predicate(ctx, item)) return item;
             }
             return null;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(item)) return false;
+                if (predicate(ctx, item)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             for (self.items.items) |item| {
-                if (predicate(item)) c += 1;
+                if (predicate(ctx, item)) c += 1;
             }
             return c;
         }
 
-        pub fn injectInto(self: *const Self, initial: T, f: *const fn (T, T) T) T {
+        pub fn injectInto(self: *const Self, ctx: *anyopaque, initial: T, f: *const fn (ctx: *anyopaque, T, T) T) T {
             var acc = initial;
-            for (self.items.items) |item| acc = f(acc, item);
+            for (self.items.items) |item| acc = f(ctx, acc, item);
             return acc;
         }
 
@@ -208,19 +198,19 @@ pub fn ArrayStack(comptime T: type) type {
             return self.items.items;
         }
 
-        pub fn toImmutable(self: *const Self) ImmutableType(T) {
-            return ImmutableType(T).fromMutable(self.config.base, self);
+        pub fn toImmutable(self: *const Self) Allocator.Error!ImmutableType(T) {
+            return ImmutableType(T).fromMutable(self.allocator, self);
         }
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) *Self {
-            self.push(value);
+        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+            try self.push(value);
             return self;
         }
 
-        pub fn withAll(self: *Self, values: []const T) *Self {
-            for (values) |val| self.push(val);
+        pub fn withAll(self: *Self, values: []const T) Allocator.Error!*Self {
+            for (values) |val| try self.push(val);
             return self;
         }
 

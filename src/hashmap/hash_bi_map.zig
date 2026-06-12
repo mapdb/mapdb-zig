@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AllocatorConfig = @import("../allocator_config.zig").AllocatorConfig;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
 
 /// Bit-pattern equality for any value type. For floats this compares raw bits
@@ -29,30 +28,20 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
     return struct {
         forward: OpenHashMap(K, V),
         reverse: OpenHashMap(V, K),
-        config: AllocatorConfig,
+        allocator: Allocator,
 
         const Self = @This();
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Self {
-            return initWithConfig(AllocatorConfig.init(allocator));
-        }
-
-        /// Create with fine-grained allocator control.
-        pub fn initWithConfig(config: AllocatorConfig) Self {
+        pub fn init(allocator: Allocator) Allocator.Error!Self {
+            var forward = try OpenHashMap(K, V).init(allocator);
+            errdefer forward.deinit();
+            const reverse = try OpenHashMap(V, K).init(allocator);
             return .{
-                .forward = OpenHashMap(K, V).init(
-                    config.keysAllocator(),
-                    config.valuesAllocator(),
-                    config.indexAllocator(),
-                ) catch @panic("out of memory"),
-                .reverse = OpenHashMap(V, K).init(
-                    config.keysAllocator(),
-                    config.valuesAllocator(),
-                    config.indexAllocator(),
-                ) catch @panic("out of memory"),
-                .config = config,
+                .forward = forward,
+                .reverse = reverse,
+                .allocator = allocator,
             };
         }
 
@@ -69,7 +58,10 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// If the value was already mapped to an old key, the old key is removed
         /// from the forward map before inserting the new mapping.
         /// Returns the old value previously associated with the key, or null.
-        pub fn put(self: *Self, key: K, value: V) ?V {
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            try self.forward.ensureCapacity(1);
+            try self.reverse.ensureCapacity(1);
+
             // If this value already maps to a different key, remove the old key from forward.
             if (self.reverse.get(value)) |old_key| {
                 if (!bitsEqual(K, old_key, key)) {
@@ -81,8 +73,8 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             if (old_value) |ov| {
                 _ = self.reverse.remove(ov);
             }
-            _ = self.forward.put(key, value) catch @panic("out of memory");
-            _ = self.reverse.put(value, key) catch @panic("out of memory");
+            _ = try self.forward.put(key, value);
+            _ = try self.reverse.put(value, key);
             return old_value;
         }
 
@@ -184,27 +176,24 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.forward.entries };
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            self.forward.forEach(f);
+        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
+            self.forward.forEachKey(ctx, f);
         }
 
-        pub fn forEachKey(self: *const Self, f: *const fn (K) void) void {
-            self.forward.forEachKey(f);
-        }
-
-        pub fn forEachValue(self: *const Self, f: *const fn (V) void) void {
-            self.forward.forEachValue(f);
+        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
+            self.forward.forEachValue(ctx, f);
         }
 
         // ---- Inverse ----
 
         /// Returns a new BiMap with keys and values swapped (value->key becomes key->value).
         /// The caller owns the returned map and must call deinit() on it.
-        pub fn inverse(self: *const Self) HashBiMap(V, K) {
-            var result = HashBiMap(V, K).init(self.config.base);
+        pub fn inverse(self: *const Self) Allocator.Error!HashBiMap(V, K) {
+            var result = try HashBiMap(V, K).init(self.allocator);
+            errdefer result.deinit();
             for (0..self.forward.capacity) |i| {
                 if (self.forward.entries[i].occupied) {
-                    _ = result.put(self.forward.entries[i].value, self.forward.entries[i].key);
+                    _ = try result.put(self.forward.entries[i].value, self.forward.entries[i].key);
                 }
             }
             return result;

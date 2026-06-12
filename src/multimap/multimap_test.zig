@@ -79,10 +79,10 @@ test "ListMultimap: parameterized put/get/getCount/contains/remove/clear (list k
             defer m.deinit();
 
             // Two values under one key, plus a duplicate (k0,v0): list keeps it.
-            m.put(ks[0], vs[0]);
-            m.put(ks[0], vs[1]);
-            m.put(ks[0], vs[0]); // duplicate pair -> list keeps 2 copies of vs[0]
-            m.put(ks[1], vs[1]);
+            try m.put(ks[0], vs[0]);
+            try m.put(ks[0], vs[1]);
+            try m.put(ks[0], vs[0]); // duplicate pair -> list keeps 2 copies of vs[0]
+            try m.put(ks[1], vs[1]);
 
             // (k0,v0) appears twice, (k0,v1) once => 3 values under k0.
             try std.testing.expectEqual(@as(usize, 3), m.getCount(ks[0]));
@@ -121,10 +121,10 @@ test "SetMultimap: parameterized put/get/getCount/contains/remove/clear (set ded
             defer m.deinit();
 
             // Same (k0,v0) twice: set keeps exactly 1.
-            m.put(ks[0], vs[0]);
-            m.put(ks[0], vs[1]);
-            m.put(ks[0], vs[0]); // duplicate pair -> dropped
-            m.put(ks[1], vs[1]);
+            try m.put(ks[0], vs[0]);
+            try m.put(ks[0], vs[1]);
+            try m.put(ks[0], vs[0]); // duplicate pair -> dropped
+            try m.put(ks[1], vs[1]);
 
             try std.testing.expectEqual(@as(usize, 2), m.getCount(ks[0]));
             try std.testing.expectEqual(@as(usize, 1), m.getCount(ks[1]));
@@ -160,9 +160,9 @@ test "ListMultimap(f32, i32) key: NaN and ±0 distinctness" {
     var m = ListMultimap(f32, i32).init(std.testing.allocator);
     defer m.deinit();
     const nan = std.math.nan(f32);
-    m.put(nan, 1);
-    m.put(0.0, 100);
-    m.put(-0.0, 200);
+    try m.put(nan, 1);
+    try m.put(0.0, 100);
+    try m.put(-0.0, 200);
     // Three bit-distinct keys -> three distinct buckets.
     try std.testing.expectEqual(@as(usize, 3), m.keysCount());
     try std.testing.expectEqual(@as(usize, 1), m.getCount(nan));
@@ -172,7 +172,7 @@ test "ListMultimap(f32, i32) key: NaN and ±0 distinctness" {
     try std.testing.expectEqual(@as(i32, 100), m.get(0.0)[0]);
     try std.testing.expectEqual(@as(i32, 200), m.get(-0.0)[0]);
     // uniqueKeys round-trips float keys back to f32 bit patterns.
-    const keys = m.uniqueKeys(std.testing.allocator);
+    const keys = try m.uniqueKeys(std.testing.allocator);
     defer std.testing.allocator.free(keys);
     try std.testing.expectEqual(@as(usize, 3), keys.len);
 }
@@ -180,9 +180,9 @@ test "ListMultimap(f32, i32) key: NaN and ±0 distinctness" {
 test "SetMultimap(i32, f32) value: bit-aware dedup keeps +0.0 and -0.0 distinct" {
     var m = SetMultimap(i32, f32).init(std.testing.allocator);
     defer m.deinit();
-    m.put(7, 0.0);
-    m.put(7, -0.0); // distinct bits -> kept
-    m.put(7, 0.0); // exact bit duplicate -> dropped
+    try m.put(7, 0.0);
+    try m.put(7, -0.0); // distinct bits -> kept
+    try m.put(7, 0.0); // exact bit duplicate -> dropped
     try std.testing.expectEqual(@as(usize, 2), m.getCount(7));
     try std.testing.expect(m.containsKeyValue(7, 0.0));
     try std.testing.expect(m.containsKeyValue(7, -0.0));
@@ -191,18 +191,18 @@ test "SetMultimap(i32, f32) value: bit-aware dedup keeps +0.0 and -0.0 distinct"
     const nan = std.math.nan(f32);
     var n = SetMultimap(i32, f32).init(std.testing.allocator);
     defer n.deinit();
-    n.put(1, nan);
-    n.put(1, nan);
+    try n.put(1, nan);
+    try n.put(1, nan);
     try std.testing.expectEqual(@as(usize, 1), n.getCount(1));
 }
 
 test "SetMultimap(f32, f32): float key and float value both bit-canonicalized" {
     var m = SetMultimap(f32, f32).init(std.testing.allocator);
     defer m.deinit();
-    m.put(0.0, 0.0);
-    m.put(-0.0, 0.0); // distinct key -> new bucket
-    m.put(0.0, -0.0); // distinct value under existing key -> kept
-    m.put(0.0, 0.0); // bit-duplicate pair -> dropped
+    try m.put(0.0, 0.0);
+    try m.put(-0.0, 0.0); // distinct key -> new bucket
+    try m.put(0.0, -0.0); // distinct value under existing key -> kept
+    try m.put(0.0, 0.0); // bit-duplicate pair -> dropped
     try std.testing.expectEqual(@as(usize, 2), m.keysCount());
     try std.testing.expectEqual(@as(usize, 2), m.getCount(0.0));
     try std.testing.expectEqual(@as(usize, 1), m.getCount(-0.0));
@@ -211,25 +211,28 @@ test "SetMultimap(f32, f32): float key and float value both bit-canonicalized" {
 test "ListMultimap(i32, i32): eql, select/reject, fluent withKeyValue" {
     var a = ListMultimap(i32, i32).init(std.testing.allocator);
     defer a.deinit();
-    _ = a.withKeyValue(1, 1).withKeyValue(1, 2).withKeyValue(2, 3);
+    _ = try a.withKeyValue(1, 1);
+    _ = try a.withKeyValue(1, 2);
+    _ = try a.withKeyValue(2, 3);
     try std.testing.expectEqual(@as(usize, 3), a.size());
 
     var b = ListMultimap(i32, i32).init(std.testing.allocator);
     defer b.deinit();
-    b.put(1, 1);
-    b.put(1, 2);
-    b.put(2, 3);
+    try b.put(1, 1);
+    try b.put(1, 2);
+    try b.put(2, 3);
     try std.testing.expect(a.eql(&b));
 
-    var sel = a.select(struct {
-        fn f(_: i32, v: i32) bool {
+    var ctx: u8 = 0;
+    var sel = try a.select(&ctx, struct {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return v > 1;
         }
     }.f);
     defer sel.deinit();
     try std.testing.expectEqual(@as(usize, 2), sel.size());
-    var rej = a.reject(struct {
-        fn f(_: i32, v: i32) bool {
+    var rej = try a.reject(&ctx, struct {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return v > 1;
         }
     }.f);
@@ -261,7 +264,7 @@ test "ListMultimap(i64, i32): high-32-bit-varying key family stays distinct at s
     var m = ListMultimap(i64, i32).init(std.testing.allocator);
     defer m.deinit();
     var i: i64 = 0;
-    while (i < N) : (i += 1) m.put(highBitKey(i), @intCast(i));
+    while (i < N) : (i += 1) try m.put(highBitKey(i), @intCast(i));
     try std.testing.expectEqual(@as(usize, @intCast(N)), m.keysCount());
     i = 0;
     while (i < N) : (i += 1) {
@@ -279,7 +282,7 @@ test "SetMultimap(i64, i32): high-32-bit-varying key family stays distinct at sc
     var m = SetMultimap(i64, i32).init(std.testing.allocator);
     defer m.deinit();
     var i: i64 = 0;
-    while (i < N) : (i += 1) m.put(highBitKey(i), @intCast(i));
+    while (i < N) : (i += 1) try m.put(highBitKey(i), @intCast(i));
     try std.testing.expectEqual(@as(usize, @intCast(N)), m.keysCount());
     i = 0;
     while (i < N) : (i += 1) {

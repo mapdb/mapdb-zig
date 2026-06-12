@@ -27,8 +27,8 @@ pub fn HashSet(comptime T: type) type {
         }
 
         /// Add an element. Returns true if it was newly inserted, false if already present.
-        pub fn add(self: *Self, value: T) bool {
-            const result = self.inner.fetchPut(self.allocator, value, {}) catch @panic("out of memory");
+        pub fn add(self: *Self, value: T) Allocator.Error!bool {
+            const result = try self.inner.fetchPut(self.allocator, value, {});
             return result == null;
         }
 
@@ -52,13 +52,6 @@ pub fn HashSet(comptime T: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (T) void) void {
-            var it = self.inner.iterator();
-            while (it.next()) |entry| {
-                f(entry.key_ptr.*);
-            }
-        }
-
         /// Pull-based iterator yielding each element by value in arbitrary
         /// (hash-table) order. Non-allocating: wraps the backing
         /// `AutoHashMapUnmanaged` key iterator. The iterator borrows the set;
@@ -78,41 +71,41 @@ pub fn HashSet(comptime T: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(entry.key_ptr.*)) return true;
+                if (predicate(ctx, entry.key_ptr.*)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (!predicate(entry.key_ptr.*)) return false;
+                if (!predicate(ctx, entry.key_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(entry.key_ptr.*)) return false;
+                if (predicate(ctx, entry.key_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(entry.key_ptr.*)) c += 1;
+                if (predicate(ctx, entry.key_ptr.*)) c += 1;
             }
             return c;
         }
 
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
-            const slice = allocator.alloc(T, self.inner.count()) catch @panic("out of memory");
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            const slice = try allocator.alloc(T, self.inner.count());
             var it = self.inner.iterator();
             var i: usize = 0;
             while (it.next()) |entry| {
@@ -123,38 +116,38 @@ pub fn HashSet(comptime T: type) type {
         }
 
         /// Returns a new set containing elements in either self or other.
-        pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                _ = result.add(entry.key_ptr.*);
+                _ = try result.add(entry.key_ptr.*);
             }
             var it2 = other.inner.iterator();
             while (it2.next()) |entry| {
-                _ = result.add(entry.key_ptr.*);
+                _ = try result.add(entry.key_ptr.*);
             }
             return result;
         }
 
         /// Returns a new set containing elements in both self and other.
-        pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 if (other.contains(entry.key_ptr.*)) {
-                    _ = result.add(entry.key_ptr.*);
+                    _ = try result.add(entry.key_ptr.*);
                 }
             }
             return result;
         }
 
         /// Returns a new set containing elements in self but not in other.
-        pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Self {
+        pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 if (!other.contains(entry.key_ptr.*)) {
-                    _ = result.add(entry.key_ptr.*);
+                    _ = try result.add(entry.key_ptr.*);
                 }
             }
             return result;
@@ -171,9 +164,9 @@ test "HashSet basic" {
     var set = HashSet(i32).init(allocator);
     defer set.deinit();
 
-    try std.testing.expect(set.add(1));
-    try std.testing.expect(set.add(2));
-    try std.testing.expect(!set.add(1)); // duplicate
+    try std.testing.expect(try set.add(1));
+    try std.testing.expect(try set.add(2));
+    try std.testing.expect(!try set.add(1)); // duplicate
 
     try std.testing.expectEqual(@as(usize, 2), set.len());
     try std.testing.expect(set.contains(1));
@@ -185,8 +178,8 @@ test "HashSet remove" {
     var set = HashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(10);
-    _ = set.add(20);
+    _ = try set.add(10);
+    _ = try set.add(20);
 
     try std.testing.expect(set.remove(10));
     try std.testing.expect(!set.remove(10));
@@ -198,10 +191,10 @@ test "HashSet toSlice" {
     var set = HashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(5);
-    _ = set.add(10);
+    _ = try set.add(5);
+    _ = try set.add(10);
 
-    const slice = set.toSlice(allocator);
+    const slice = try set.toSlice(allocator);
     defer allocator.free(slice);
 
     try std.testing.expectEqual(@as(usize, 2), slice.len);
@@ -214,22 +207,22 @@ test "HashSet union intersect difference" {
     var b = HashSet(i32).init(allocator);
     defer b.deinit();
 
-    _ = a.add(1);
-    _ = a.add(2);
-    _ = a.add(3);
-    _ = b.add(2);
-    _ = b.add(3);
-    _ = b.add(4);
+    _ = try a.add(1);
+    _ = try a.add(2);
+    _ = try a.add(3);
+    _ = try b.add(2);
+    _ = try b.add(3);
+    _ = try b.add(4);
 
-    var u = a.setUnion(&b, allocator);
+    var u = try a.setUnion(&b, allocator);
     defer u.deinit();
     try std.testing.expectEqual(@as(usize, 4), u.len());
 
-    var inter = a.intersect(&b, allocator);
+    var inter = try a.intersect(&b, allocator);
     defer inter.deinit();
     try std.testing.expectEqual(@as(usize, 2), inter.len());
 
-    var diff = a.difference(&b, allocator);
+    var diff = try a.difference(&b, allocator);
     defer diff.deinit();
     try std.testing.expectEqual(@as(usize, 1), diff.len());
     try std.testing.expect(diff.contains(1));
@@ -240,25 +233,28 @@ test "HashSet anySatisfy allSatisfy noneSatisfy count" {
     var set = HashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(2);
-    _ = set.add(4);
-    _ = set.add(6);
+    _ = try set.add(2);
+    _ = try set.add(4);
+    _ = try set.add(6);
 
     const isEven = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
     const isNeg = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return x < 0;
         }
     }.f;
 
-    try std.testing.expect(set.allSatisfy(&isEven));
-    try std.testing.expect(set.anySatisfy(&isEven));
-    try std.testing.expect(set.noneSatisfy(&isNeg));
-    try std.testing.expectEqual(@as(usize, 3), set.count(&isEven));
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    try std.testing.expect(set.allSatisfy(ctx, &isEven));
+    try std.testing.expect(set.anySatisfy(ctx, &isEven));
+    try std.testing.expect(set.noneSatisfy(ctx, &isNeg));
+    try std.testing.expectEqual(@as(usize, 3), set.count(ctx, &isEven));
 }
 
 test "HashSet clear" {
@@ -266,7 +262,7 @@ test "HashSet clear" {
     var set = HashSet(i32).init(allocator);
     defer set.deinit();
 
-    _ = set.add(1);
+    _ = try set.add(1);
     set.clear();
 
     try std.testing.expect(set.isEmpty());

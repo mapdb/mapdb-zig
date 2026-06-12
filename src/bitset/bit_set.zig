@@ -24,10 +24,10 @@ pub const BitSet = struct {
         self.words.deinit(self.allocator);
     }
 
-    pub fn withBitLength(allocator: Allocator, n_bits: usize) BitSet {
+    pub fn withBitLength(allocator: Allocator, n_bits: usize) Allocator.Error!BitSet {
         var b = BitSet.init(allocator);
         const n_words = (n_bits + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        b.words.appendNTimes(b.allocator, 0, n_words) catch @panic("out of memory");
+        try b.words.appendNTimes(b.allocator, 0, n_words);
         b.bit_length = n_bits;
         return b;
     }
@@ -39,16 +39,16 @@ pub const BitSet = struct {
         return @as(u64, 1) << @intCast(bit % BITS_PER_WORD);
     }
 
-    fn ensure(self: *BitSet, bit: usize) void {
+    fn ensure(self: *BitSet, bit: usize) Allocator.Error!void {
         const needed = wordIndex(bit) + 1;
         while (self.words.items.len < needed) {
-            self.words.append(self.allocator, 0) catch @panic("out of memory");
+            try self.words.append(self.allocator, 0);
         }
         if (bit + 1 > self.bit_length) self.bit_length = bit + 1;
     }
 
-    pub fn set(self: *BitSet, bit: usize) void {
-        self.ensure(bit);
+    pub fn set(self: *BitSet, bit: usize) Allocator.Error!void {
+        try self.ensure(bit);
         self.words.items[wordIndex(bit)] |= wordMask(bit);
     }
 
@@ -57,8 +57,8 @@ pub const BitSet = struct {
         self.words.items[wordIndex(bit)] &= ~wordMask(bit);
     }
 
-    pub fn flip(self: *BitSet, bit: usize) void {
-        self.ensure(bit);
+    pub fn flip(self: *BitSet, bit: usize) Allocator.Error!void {
+        try self.ensure(bit);
         self.words.items[wordIndex(bit)] ^= wordMask(bit);
     }
 
@@ -111,17 +111,17 @@ pub const BitSet = struct {
         }
     }
 
-    pub fn orInPlace(self: *BitSet, other: *const BitSet) void {
+    pub fn orInPlace(self: *BitSet, other: *const BitSet) Allocator.Error!void {
         while (self.words.items.len < other.words.items.len) {
-            self.words.append(self.allocator, 0) catch @panic("out of memory");
+            try self.words.append(self.allocator, 0);
         }
         if (other.bit_length > self.bit_length) self.bit_length = other.bit_length;
         for (other.words.items, 0..) |ow, i| self.words.items[i] |= ow;
     }
 
-    pub fn xorInPlace(self: *BitSet, other: *const BitSet) void {
+    pub fn xorInPlace(self: *BitSet, other: *const BitSet) Allocator.Error!void {
         while (self.words.items.len < other.words.items.len) {
-            self.words.append(self.allocator, 0) catch @panic("out of memory");
+            try self.words.append(self.allocator, 0);
         }
         if (other.bit_length > self.bit_length) self.bit_length = other.bit_length;
         for (other.words.items, 0..) |ow, i| self.words.items[i] ^= ow;
@@ -170,15 +170,15 @@ pub const BitSet = struct {
     }
 
     /// Returns indices of all set bits, ascending. Caller frees.
-    pub fn toOwnedSlice(self: *const BitSet, allocator: Allocator) []usize {
+    pub fn toOwnedSlice(self: *const BitSet, allocator: Allocator) Allocator.Error![]usize {
         var out = std.ArrayListUnmanaged(usize){};
-        out.ensureTotalCapacity(allocator, self.cardinality()) catch @panic("out of memory");
+        try out.ensureTotalCapacity(allocator, self.cardinality());
         var b = self.nextSetBit(0);
         while (b) |bit| {
-            out.append(allocator, bit) catch @panic("out of memory");
+            try out.append(allocator, bit);
             b = self.nextSetBit(bit + 1);
         }
-        return out.toOwnedSlice(allocator) catch @panic("out of memory");
+        return out.toOwnedSlice(allocator);
     }
 
     pub fn eql(self: *const BitSet, other: *const BitSet) bool {
@@ -210,9 +210,9 @@ pub const BitSet = struct {
 test "BitSet: set get clearBit" {
     var b = BitSet.init(std.testing.allocator);
     defer b.deinit();
-    b.set(0);
-    b.set(5);
-    b.set(100);
+    try b.set(0);
+    try b.set(5);
+    try b.set(100);
     try std.testing.expect(b.get(0));
     try std.testing.expect(b.get(5));
     try std.testing.expect(b.get(100));
@@ -224,9 +224,9 @@ test "BitSet: set get clearBit" {
 test "BitSet: flip" {
     var b = BitSet.init(std.testing.allocator);
     defer b.deinit();
-    b.flip(3);
+    try b.flip(3);
     try std.testing.expect(b.get(3));
-    b.flip(3);
+    try b.flip(3);
     try std.testing.expect(!b.get(3));
 }
 
@@ -234,7 +234,7 @@ test "BitSet: cardinality" {
     var b = BitSet.init(std.testing.allocator);
     defer b.deinit();
     const bits = [_]usize{ 1, 5, 10, 63, 64, 127, 200 };
-    for (bits) |i| b.set(i);
+    for (bits) |i| try b.set(i);
     try std.testing.expectEqual(@as(usize, 7), b.cardinality());
 }
 
@@ -243,21 +243,21 @@ test "BitSet: and/or/xor/andNot" {
     defer a.deinit();
     var c = BitSet.init(std.testing.allocator);
     defer c.deinit();
-    a.set(1);
-    a.set(5);
-    a.set(10);
-    c.set(5);
-    c.set(10);
-    c.set(20);
+    try a.set(1);
+    try a.set(5);
+    try a.set(10);
+    try c.set(5);
+    try c.set(10);
+    try c.set(20);
     try std.testing.expect(a.intersects(&c));
 
     var and_ = BitSet.init(std.testing.allocator);
     defer and_.deinit();
-    and_.set(1);
-    and_.set(5);
-    and_.set(10);
+    try and_.set(1);
+    try and_.set(5);
+    try and_.set(10);
     and_.andInPlace(&c);
-    const s1 = and_.toOwnedSlice(std.testing.allocator);
+    const s1 = try and_.toOwnedSlice(std.testing.allocator);
     defer std.testing.allocator.free(s1);
     try std.testing.expectEqual(@as(usize, 2), s1.len);
 }
@@ -265,9 +265,9 @@ test "BitSet: and/or/xor/andNot" {
 test "BitSet: nextSetBit" {
     var b = BitSet.init(std.testing.allocator);
     defer b.deinit();
-    b.set(0);
-    b.set(5);
-    b.set(100);
+    try b.set(0);
+    try b.set(5);
+    try b.set(100);
     try std.testing.expectEqual(@as(?usize, 0), b.nextSetBit(0));
     try std.testing.expectEqual(@as(?usize, 5), b.nextSetBit(1));
     try std.testing.expectEqual(@as(?usize, 100), b.nextSetBit(6));
@@ -275,7 +275,7 @@ test "BitSet: nextSetBit" {
 }
 
 test "BitSet: withBitLength" {
-    var b = BitSet.withBitLength(std.testing.allocator, 200);
+    var b = try BitSet.withBitLength(std.testing.allocator, 200);
     defer b.deinit();
     try std.testing.expectEqual(@as(usize, 200), b.len());
     try std.testing.expectEqual(@as(usize, 0), b.cardinality());
@@ -286,9 +286,9 @@ test "BitSet: eql" {
     defer a.deinit();
     var c = BitSet.init(std.testing.allocator);
     defer c.deinit();
-    a.set(1);
-    a.set(3);
-    c.set(1);
-    c.set(3);
+    try a.set(1);
+    try a.set(3);
+    try c.set(1);
+    try c.set(3);
     try std.testing.expect(a.eql(&c));
 }

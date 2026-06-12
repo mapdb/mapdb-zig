@@ -41,8 +41,8 @@ pub fn ArrayList(comptime T: type) type {
             self.inner.deinit(self.allocator);
         }
 
-        pub fn push(self: *Self, item: T) void {
-            self.inner.append(self.allocator, item) catch @panic("out of memory");
+        pub fn push(self: *Self, item: T) Allocator.Error!void {
+            try self.inner.append(self.allocator, item);
         }
 
         pub fn get(self: *const Self, index: usize) ?T {
@@ -80,12 +80,6 @@ pub fn ArrayList(comptime T: type) type {
             return null;
         }
 
-        pub fn forEach(self: *const Self, f: *const fn (*const T) void) void {
-            for (self.inner.items) |*item| {
-                f(item);
-            }
-        }
-
         /// Pull-based iterator yielding each element by value in insertion order.
         /// Non-allocating: indexes directly into the backing slice. The iterator
         /// borrows the list; do not mutate while iterating.
@@ -107,28 +101,28 @@ pub fn ArrayList(comptime T: type) type {
             return .{ .items = self.inner.items };
         }
 
-        pub fn select(self: *const Self, predicate: *const fn (T) bool) Self {
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             for (self.inner.items) |item| {
-                if (predicate(item)) {
-                    result.push(item);
+                if (predicate(ctx, item)) {
+                    try result.push(item);
                 }
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, predicate: *const fn (T) bool) Self {
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             for (self.inner.items) |item| {
-                if (!predicate(item)) {
-                    result.push(item);
+                if (!predicate(ctx, item)) {
+                    try result.push(item);
                 }
             }
             return result;
         }
 
-        pub fn toSlice(self: *const Self, allocator: Allocator) []T {
-            const slice = allocator.alloc(T, self.inner.items.len) catch @panic("out of memory");
+        pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            const slice = try allocator.alloc(T, self.inner.items.len);
             @memcpy(slice, self.inner.items);
             return slice;
         }
@@ -137,31 +131,31 @@ pub fn ArrayList(comptime T: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.items) |item| {
-                if (predicate(item)) return true;
+                if (predicate(ctx, item)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.items) |item| {
-                if (!predicate(item)) return false;
+                if (!predicate(ctx, item)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.inner.items) |item| {
-                if (predicate(item)) return false;
+                if (predicate(ctx, item)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, predicate: *const fn (T) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
             var c: usize = 0;
             for (self.inner.items) |item| {
-                if (predicate(item)) c += 1;
+                if (predicate(ctx, item)) c += 1;
             }
             return c;
         }
@@ -222,12 +216,12 @@ test "ArrayList(f32).sort uses IEEE total order (NaN + ±0 + negatives)" {
     var list = ArrayList(f32).init(allocator);
     defer list.deinit();
     const nan = std.math.nan(f32);
-    list.push(nan);
-    list.push(1.0);
-    list.push(-1.0);
-    list.push(-0.0);
-    list.push(0.0);
-    list.push(-std.math.inf(f32));
+    try list.push(nan);
+    try list.push(1.0);
+    try list.push(-1.0);
+    try list.push(-0.0);
+    try list.push(0.0);
+    try list.push(-std.math.inf(f32));
     list.sort();
     const items = list.inner.items;
     // -Inf < -1 < -0.0 < +0.0 < +1 < +NaN ; total order is transitive.
@@ -245,9 +239,9 @@ test "ArrayList basic" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(10);
-    list.push(20);
-    list.push(30);
+    try list.push(10);
+    try list.push(20);
+    try list.push(30);
 
     try std.testing.expectEqual(@as(usize, 3), list.len());
     try std.testing.expect(!list.isEmpty());
@@ -261,8 +255,8 @@ test "ArrayList set" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(1);
-    list.push(2);
+    try list.push(1);
+    try list.push(2);
 
     const old = list.set(0, 99);
     try std.testing.expectEqual(@as(i32, 1), old);
@@ -274,9 +268,9 @@ test "ArrayList contains and indexOf" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(5);
-    list.push(10);
-    list.push(15);
+    try list.push(5);
+    try list.push(10);
+    try list.push(15);
 
     try std.testing.expect(list.contains(10));
     try std.testing.expect(!list.contains(99));
@@ -289,9 +283,9 @@ test "ArrayList remove" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(1);
-    list.push(2);
-    list.push(3);
+    try list.push(1);
+    try list.push(2);
+    try list.push(3);
 
     try std.testing.expect(list.remove(2));
     try std.testing.expectEqual(@as(usize, 2), list.len());
@@ -303,9 +297,9 @@ test "ArrayList sort" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(30);
-    list.push(10);
-    list.push(20);
+    try list.push(30);
+    try list.push(10);
+    try list.push(20);
 
     list.sort();
 
@@ -319,10 +313,10 @@ test "ArrayList toSlice" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(1);
-    list.push(2);
+    try list.push(1);
+    try list.push(2);
 
-    const slice = list.toSlice(allocator);
+    const slice = try list.toSlice(allocator);
     defer allocator.free(slice);
 
     try std.testing.expectEqual(@as(usize, 2), slice.len);
@@ -335,22 +329,25 @@ test "ArrayList select and reject" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(1);
-    list.push(2);
-    list.push(3);
-    list.push(4);
+    try list.push(1);
+    try list.push(2);
+    try list.push(3);
+    try list.push(4);
 
     const isEven = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
 
-    var evens = list.select(&isEven);
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    var evens = try list.select(ctx, &isEven);
     defer evens.deinit();
     try std.testing.expectEqual(@as(usize, 2), evens.len());
 
-    var odds = list.reject(&isEven);
+    var odds = try list.reject(ctx, &isEven);
     defer odds.deinit();
     try std.testing.expectEqual(@as(usize, 2), odds.len());
 }
@@ -360,25 +357,28 @@ test "ArrayList anySatisfy allSatisfy noneSatisfy count" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(2);
-    list.push(4);
-    list.push(6);
+    try list.push(2);
+    try list.push(4);
+    try list.push(6);
 
     const isEven = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
     const isNegative = struct {
-        fn f(x: i32) bool {
+        fn f(_: *anyopaque, x: i32) bool {
             return x < 0;
         }
     }.f;
 
-    try std.testing.expect(list.allSatisfy(&isEven));
-    try std.testing.expect(list.anySatisfy(&isEven));
-    try std.testing.expect(list.noneSatisfy(&isNegative));
-    try std.testing.expectEqual(@as(usize, 3), list.count(&isEven));
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    try std.testing.expect(list.allSatisfy(ctx, &isEven));
+    try std.testing.expect(list.anySatisfy(ctx, &isEven));
+    try std.testing.expect(list.noneSatisfy(ctx, &isNegative));
+    try std.testing.expectEqual(@as(usize, 3), list.count(ctx, &isEven));
 }
 
 test "ArrayList clear" {
@@ -386,8 +386,8 @@ test "ArrayList clear" {
     var list = ArrayList(i32).init(allocator);
     defer list.deinit();
 
-    list.push(1);
-    list.push(2);
+    try list.push(1);
+    try list.push(2);
     list.clear();
 
     try std.testing.expectEqual(@as(usize, 0), list.len());

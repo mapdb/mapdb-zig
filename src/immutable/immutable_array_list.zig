@@ -80,14 +80,14 @@ pub fn ImmutableArrayList(comptime T: type) type {
         const Mutable = MutableType(T);
 
         /// Create from a slice by copying it. Caller retains ownership of the input.
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            const owned = allocator.dupe(T, values) catch @panic("out of memory");
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            const owned = try allocator.dupe(T, values);
             return .{ .items = owned, .allocator = allocator };
         }
 
         /// Create from a mutable list by taking a snapshot.
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            return of(allocator, mutable.items.items);
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            return try of(allocator, mutable.items.items);
         }
 
         /// Release the owned slice.
@@ -206,8 +206,8 @@ pub fn ImmutableArrayList(comptime T: type) type {
         }
 
         /// Create an independent mutable copy.
-        pub fn toMutable(self: *const Self) Mutable {
-            return Mutable.of(self.allocator, self.items);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            return try Mutable.of(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

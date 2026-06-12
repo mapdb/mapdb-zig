@@ -60,19 +60,20 @@ pub fn ImmutableHashBag(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            var mutable = Mutable.init(allocator);
-            for (values) |val| mutable.add(val);
-            const result = fromMutable(allocator, &mutable);
-            mutable.deinit();
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var mutable = try Mutable.init(allocator);
+            defer mutable.deinit();
+            for (values) |val| try mutable.add(val);
+            const result = try fromMutable(allocator, &mutable);
             return result;
         }
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            var counts = OpenHashMap(T, usize).init(allocator, allocator, allocator) catch @panic("out of memory");
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            var counts = try OpenHashMap(T, usize).init(allocator);
+            errdefer counts.deinit();
             for (0..mutable.counts.capacity) |i| {
                 if (mutable.counts.entries[i].occupied) {
-                    _ = counts.put(mutable.counts.entries[i].key, mutable.counts.entries[i].value) catch @panic("out of memory");
+                    _ = try counts.put(mutable.counts.entries[i].key, mutable.counts.entries[i].value);
                 }
             }
             return .{
@@ -152,13 +153,14 @@ pub fn ImmutableHashBag(comptime T: type) type {
             return .{ .entries = self.counts.entries };
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            var mutable = Mutable.init(self.allocator);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            var mutable = try Mutable.init(self.allocator);
+            errdefer mutable.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
                     var j: usize = 0;
                     while (j < self.counts.entries[i].value) : (j += 1) {
-                        mutable.add(self.counts.entries[i].key);
+                        try mutable.add(self.counts.entries[i].key);
                     }
                 }
             }

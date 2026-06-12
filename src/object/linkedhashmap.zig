@@ -29,8 +29,8 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
         }
 
         /// Put a key-value pair. Returns the old value if the key was already present.
-        pub fn put(self: *Self, key: K, value: V) ?V {
-            const result = self.inner.fetchPut(self.allocator, key, value) catch @panic("out of memory");
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            const result = try self.inner.fetchPut(self.allocator, key, value);
             if (result) |kv| return kv.value;
             return null;
         }
@@ -63,27 +63,19 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
         }
 
         /// Returns keys in insertion order.
-        pub fn keysToSlice(self: *const Self, allocator: Allocator) []K {
+        pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             const keys = self.inner.keys();
-            const slice = allocator.alloc(K, keys.len) catch @panic("out of memory");
+            const slice = try allocator.alloc(K, keys.len);
             @memcpy(slice, keys);
             return slice;
         }
 
         /// Returns values in insertion order.
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
             const values = self.inner.values();
-            const slice = allocator.alloc(V, values.len) catch @panic("out of memory");
+            const slice = try allocator.alloc(V, values.len);
             @memcpy(slice, values);
             return slice;
-        }
-
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            const keys = self.inner.keys();
-            const values = self.inner.values();
-            for (keys, values) |k, v| {
-                f(k, v);
-            }
         }
 
         /// An entry yielded by `Iterator` — key and value by value.
@@ -112,29 +104,29 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
             return .{ .keys = self.inner.keys(), .values = self.inner.values() };
         }
 
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             const keys = self.inner.keys();
             const values = self.inner.values();
             for (keys, values) |k, v| {
-                if (predicate(k, v)) return true;
+                if (predicate(ctx, k, v)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             const keys = self.inner.keys();
             const values = self.inner.values();
             for (keys, values) |k, v| {
-                if (!predicate(k, v)) return false;
+                if (!predicate(ctx, k, v)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             const keys = self.inner.keys();
             const values = self.inner.values();
             for (keys, values) |k, v| {
-                if (predicate(k, v)) return false;
+                if (predicate(ctx, k, v)) return false;
             }
             return true;
         }
@@ -150,8 +142,8 @@ test "LinkedHashMap basic" {
     var map = LinkedHashMap(i32, []const u8).init(allocator);
     defer map.deinit();
 
-    try std.testing.expectEqual(@as(?[]const u8, null), map.put(1, "one"));
-    try std.testing.expectEqual(@as(?[]const u8, null), map.put(2, "two"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try map.put(1, "one"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try map.put(2, "two"));
 
     try std.testing.expectEqual(@as(usize, 2), map.len());
     try std.testing.expect(map.containsKey(1));
@@ -163,8 +155,8 @@ test "LinkedHashMap put replaces" {
     var map = LinkedHashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    const old = map.put(1, 20);
+    _ = try map.put(1, 10);
+    const old = try map.put(1, 20);
     try std.testing.expectEqual(@as(?i32, 10), old);
     try std.testing.expectEqual(@as(?i32, 20), map.get(1));
 }
@@ -174,15 +166,15 @@ test "LinkedHashMap insertion order" {
     var map = LinkedHashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(3, 30);
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
+    _ = try map.put(3, 30);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
 
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 3, 1, 2 }, keys);
 
-    const values = map.valuesToSlice(allocator);
+    const values = try map.valuesToSlice(allocator);
     defer allocator.free(values);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 30, 10, 20 }, values);
 }
@@ -192,14 +184,14 @@ test "LinkedHashMap remove preserves order" {
     var map = LinkedHashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 10);
-    _ = map.put(2, 20);
-    _ = map.put(3, 30);
+    _ = try map.put(1, 10);
+    _ = try map.put(2, 20);
+    _ = try map.put(3, 30);
 
     const removed = map.remove(2);
     try std.testing.expectEqual(@as(?i32, 20), removed);
 
-    const keys = map.keysToSlice(allocator);
+    const keys = try map.keysToSlice(allocator);
     defer allocator.free(keys);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 3 }, keys);
 }
@@ -209,7 +201,7 @@ test "LinkedHashMap clear" {
     var map = LinkedHashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 1);
+    _ = try map.put(1, 1);
     map.clear();
     try std.testing.expect(map.isEmpty());
 }
@@ -219,21 +211,24 @@ test "LinkedHashMap anySatisfy allSatisfy noneSatisfy" {
     var map = LinkedHashMap(i32, i32).init(allocator);
     defer map.deinit();
 
-    _ = map.put(1, 2);
-    _ = map.put(2, 4);
+    _ = try map.put(1, 2);
+    _ = try map.put(2, 4);
 
     const valEven = struct {
-        fn f(_: i32, v: i32) bool {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return @rem(v, 2) == 0;
         }
     }.f;
     const valNeg = struct {
-        fn f(_: i32, v: i32) bool {
+        fn f(_: *anyopaque, _: i32, v: i32) bool {
             return v < 0;
         }
     }.f;
 
-    try std.testing.expect(map.allSatisfy(&valEven));
-    try std.testing.expect(map.anySatisfy(&valEven));
-    try std.testing.expect(map.noneSatisfy(&valNeg));
+    var dummy: u8 = 0;
+    const ctx: *anyopaque = &dummy;
+
+    try std.testing.expect(map.allSatisfy(ctx, &valEven));
+    try std.testing.expect(map.anySatisfy(ctx, &valEven));
+    try std.testing.expect(map.noneSatisfy(ctx, &valNeg));
 }

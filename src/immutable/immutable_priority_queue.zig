@@ -69,15 +69,15 @@ pub fn ImmutablePriorityQueue(comptime T: type) type {
         const Mutable = MutableType(T);
 
         /// Heapifies `values` (copy) and wraps the result. O(n).
-        pub fn of(allocator: Allocator, values: []const T) Self {
-            var tmp = Mutable.of(allocator, values);
+        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var tmp = try Mutable.of(allocator, values);
             defer tmp.deinit();
-            const owned = allocator.dupe(T, tmp.slice()) catch @panic("out of memory");
+            const owned = try allocator.dupe(T, tmp.slice());
             return .{ .items = owned, .allocator = allocator };
         }
 
-        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Self {
-            const owned = allocator.dupe(T, mutable.slice()) catch @panic("out of memory");
+        pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
+            const owned = try allocator.dupe(T, mutable.slice());
             return .{ .items = owned, .allocator = allocator };
         }
 
@@ -133,29 +133,29 @@ pub fn ImmutablePriorityQueue(comptime T: type) type {
         }
 
         /// Returns a new immutable queue with `value` inserted. O(n) due to copy.
-        pub fn push(self: *const Self, value: T) Self {
-            var m = self.toMutable();
+        pub fn push(self: *const Self, value: T) Allocator.Error!Self {
+            var m = try self.toMutable();
             defer m.deinit();
-            m.push(value);
-            const owned = self.allocator.dupe(T, m.slice()) catch @panic("out of memory");
+            try m.push(value);
+            const owned = try self.allocator.dupe(T, m.slice());
             return .{ .items = owned, .allocator = self.allocator };
         }
 
         /// Returns a new queue without the smallest element, and the removed value.
-        pub fn pop(self: *const Self) ?struct { queue: Self, value: T } {
+        pub fn pop(self: *const Self) Allocator.Error!?struct { queue: Self, value: T } {
             if (self.items.len == 0) return null;
-            var m = self.toMutable();
+            var m = try self.toMutable();
             defer m.deinit();
             const top = m.pop().?;
-            const owned = self.allocator.dupe(T, m.slice()) catch @panic("out of memory");
+            const owned = try self.allocator.dupe(T, m.slice());
             return .{
                 .queue = .{ .items = owned, .allocator = self.allocator },
                 .value = top,
             };
         }
 
-        pub fn toMutable(self: *const Self) Mutable {
-            return Mutable.of(self.allocator, self.items);
+        pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
+            return try Mutable.of(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

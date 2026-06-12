@@ -72,13 +72,13 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         // ---- Core Operations ----
 
         /// Adds a value to the list for the given key.
-        pub fn put(self: *Self, key: K, value: V) void {
+        pub fn put(self: *Self, key: K, value: V) Allocator.Error!void {
             const map_key = mapKey(key);
-            const gop = self.inner.getOrPut(self.allocator, map_key) catch @panic("out of memory");
+            const gop = try self.inner.getOrPut(self.allocator, map_key);
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayListUnmanaged(V){};
             }
-            gop.value_ptr.append(self.allocator, value) catch @panic("out of memory");
+            try gop.value_ptr.append(self.allocator, value);
             self.total_size += 1;
         }
 
@@ -207,89 +207,78 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        /// Calls the function for each key-value pair.
-        pub fn forEach(self: *const Self, f: *const fn (K, V) void) void {
-            var it = self.inner.iterator();
-            while (it.next()) |entry| {
-                const key = keyFromStored(entry.key_ptr.*);
-                for (entry.value_ptr.items) |v| {
-                    f(key, v);
-                }
-            }
-        }
-
         // ---- Functional Operations ----
 
         /// Returns a new multimap containing only pairs that satisfy the predicate.
-        pub fn select(self: *const Self, predicate: *const fn (K, V) bool) Self {
+        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(key, v)) result.put(key, v);
+                    if (predicate(ctx, key, v)) try result.put(key, v);
                 }
             }
             return result;
         }
 
         /// Returns a new multimap containing only pairs that do not satisfy the predicate.
-        pub fn reject(self: *const Self, predicate: *const fn (K, V) bool) Self {
+        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (!predicate(key, v)) result.put(key, v);
+                    if (!predicate(ctx, key, v)) try result.put(key, v);
                 }
             }
             return result;
         }
 
         /// Returns true if any key-value pair satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(key, v)) return true;
+                    if (predicate(ctx, key, v)) return true;
                 }
             }
             return false;
         }
 
         /// Returns true if all key-value pairs satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (!predicate(key, v)) return false;
+                    if (!predicate(ctx, key, v)) return false;
                 }
             }
             return true;
         }
 
         /// Returns true if no key-value pair satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, predicate: *const fn (K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(key, v)) return false;
+                    if (predicate(ctx, key, v)) return false;
                 }
             }
             return true;
         }
 
         /// Returns the number of key-value pairs that satisfy the predicate.
-        pub fn count(self: *const Self, predicate: *const fn (K, V) bool) usize {
+        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
             var c: usize = 0;
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(key, v)) c += 1;
+                    if (predicate(ctx, key, v)) c += 1;
                 }
             }
             return c;
@@ -298,30 +287,30 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         // ---- Key/Value Collection ----
 
         /// Returns all unique keys as a slice. Caller must free.
-        pub fn uniqueKeys(self: *const Self, allocator: Allocator) []K {
+        pub fn uniqueKeys(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             var result = std.ArrayListUnmanaged(K){};
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                result.append(allocator, keyFromStored(entry.key_ptr.*)) catch @panic("out of memory");
+                try result.append(allocator, keyFromStored(entry.key_ptr.*));
             }
-            return result.toOwnedSlice(allocator) catch @panic("out of memory");
+            return result.toOwnedSlice(allocator);
         }
 
         /// Returns all values as a slice. Caller must free.
-        pub fn valuesToSlice(self: *const Self, allocator: Allocator) []V {
+        pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
             var result = std.ArrayListUnmanaged(V){};
-            result.ensureTotalCapacity(allocator, self.total_size) catch @panic("out of memory");
+            try result.ensureTotalCapacity(allocator, self.total_size);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                result.appendSlice(allocator, entry.value_ptr.items) catch @panic("out of memory");
+                try result.appendSlice(allocator, entry.value_ptr.items);
             }
-            return result.toOwnedSlice(allocator) catch @panic("out of memory");
+            return result.toOwnedSlice(allocator);
         }
 
         // ---- Fluent API ----
 
-        pub fn withKeyValue(self: *Self, key: K, value: V) *Self {
-            self.put(key, value);
+        pub fn withKeyValue(self: *Self, key: K, value: V) Allocator.Error!*Self {
+            try self.put(key, value);
             return self;
         }
 

@@ -62,9 +62,9 @@ test "ArrayList.iterator yields elements in insertion order" {
     const a = testing.allocator;
     var list = arraylist.I32ArrayList.init(a);
     defer list.deinit();
-    list.push(10);
-    list.push(20);
-    list.push(30);
+    try list.push(10);
+    try list.push(20);
+    try list.push(30);
 
     var it = list.iterator();
     try testing.expectEqual(@as(?i32, 10), it.next());
@@ -83,9 +83,9 @@ test "ArrayStack.iterator yields bottom-to-top, matching forEach" {
     const a = testing.allocator;
     var s = stack.I32ArrayStack.init(a);
     defer s.deinit();
-    s.push(1);
-    s.push(2);
-    s.push(3);
+    try s.push(1);
+    try s.push(2);
+    try s.push(3);
 
     const sl = s.toSlice(); // bottom-to-top
     var it = s.iterator();
@@ -97,9 +97,9 @@ test "ArrayDeque.iterator yields front-to-back" {
     const a = testing.allocator;
     var d = deque.I32ArrayDeque.init(a);
     defer d.deinit();
-    d.addLast(2);
-    d.addLast(3);
-    d.addFirst(1); // [1,2,3]
+    try d.addLast(2);
+    try d.addLast(3);
+    try d.addFirst(1); // [1,2,3]
 
     const sl = d.slice();
     var it = d.iterator();
@@ -111,9 +111,9 @@ test "PriorityQueue.iterator yields internal heap-array order (== slice)" {
     const a = testing.allocator;
     var q = priority_queue.I32PriorityQueue.init(a);
     defer q.deinit();
-    q.push(5);
-    q.push(1);
-    q.push(3);
+    try q.push(5);
+    try q.push(1);
+    try q.push(3);
 
     const sl = q.slice();
     var it = q.iterator();
@@ -130,10 +130,10 @@ test "PriorityQueue.iterator yields internal heap-array order (== slice)" {
 
 test "HashSet.iterator yields every element exactly once (arbitrary order)" {
     const a = testing.allocator;
-    var set = hashset.I32HashSet.init(a);
+    var set = try hashset.I32HashSet.init(a);
     defer set.deinit();
     const elems = [_]i32{ 7, 11, 13, 17, 19 };
-    for (elems) |e| _ = set.add(e);
+    for (elems) |e| _ = try set.add(e);
 
     var got = std.ArrayListUnmanaged(i32){};
     defer got.deinit(a);
@@ -149,11 +149,11 @@ test "HashSet.iterator yields every element exactly once (arbitrary order)" {
 
 test "HashMap.iterator yields every entry exactly once (arbitrary order)" {
     const a = testing.allocator;
-    var map = hashmap.I32I64HashMap.init(a);
+    var map = try hashmap.I32I64HashMap.init(a);
     defer map.deinit();
-    _ = map.put(1, 100);
-    _ = map.put(2, 200);
-    _ = map.put(3, 300);
+    _ = try map.put(1, 100);
+    _ = try map.put(2, 200);
+    _ = try map.put(3, 300);
 
     var keys = std.ArrayListUnmanaged(i32){};
     defer keys.deinit(a);
@@ -173,10 +173,10 @@ test "HashMap.iterator yields every entry exactly once (arbitrary order)" {
 
 test "HashBiMap.iterator yields forward entries exactly once" {
     const a = testing.allocator;
-    var m = hashmap.I32I64HashBiMap.init(a);
+    var m = try hashmap.I32I64HashBiMap.init(a);
     defer m.deinit();
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
 
     var count: usize = 0;
     var it = m.iterator();
@@ -189,12 +189,12 @@ test "HashBiMap.iterator yields forward entries exactly once" {
 
 test "HashBag.iterator yields each element repeated by occurrence count" {
     const a = testing.allocator;
-    var b = bag.I32HashBag.init(a);
+    var b = try bag.I32HashBag.init(a);
     defer b.deinit();
-    b.add(5);
-    b.add(5);
-    b.add(5);
-    b.add(7);
+    try b.add(5);
+    try b.add(5);
+    try b.add(5);
+    try b.add(7);
 
     // Drain iterator into a sorted slice; compare with toSlice (also all
     // occurrences, but arbitrary order) sorted.
@@ -204,7 +204,7 @@ test "HashBag.iterator yields each element repeated by occurrence count" {
     while (it.next()) |v| try got.append(a, v);
 
     try testing.expectEqual(b.totalSize(), got.items.len);
-    const expected = b.toSlice(a);
+    const expected = try b.toSlice(a);
     defer a.free(expected);
     sortI32(got.items);
     const exp = try a.dupe(i32, expected);
@@ -221,12 +221,12 @@ test "TreeSet.iterator yields ascending sorted order" {
     const a = testing.allocator;
     var s = treeset.I32TreeSet.init(a);
     defer s.deinit();
-    _ = s.add(30);
-    _ = s.add(10);
-    _ = s.add(20);
-    _ = s.add(10); // dup ignored
+    _ = try s.add(30);
+    _ = try s.add(10);
+    _ = try s.add(20);
+    _ = try s.add(10); // dup ignored
 
-    const sl = s.toSlice(a); // sorted
+    const sl = try s.toSlice(a); // sorted
     defer a.free(sl);
     var it = s.iterator();
     for (sl) |expected| try testing.expectEqual(@as(?i32, expected), it.next());
@@ -238,9 +238,9 @@ test "TreeMap.iterator yields entries in ascending key order" {
     const a = testing.allocator;
     var m = treemap.I32I64TreeMap.init(a);
     defer m.deinit();
-    _ = m.put(3, 300);
-    _ = m.put(1, 100);
-    _ = m.put(2, 200);
+    _ = try m.put(3, 300);
+    _ = try m.put(1, 100);
+    _ = try m.put(2, 200);
 
     const keys = m.keysSlice(); // sorted
     var it = m.iterator();
@@ -256,12 +256,12 @@ test "TreeBag.iterator yields each element by occurrence in sorted order" {
     const a = testing.allocator;
     var b = bag.I32TreeBag.init(a);
     defer b.deinit();
-    b.add(3);
-    b.add(1);
-    b.add(1);
-    b.add(2);
+    try b.add(3);
+    try b.add(1);
+    try b.add(1);
+    try b.add(2);
 
-    const sl = b.toSlice(a); // sorted, with duplicates: [1,1,2,3]
+    const sl = try b.toSlice(a); // sorted, with duplicates: [1,1,2,3]
     defer a.free(sl);
     var it = b.iterator();
     for (sl) |expected| try testing.expectEqual(@as(?i32, expected), it.next());
@@ -277,9 +277,9 @@ test "ListMultimap.iterator yields one entry per (key, value)" {
     const a = testing.allocator;
     var m = multimap.I32I64ListMultimap.init(a);
     defer m.deinit();
-    m.put(1, 10);
-    m.put(1, 11);
-    m.put(2, 20);
+    try m.put(1, 10);
+    try m.put(1, 11);
+    try m.put(2, 20);
 
     var count: usize = 0;
     var it = m.iterator();
@@ -295,10 +295,10 @@ test "SetMultimap.iterator yields one entry per (key, value)" {
     const a = testing.allocator;
     var m = multimap.I32I64SetMultimap.init(a);
     defer m.deinit();
-    m.put(1, 10);
-    m.put(1, 10); // dup dropped
-    m.put(1, 11);
-    m.put(2, 20);
+    try m.put(1, 10);
+    try m.put(1, 10); // dup dropped
+    try m.put(1, 11);
+    try m.put(2, 20);
 
     var count: usize = 0;
     var it = m.iterator();
@@ -316,7 +316,7 @@ test "SetMultimap.iterator yields one entry per (key, value)" {
 
 test "ImmutableArrayList.iterator yields insertion order" {
     const a = testing.allocator;
-    var imm = immutable.ImmutableI32ArrayList.of(a, &[_]i32{ 4, 5, 6 });
+    var imm = try immutable.ImmutableI32ArrayList.of(a, &[_]i32{ 4, 5, 6 });
     defer imm.deinit();
     var it = imm.iterator();
     try testing.expectEqual(@as(?i32, 4), it.next());
@@ -327,7 +327,7 @@ test "ImmutableArrayList.iterator yields insertion order" {
 
 test "ImmutableHashSet.iterator yields every element once" {
     const a = testing.allocator;
-    var imm = immutable.ImmutableI32HashSet.of(a, &[_]i32{ 1, 2, 3, 2 });
+    var imm = try immutable.ImmutableI32HashSet.of(a, &[_]i32{ 1, 2, 3, 2 });
     defer imm.deinit();
     var got = std.ArrayListUnmanaged(i32){};
     defer got.deinit(a);
@@ -340,11 +340,11 @@ test "ImmutableHashSet.iterator yields every element once" {
 
 test "ImmutableHashMap.iterator yields every entry once" {
     const a = testing.allocator;
-    var mut = hashmap.I32I64HashMap.init(a);
+    var mut = try hashmap.I32I64HashMap.init(a);
     defer mut.deinit();
-    _ = mut.put(1, 10);
-    _ = mut.put(2, 20);
-    var imm = mut.toImmutable();
+    _ = try mut.put(1, 10);
+    _ = try mut.put(2, 20);
+    var imm = try mut.toImmutable();
     defer imm.deinit();
 
     var count: usize = 0;
@@ -358,7 +358,7 @@ test "ImmutableHashMap.iterator yields every entry once" {
 
 test "ImmutableHashBag.iterator yields each element by occurrence" {
     const a = testing.allocator;
-    var imm = immutable.ImmutableI32HashBag.of(a, &[_]i32{ 9, 9, 8 });
+    var imm = try immutable.ImmutableI32HashBag.of(a, &[_]i32{ 9, 9, 8 });
     defer imm.deinit();
     var got = std.ArrayListUnmanaged(i32){};
     defer got.deinit(a);
@@ -378,9 +378,9 @@ test "object.ArrayList.iterator yields insertion order" {
     const a = testing.allocator;
     var list = object.ArrayList(i32).init(a);
     defer list.deinit();
-    list.push(7);
-    list.push(8);
-    list.push(9);
+    try list.push(7);
+    try list.push(8);
+    try list.push(9);
     var it = list.iterator();
     try testing.expectEqual(@as(?i32, 7), it.next());
     try testing.expectEqual(@as(?i32, 8), it.next());
@@ -392,8 +392,8 @@ test "object.ArrayStack.iterator yields bottom-to-top" {
     const a = testing.allocator;
     var s = object.ArrayStack(i32).init(a);
     defer s.deinit();
-    s.push(1);
-    s.push(2);
+    try s.push(1);
+    try s.push(2);
     var it = s.iterator();
     try testing.expectEqual(@as(?i32, 1), it.next());
     try testing.expectEqual(@as(?i32, 2), it.next());
@@ -404,8 +404,8 @@ test "object.HashMap.iterator yields every entry once" {
     const a = testing.allocator;
     var m = object.HashMap(i32, i64).init(a);
     defer m.deinit();
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
     var count: usize = 0;
     var it = m.iterator();
     while (it.next()) |entry| {
@@ -419,8 +419,8 @@ test "object.HashSet.iterator yields every element once" {
     const a = testing.allocator;
     var s = object.HashSet(i32).init(a);
     defer s.deinit();
-    _ = s.add(3);
-    _ = s.add(4);
+    _ = try s.add(3);
+    _ = try s.add(4);
     var count: usize = 0;
     var it = s.iterator();
     while (it.next()) |v| {
@@ -434,9 +434,9 @@ test "object.HashBag.iterator yields each element repeated by occurrence count" 
     const a = testing.allocator;
     var b = object.HashBag(i32).init(a);
     defer b.deinit();
-    b.add(5);
-    b.add(5);
-    b.add(6);
+    try b.add(5);
+    try b.add(5);
+    try b.add(6);
     var fives: usize = 0;
     var sixes: usize = 0;
     var total: usize = 0;
@@ -458,8 +458,8 @@ test "object.HashBiMap.iterator yields forward entries once" {
     const a = testing.allocator;
     var m = object.HashBiMap(i32, i64).init(a);
     defer m.deinit();
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
     var count: usize = 0;
     var it = m.iterator();
     while (it.next()) |entry| {
@@ -473,9 +473,9 @@ test "object.LinkedHashMap.iterator yields insertion order" {
     const a = testing.allocator;
     var m = object.LinkedHashMap(i32, i64).init(a);
     defer m.deinit();
-    _ = m.put(3, 30);
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
+    _ = try m.put(3, 30);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
     var it = m.iterator();
     var e = it.next().?;
     try testing.expectEqual(@as(i32, 3), e.key);
@@ -490,9 +490,9 @@ test "object.LinkedHashSet.iterator yields insertion order" {
     const a = testing.allocator;
     var s = object.LinkedHashSet(i32).init(a);
     defer s.deinit();
-    _ = s.add(9);
-    _ = s.add(7);
-    _ = s.add(8);
+    _ = try s.add(9);
+    _ = try s.add(7);
+    _ = try s.add(8);
     var it = s.iterator();
     try testing.expectEqual(@as(?i32, 9), it.next());
     try testing.expectEqual(@as(?i32, 7), it.next());
@@ -504,9 +504,9 @@ test "object.TreeMap.iterator yields ascending key order" {
     const a = testing.allocator;
     var m = object.TreeMap(i32, i64).init(a, object.naturalComparator(i32));
     defer m.deinit();
-    _ = m.put(30, 3);
-    _ = m.put(10, 1);
-    _ = m.put(20, 2);
+    _ = try m.put(30, 3);
+    _ = try m.put(10, 1);
+    _ = try m.put(20, 2);
     var it = m.iterator();
     var e = it.next().?;
     try testing.expectEqual(@as(i32, 10), e.key);
@@ -522,9 +522,9 @@ test "object.TreeSet.iterator yields ascending order" {
     const a = testing.allocator;
     var s = object.TreeSet(i32).init(a, object.naturalComparator(i32));
     defer s.deinit();
-    _ = s.add(30);
-    _ = s.add(10);
-    _ = s.add(20);
+    _ = try s.add(30);
+    _ = try s.add(10);
+    _ = try s.add(20);
     var it = s.iterator();
     try testing.expectEqual(@as(?i32, 10), it.next());
     try testing.expectEqual(@as(?i32, 20), it.next());
@@ -551,7 +551,7 @@ test "object.TreeSet.iterator survives randomized insert/remove churn" {
     while (op < 4000) : (op += 1) {
         const key = rand.intRangeAtMost(i32, -500, 500);
         if (rand.boolean()) {
-            if (s.add(key)) try present.put(a, key, {});
+            if (try s.add(key)) try present.put(a, key, {});
         } else {
             if (s.remove(key)) _ = present.remove(key);
         }
@@ -585,7 +585,7 @@ test "object.TreeMap.iterator survives randomized insert/remove churn" {
         const key = rand.intRangeAtMost(i32, -500, 500);
         if (rand.boolean()) {
             const value: i64 = @as(i64, key) * 7;
-            _ = m.put(key, value);
+            _ = try m.put(key, value);
             try expected.put(a, key, value);
         } else {
             _ = m.remove(key);
@@ -618,8 +618,8 @@ test "object.HashMapWithStrategy.iterator yields every entry once" {
     const strat = object.HashingStrategy(i32){ .hashFn = &hashI32, .eqlFn = &eqlI32 };
     var m = object.HashMapWithStrategy(i32, i64).init(a, strat);
     defer m.deinit();
-    _ = m.put(1, 10);
-    _ = m.put(2, 20);
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
     var count: usize = 0;
     var it = m.iterator();
     while (it.next()) |entry| {
@@ -634,8 +634,8 @@ test "object.HashSetWithStrategy.iterator yields every element once" {
     const strat = object.HashingStrategy(i32){ .hashFn = &hashI32, .eqlFn = &eqlI32 };
     var s = object.HashSetWithStrategy(i32).init(a, strat);
     defer s.deinit();
-    _ = s.add(1);
-    _ = s.add(2);
+    _ = try s.add(1);
+    _ = try s.add(2);
     var count: usize = 0;
     var it = s.iterator();
     while (it.next()) |v| {
@@ -679,10 +679,10 @@ test "BitSet.iterator yields set bit indices ascending, matching toOwnedSlice" {
     const a = testing.allocator;
     var b = bitset.bit_set.BitSet.init(a);
     defer b.deinit();
-    b.set(3);
-    b.set(65);
-    b.set(200);
-    const expected = b.toOwnedSlice(a);
+    try b.set(3);
+    try b.set(65);
+    try b.set(200);
+    const expected = try b.toOwnedSlice(a);
     defer a.free(expected);
     var got = std.ArrayListUnmanaged(usize){};
     defer got.deinit(a);
@@ -695,10 +695,10 @@ test "ImmutableBitSet.iterator yields set bit indices ascending" {
     const a = testing.allocator;
     var m = bitset.bit_set.BitSet.init(a);
     defer m.deinit();
-    m.set(0);
-    m.set(64);
-    m.set(130);
-    var im = immutable.immutable_bit_set.ImmutableBitSet.fromMutable(a, &m);
+    try m.set(0);
+    try m.set(64);
+    try m.set(130);
+    var im = try immutable.immutable_bit_set.ImmutableBitSet.fromMutable(a, &m);
     defer im.deinit();
     var got = std.ArrayListUnmanaged(usize){};
     defer got.deinit(a);

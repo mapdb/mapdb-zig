@@ -4,7 +4,6 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
-pub const allocator_config = @import("allocator_config.zig");
 pub const hash_table = @import("hash_table.zig");
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
