@@ -122,6 +122,12 @@ pub fn HashSet(comptime T: type) type {
 
         /// Returns a pull-based iterator over the elements in arbitrary order.
         /// Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for sets (deliberate exclusion): a set
+        /// element IS its own identity — its hash and slot are derived from the
+        /// element itself — so mutating an element in place would leave it in
+        /// the wrong bucket and silently corrupt the set. Remove the old element
+        /// and add the new one instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .entries = self.inner.entries };
         }

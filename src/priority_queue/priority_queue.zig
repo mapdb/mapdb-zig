@@ -145,6 +145,12 @@ pub fn PriorityQueue(comptime T: type) type {
 
         /// Returns a pull-based iterator over the elements in internal heap-array
         /// order (NOT sorted). Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for priority queues (deliberate
+        /// exclusion): an element's value determines its position in the heap,
+        /// so mutating an element in place would violate the heap invariant and
+        /// corrupt the queue ordering. Remove the element and re-insert the new
+        /// value instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .items = self.items.items };
         }

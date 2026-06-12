@@ -132,6 +132,35 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
+        /// An entry yielded by `MutIterator` — the key by value, the value as a
+        /// `*V` pointer. The KEY is yielded by value on purpose: mutating a key
+        /// in place would change its strategy-computed hash/slot and silently
+        /// corrupt the table.
+        pub const MutEntry = struct { key: K, value_ptr: *V };
+
+        /// Pull-based MUTABLE iterator yielding `{ key, value_ptr }` in
+        /// arbitrary order, so callers can mutate VALUES in place through
+        /// `value_ptr`. Non-allocating: wraps the backing `HashMapUnmanaged`
+        /// iterator (whose entries already expose a `*V`). Safe surface: the
+        /// value is independent of the key hashing strategy. Same invalidation
+        /// contract as `iterator()`: STRUCTURAL mutation during iteration is
+        /// illegal. `iterator()` remains the canonical immutable iterator.
+        pub const MutIterator = struct {
+            inner: Map.Iterator,
+
+            pub fn next(self: *MutIterator) ?MutEntry {
+                const entry = self.inner.next() orelse return null;
+                return .{ .key = entry.key_ptr.*, .value_ptr = entry.value_ptr };
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `{ key, value_ptr }`
+        /// entries in arbitrary order (additive; see `MutIterator`).
+        /// Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .inner = self.inner.iterator() };
+        }
+
         pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             const slice = try allocator.alloc(K, self.inner.count());
             var it = self.inner.iterator();

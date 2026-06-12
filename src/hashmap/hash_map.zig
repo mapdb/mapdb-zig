@@ -213,6 +213,45 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.inner.entries };
         }
 
+        /// An entry yielded by `MutIterator` — the key by value, the value as a
+        /// `*V` pointer. The KEY is yielded by value on purpose: mutating a key
+        /// in place would change its hash/slot and silently corrupt the table,
+        /// so only the value is exposed mutably.
+        pub const MutEntry = struct { key: K, value_ptr: *V };
+
+        /// Pull-based MUTABLE iterator yielding `{ key, value_ptr }` in
+        /// arbitrary (hash-table) order, so callers can mutate VALUES in place
+        /// through `value_ptr`. Non-allocating: walks the inner table's
+        /// occupied slots directly. Safe surface: the value is not part of the
+        /// hash/slot computation, so writing through `value_ptr` cannot corrupt
+        /// the table. Keys are immutable by construction (yielded by value).
+        /// Same invalidation contract as `iterator()`: STRUCTURAL mutation of
+        /// the map (put/remove/clear/rehash) during iteration is illegal and
+        /// invalidates the iterator. `iterator()` remains the canonical
+        /// immutable, value-yielding iterator.
+        pub const MutIterator = struct {
+            entries: []InnerEntry,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?MutEntry {
+                while (self.index < self.entries.len) {
+                    const i = self.index;
+                    self.index += 1;
+                    if (self.entries[i].occupied) {
+                        return .{ .key = self.entries[i].key, .value_ptr = &self.entries[i].value };
+                    }
+                }
+                return null;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `{ key, value_ptr }`
+        /// entries in arbitrary order (additive; see `MutIterator`).
+        /// Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .entries = self.inner.entries };
+        }
+
         pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
             self.inner.forEachKey(ctx, f);
         }

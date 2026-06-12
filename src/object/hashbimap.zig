@@ -116,6 +116,11 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
 
         /// Returns a pull-based iterator over `{ key, value }` (forward) entries
         /// in arbitrary order. Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for bi-maps (deliberate exclusion):
+        /// a bi-map value IS a key in the inverse index, so mutating a value in
+        /// place would leave the inverse index pointing at a stale key and break
+        /// the bijection. Use `put` (which maintains both directions) instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = self.forward.iterator() };
         }

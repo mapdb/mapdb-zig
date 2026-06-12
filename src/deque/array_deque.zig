@@ -137,6 +137,33 @@ pub fn ArrayDeque(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
+        /// Pull-based MUTABLE iterator yielding a `*T` pointer to each element
+        /// in front-to-back order, so callers can mutate elements in place.
+        /// Non-allocating: indexes directly into the backing slice. Safe
+        /// surface: a deque imposes no hash/order invariant on its elements, so
+        /// overwriting an element through the pointer cannot corrupt structure.
+        /// Same invalidation contract as `iterator()`: STRUCTURAL mutation of
+        /// the deque (addFirst/addLast/removeFirst/removeLast/clear) during
+        /// iteration is illegal and invalidates the iterator. `iterator()`
+        /// remains the canonical immutable, value-yielding iterator.
+        pub const MutIterator = struct {
+            items: []T,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?*T {
+                if (self.index >= self.items.len) return null;
+                const ptr = &self.items[self.index];
+                self.index += 1;
+                return ptr;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `*T` element pointers
+        /// in front-to-back order (additive; see `MutIterator`). Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .items = self.items.items };
+        }
+
         pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
             for (self.items.items) |value| {
                 if (predicate(ctx, value)) return true;

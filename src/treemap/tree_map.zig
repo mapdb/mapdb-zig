@@ -213,6 +213,42 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .keys = self.keys.items, .vals = self.vals.items };
         }
 
+        /// An entry yielded by `MutIterator` — the key by value, the value as a
+        /// `*V` pointer. The KEY is yielded by value on purpose: mutating a key
+        /// in place would break the sorted-key ordering invariant, so only the
+        /// value is exposed mutably.
+        pub const MutEntry = struct { key: K, value_ptr: *V };
+
+        /// Pull-based MUTABLE iterator yielding `{ key, value_ptr }` in
+        /// ascending sorted key order, so callers can mutate VALUES in place
+        /// through `value_ptr`. Non-allocating: indexes the parallel sorted
+        /// keys/values backing slices. Safe surface: the value is not part of
+        /// the ordering key, so writing through `value_ptr` cannot break the
+        /// sort. Keys are immutable by construction (yielded by value). Same
+        /// invalidation contract as `iterator()`: STRUCTURAL mutation of the
+        /// map (put/remove/clear) during iteration is illegal and invalidates
+        /// the iterator. `iterator()` remains the canonical immutable,
+        /// value-yielding iterator.
+        pub const MutIterator = struct {
+            keys: []const K,
+            vals: []V,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?MutEntry {
+                if (self.index >= self.keys.len) return null;
+                const e = MutEntry{ .key = self.keys[self.index], .value_ptr = &self.vals[self.index] };
+                self.index += 1;
+                return e;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `{ key, value_ptr }`
+        /// entries in ascending sorted key order (additive; see `MutIterator`).
+        /// Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .keys = self.keys.items, .vals = self.vals.items };
+        }
+
         pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
             for (self.keys.items) |k| f(ctx, k);
         }

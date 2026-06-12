@@ -21,9 +21,36 @@ API cleanup.
   callback-style traversal uses context-aware signatures; pull iterators remain
   the non-allocating canonical traversal API.
 
-- **Deferred by design: pointer-yielding mutable iterators.** The v2 pass keeps
-  the established copy-safe `Iterator.next() ?T` / entry-by-value shape to avoid
-  introducing a second iterator model without a larger mutable-iterator design.
+- **RESOLVED additively (2026-06-12 decision): pointer-yielding mutable
+  iterators as a SEPARATE interface, safe surfaces only.** The canonical
+  `iterator()` stays immutable (value-yielding `next() ?T` / entry-by-value,
+  unchanged — this is NOT a breaking change). A separate `mutIterator()` is
+  added *only* on the surfaces where in-place mutation cannot corrupt structure
+  invariants:
+  - **list / stack / deque** (primitive; plus `object/` list + stack — there is
+    no `object/` deque): `mutIterator()` yields `*T` element pointers
+    (`MutIterator.next() ?*T`). A list/stack/deque imposes no hash/order
+    invariant on its elements.
+  - **mutable maps** — primitive hash + tree maps, plus the `object/`-only
+    linked and strategy hash maps (there are no primitive linked/strategy map
+    variants): `mutIterator()` yields `{ key, value_ptr: *V }` (`MutEntry`). The key is
+    yielded BY VALUE — mutating a key in place would change its hash/slot or
+    sort position and silently corrupt the map — so only the value is exposed
+    mutably, and the value is never part of the hash/ordering computation.
+  - **Excluded — no `mutIterator()`:** sets, bags, tree sets, bi-maps, priority
+    queues, multimaps, and the set-like `BitSet` (element/key is identity, or
+    the value is itself a key / heap-ordered / a nested collection). The
+    exclusion and its rationale are documented at each excluded *mutable*
+    family's `iterator()` definition, and a static `@hasDecl` guard in
+    `src/mut_iterator_test.zig` asserts the surface stays safe-only. The
+    **immutable families** are excluded by construction — they expose no
+    mutation API at all — so they carry no per-site note.
+
+  Same invalidation contract as `iterator()`: structural mutation of the
+  container during iteration is illegal. Runtime coverage in
+  `src/mut_iterator_test.zig` mutates through the pointers and asserts the
+  container observes the writes (including distinct NaN / signed-zero float bit
+  patterns, and — for maps — that the key set and lookups are unaffected).
 
 Verification:
 

@@ -165,6 +165,11 @@ pub const BitSet = struct {
 
     /// Returns a pull-based iterator over the indices of all set bits in
     /// ascending order (same sequence as `toOwnedSlice`). Non-allocating.
+    ///
+    /// No `mutIterator()` is provided (deliberate exclusion): a bit set is
+    /// set-like — the iterator yields membership *positions*, not mutable value
+    /// slots, and a set position IS its own identity. Toggle membership with
+    /// `set`/`clear` instead.
     pub fn iterator(self: *const BitSet) Iterator {
         return .{ .bit_set = self };
     }

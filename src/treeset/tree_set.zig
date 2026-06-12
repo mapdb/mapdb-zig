@@ -181,6 +181,11 @@ pub fn TreeSet(comptime T: type) type {
 
         /// Returns a pull-based iterator over the elements in ascending sorted
         /// order. Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for tree sets (deliberate exclusion):
+        /// a set element IS its own ordering key, so mutating an element in
+        /// place would break the sorted-order invariant and corrupt the tree.
+        /// Remove the old element and add the new one instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = TreapType.InorderIterator{ .current = self.treap.getMin() } };
         }

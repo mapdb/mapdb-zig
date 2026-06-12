@@ -108,6 +108,11 @@ pub fn HashSetWithStrategy(comptime T: type) type {
 
         /// Returns a pull-based iterator over the elements in arbitrary order.
         /// Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for sets (deliberate exclusion): a set
+        /// element IS its own identity — here via the user hashing strategy — so
+        /// mutating it in place would put it in the wrong bucket and corrupt the
+        /// set. Remove the old element and add the new one instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = self.inner.iterator() };
         }

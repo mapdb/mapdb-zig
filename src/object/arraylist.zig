@@ -101,6 +101,31 @@ pub fn ArrayList(comptime T: type) type {
             return .{ .items = self.inner.items };
         }
 
+        /// Pull-based MUTABLE iterator yielding a `*T` pointer to each element
+        /// in insertion order, so callers can mutate elements in place.
+        /// Non-allocating: indexes directly into the backing slice. Safe
+        /// surface: a list imposes no hash/order invariant on its elements.
+        /// Same invalidation contract as `iterator()`: STRUCTURAL mutation
+        /// during iteration is illegal. `iterator()` remains the canonical
+        /// immutable, value-yielding iterator.
+        pub const MutIterator = struct {
+            items: []T,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?*T {
+                if (self.index >= self.items.len) return null;
+                const ptr = &self.items[self.index];
+                self.index += 1;
+                return ptr;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `*T` element pointers
+        /// in insertion order (additive; see `MutIterator`). Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .items = self.inner.items };
+        }
+
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             for (self.inner.items) |item| {

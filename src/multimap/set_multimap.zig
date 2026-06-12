@@ -206,6 +206,12 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
 
         /// Returns a pull-based iterator yielding one `{ key, value }` per
         /// (key, value) pair (same pairs as `forEach`). Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for multimaps (deliberate exclusion):
+        /// the iterator flattens (key, value) pairs whose keys are identity, and
+        /// the per-key value collections are SETS — each value is its own
+        /// identity within its set, so mutating one in place would corrupt that
+        /// set just as for a standalone set. Keys are immutable.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = self.inner.iterator() };
         }

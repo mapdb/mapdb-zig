@@ -222,6 +222,55 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .current = start };
         }
 
+        /// An entry yielded by `MutIterator` — the key by value, the value as a
+        /// `*V` pointer. The KEY is yielded by value on purpose: mutating a key
+        /// in place would break the sorted-key ordering invariant.
+        pub const MutEntry = struct { key: K, value_ptr: *V };
+
+        /// Pull-based MUTABLE iterator yielding `{ key, value_ptr }` in
+        /// ascending sorted key order, so callers can mutate VALUES in place
+        /// through `value_ptr`. Non-allocating: the same parent-pointer
+        /// in-order traversal as `Iterator`, returning `&node.value`. Safe
+        /// surface: the value is not part of the ordering key. Same
+        /// invalidation contract as `iterator()`: STRUCTURAL mutation during
+        /// iteration is illegal. `iterator()` remains the canonical immutable
+        /// iterator.
+        pub const MutIterator = struct {
+            current: ?*Node,
+
+            fn leftmost(node: *Node) *Node {
+                var n = node;
+                while (n.left) |l| n = l;
+                return n;
+            }
+
+            pub fn next(self: *MutIterator) ?MutEntry {
+                const node = self.current orelse return null;
+                const entry = MutEntry{ .key = node.key, .value_ptr = &node.value };
+                // Advance to the in-order successor.
+                if (node.right) |r| {
+                    self.current = leftmost(r);
+                } else {
+                    var n = node;
+                    var p = n.parent;
+                    while (p != null and n == p.?.right) {
+                        n = p.?;
+                        p = n.parent;
+                    }
+                    self.current = p;
+                }
+                return entry;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `{ key, value_ptr }`
+        /// entries in ascending sorted key order (additive; see `MutIterator`).
+        /// Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            const start = if (self.root) |r| minNode(r) else null;
+            return .{ .current = start };
+        }
+
         pub fn keysToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             const slice = try allocator.alloc(K, self.size);
             var i: usize = 0;

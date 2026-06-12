@@ -143,6 +143,33 @@ pub fn ArrayStack(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
+        /// Pull-based MUTABLE iterator yielding a `*T` pointer to each element
+        /// in bottom-to-top order, so callers can mutate elements in place.
+        /// Non-allocating: indexes directly into the backing slice. Safe
+        /// surface: a stack imposes no hash/order invariant on its elements, so
+        /// overwriting an element through the pointer cannot corrupt structure.
+        /// Same invalidation contract as `iterator()`: STRUCTURAL mutation of
+        /// the stack (push/pop/clear) during iteration is illegal and
+        /// invalidates the iterator. `iterator()` remains the canonical
+        /// immutable, value-yielding iterator.
+        pub const MutIterator = struct {
+            items: []T,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?*T {
+                if (self.index >= self.items.len) return null;
+                const ptr = &self.items[self.index];
+                self.index += 1;
+                return ptr;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `*T` element pointers
+        /// in bottom-to-top order (additive; see `MutIterator`). Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .items = self.items.items };
+        }
+
         // ---- Functional Operations ----
 
         /// Returns a new stack with only elements satisfying the predicate.

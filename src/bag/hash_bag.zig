@@ -187,6 +187,12 @@ pub fn HashBag(comptime T: type) type {
         /// Returns a pull-based iterator yielding each element repeated by its
         /// occurrence count (same elements as `forEach`), in arbitrary order.
         /// Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for bags (deliberate exclusion): a bag
+        /// element IS its own identity — the key whose occurrence count is
+        /// tracked in the backing count map — so mutating an element in place
+        /// would corrupt that map. Remove occurrences of the old element and add
+        /// the new one instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .entries = self.counts.entries };
         }

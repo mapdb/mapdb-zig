@@ -79,6 +79,11 @@ pub fn LinkedHashSet(comptime T: type) type {
 
         /// Returns a pull-based iterator over the elements in insertion order.
         /// Non-allocating.
+        ///
+        /// No `mutIterator()` is provided for sets (deliberate exclusion): a set
+        /// element IS its own identity (hash/slot derived from the element), so
+        /// mutating it in place would put it in the wrong bucket and corrupt the
+        /// set. Remove the old element and add the new one instead.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .keys = self.inner.keys() };
         }

@@ -104,6 +104,38 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
             return .{ .keys = self.inner.keys(), .values = self.inner.values() };
         }
 
+        /// An entry yielded by `MutIterator` — the key by value, the value as a
+        /// `*V` pointer. The KEY is yielded by value on purpose: mutating a key
+        /// in place would change its hash/slot and silently corrupt the table.
+        pub const MutEntry = struct { key: K, value_ptr: *V };
+
+        /// Pull-based MUTABLE iterator yielding `{ key, value_ptr }` in
+        /// insertion order, so callers can mutate VALUES in place through
+        /// `value_ptr`. Non-allocating: indexes the backing array hash map's
+        /// parallel `keys()`/`values()` slices. Safe surface: the value is not
+        /// part of the hash/slot computation. Same invalidation contract as
+        /// `iterator()`: STRUCTURAL mutation during iteration is illegal.
+        /// `iterator()` remains the canonical immutable iterator.
+        pub const MutIterator = struct {
+            keys: []const K,
+            values: []V,
+            index: usize = 0,
+
+            pub fn next(self: *MutIterator) ?MutEntry {
+                if (self.index >= self.keys.len) return null;
+                const e = MutEntry{ .key = self.keys[self.index], .value_ptr = &self.values[self.index] };
+                self.index += 1;
+                return e;
+            }
+        };
+
+        /// Returns a pull-based mutable iterator yielding `{ key, value_ptr }`
+        /// entries in insertion order (additive; see `MutIterator`).
+        /// Non-allocating.
+        pub fn mutIterator(self: *Self) MutIterator {
+            return .{ .keys = self.inner.keys(), .values = self.inner.values() };
+        }
+
         pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
             const keys = self.inner.keys();
             const values = self.inner.values();

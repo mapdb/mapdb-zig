@@ -52,6 +52,7 @@ comptime {
     _ = @import("bitset/bitset.zig");
     _ = @import("containers_test.zig");
     _ = @import("iterator_test.zig");
+    _ = @import("mut_iterator_test.zig");
     _ = @import("deque/deque.zig");
     _ = @import("deque/array_deque.zig");
     _ = @import("hashmap/hashmap.zig");
