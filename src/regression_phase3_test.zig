@@ -142,26 +142,28 @@ test "I32I32HashMap.addToValue wraps i32 MIN - 1 to i32 MAX" {
     try testing.expectEqual(@as(i32, std.math.maxInt(i32)), result);
 }
 
-// ── Bug 4: load factor strictly below 0.75 ──────────────────────────────
+// ── Bug 4: Swiss-table 7/8 load factor ──────────────────────────────────
 
-// Capacity 16 at 0.75 load factor = 12 entries. The 12th distinct insert must
-// trigger a resize (strictly below 0.75), so capacity must have grown.
-test "I32I32HashMap: 12th insert into capacity-16 grows (strictly < 0.75)" {
+// The Swiss table uses a 7/8 max-load factor: maxLoad(16) = 14. A fresh
+// 16-bucket table holds up to 14 entries; the 15th distinct insert forces a
+// grow. (The earlier 0.75 backward-shift design grew on the 12th insert; this
+// asserts the new observable 7/8 threshold rather than an exact bucket count.)
+test "I32I32HashMap: 15th insert into capacity-16 grows (7/8 load)" {
     var m = try I32I32HashMap.init(testing.allocator);
     defer m.deinit();
     try testing.expectEqual(@as(usize, 16), m.inner.capacity);
 
-    // Insert 11 distinct keys — should stay at capacity 16 (11/16 < 0.75).
+    // Insert 14 distinct keys — should stay at capacity 16 (14 == maxLoad(16)).
     var k: i32 = 0;
-    while (k < 11) : (k += 1) {
+    while (k < 14) : (k += 1) {
         _ = try m.put(k, k);
     }
     try testing.expectEqual(@as(usize, 16), m.inner.capacity);
 
-    // The 12th distinct key would make load factor exactly 0.75 → must resize.
-    _ = try m.put(11, 11);
+    // The 15th distinct key exceeds maxLoad(16) → must resize.
+    _ = try m.put(14, 14);
     try testing.expect(m.inner.capacity > 16);
-    try testing.expectEqual(@as(usize, 12), m.len());
+    try testing.expectEqual(@as(usize, 15), m.len());
 }
 
 // ── Bug 5: fromToBy(_, _, 0) panics in every build profile ──────────────
