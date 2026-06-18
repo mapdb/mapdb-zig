@@ -5,6 +5,7 @@
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
 pub const hash_table = @import("hash_table.zig");
+pub const hash = @import("hash.zig");
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
@@ -49,6 +50,7 @@ pub const ImmutableI32I32SortedMap = @import("immutable_sorted/immutable_sorted.
 pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32SortedSet;
 
 comptime {
+    _ = @import("hash.zig");
     _ = @import("float_order.zig");
     _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");

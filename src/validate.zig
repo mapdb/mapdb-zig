@@ -33,6 +33,7 @@ const BoundType = range_mod.BoundType;
 const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 const ImmutableI32I32SortedMap = immutable_sorted.ImmutableI32I32SortedMap;
 const ImmutableI32SortedSet = immutable_sorted.ImmutableI32SortedSet;
+const hash = @import("hash.zig");
 
 const CollectionKind = enum {
     hash_map,
@@ -1417,6 +1418,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "HashPipeline")) {
+        try runHashPipeline(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -1925,6 +1932,194 @@ fn evalSortedSetAssertion(
         try writeBool(writer, set.contains(parseThreshold(key, "contains_").?));
     } else {
         try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+// ── HashPipeline runner (spec/features/hash-pipeline.md) ─────────────────────
+//
+// A STATELESS probe (not a stored collection): exactly ONE hash op carries the
+// input + seed under test; the assertions read the deterministic hash output.
+// Routed through the PRODUCTION src/hash.zig — every assertion is proved against
+// the real fmix32/fmix64/double-hashing code, not re-derived here. Outputs are
+// serialized as fixed-width, lower-case, `0x`-prefixed hex strings (8 digits for
+// a u32, 16 for a u64) so a 64-bit hash survives the JSON 2^53 ceiling and every
+// port's consensus diff is byte-identical; `positions` is an int[] in DERIVATION
+// order (NOT sorted). Unknown ops/keys SKIP (forward-compat). Direct translation
+// of the Rust runner's run_hash_pipeline (mapdb-rust/src/bin/validate.rs).
+
+/// Parse a `0x`-prefixed hex `word` operand to a u64 (the caller narrows to u32
+/// where the op needs a 32-bit word). NEVER via f64.
+fn parseHexWord(v: std.json.Value) u64 {
+    const s = v.string;
+    const body = if (std.mem.startsWith(u8, s, "0x") or std.mem.startsWith(u8, s, "0X")) s[2..] else @panic("hash-pipeline word must start with 0x");
+    return std.fmt.parseInt(u64, body, 16) catch @panic("invalid hex word");
+}
+
+/// Parse a `seed` operand: a DECIMAL STRING parsed straight to u64 (never via
+/// f64), reusing the i64-suite's decimal-string discipline. A bare JSON number
+/// is also accepted for small seeds.
+fn parseSeed(v: std.json.Value) u64 {
+    return switch (v) {
+        .string => |s| std.fmt.parseInt(u64, s, 10) catch @panic("invalid u64 decimal-string seed"),
+        .number_string => |s| std.fmt.parseInt(u64, s, 10) catch @panic("invalid u64 number_string seed"),
+        .integer => |i| @as(u64, @intCast(i)),
+        else => @panic("expected u64 seed (decimal string or number)"),
+    };
+}
+
+/// Parse a `0x`-hex byte string (e.g. "0x01020304") into a caller-owned byte
+/// slice.
+fn parseHexBytes(v: std.json.Value, allocator: Allocator) ![]u8 {
+    const s = v.string;
+    const body = if (std.mem.startsWith(u8, s, "0x") or std.mem.startsWith(u8, s, "0X")) s[2..] else @panic("hash-pipeline bytes must start with 0x");
+    if (body.len % 2 != 0) @panic("hash-pipeline bytes must have an even hex-digit count");
+    const out = try allocator.alloc(u8, body.len / 2);
+    for (0..out.len) |i| {
+        out[i] = std.fmt.parseInt(u8, body[2 * i .. 2 * i + 2], 16) catch @panic("invalid hex byte");
+    }
+    return out;
+}
+
+const HashProbe = union(enum) {
+    word32: u32,
+    word64: u64,
+    i32_in: struct { value: i32, seed: u64 },
+    bytes_in: struct { bytes: []const u8, seed: u64 },
+    positions: []const u32,
+};
+
+// Format a u32 as 8-digit lower-case 0x hex.
+fn writeHash32(writer: anytype, h: u32) !void {
+    try writer.print("0x{x:0>8}", .{h});
+}
+// Format a u64 as 16-digit lower-case 0x hex.
+fn writeHash64(writer: anytype, h: u64) !void {
+    try writer.print("0x{x:0>16}", .{h});
+}
+
+fn evalHashProbe(probe: HashProbe, key: []const u8, writer: anytype) !void {
+    switch (probe) {
+        .word32 => |h| {
+            if (std.mem.eql(u8, key, "hash32")) {
+                try writeHash32(writer, h);
+            } else try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        },
+        .word64 => |h| {
+            if (std.mem.eql(u8, key, "hash64")) {
+                try writeHash64(writer, h);
+            } else if (std.mem.eql(u8, key, "hash64_hi")) {
+                try writeHash32(writer, @truncate(h >> 32));
+            } else if (std.mem.eql(u8, key, "hash64_lo")) {
+                try writeHash32(writer, @truncate(h));
+            } else try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        },
+        .i32_in => |p| {
+            if (std.mem.eql(u8, key, "hash32")) {
+                try writeHash32(writer, hash.hash32I32(p.value, p.seed));
+            } else if (std.mem.eql(u8, key, "hash64")) {
+                try writeHash64(writer, hash.hash64I32(p.value, p.seed));
+            } else if (std.mem.eql(u8, key, "hash64_hi")) {
+                try writeHash32(writer, @truncate(hash.hash64I32(p.value, p.seed) >> 32));
+            } else if (std.mem.eql(u8, key, "hash64_lo")) {
+                try writeHash32(writer, @truncate(hash.hash64I32(p.value, p.seed)));
+            } else try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        },
+        .bytes_in => |p| {
+            if (std.mem.eql(u8, key, "hash32")) {
+                try writeHash32(writer, hash.hash32Bytes(p.bytes, p.seed));
+            } else if (std.mem.eql(u8, key, "hash64")) {
+                try writeHash64(writer, hash.hash64Bytes(p.bytes, p.seed));
+            } else if (std.mem.eql(u8, key, "hash64_hi")) {
+                try writeHash32(writer, @truncate(hash.hash64Bytes(p.bytes, p.seed) >> 32));
+            } else if (std.mem.eql(u8, key, "hash64_lo")) {
+                try writeHash32(writer, @truncate(hash.hash64Bytes(p.bytes, p.seed)));
+            } else try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        },
+        .positions => |p| {
+            if (std.mem.eql(u8, key, "positions")) {
+                // Emitted in DERIVATION order (p_0 … p_{k-1}), NOT sorted.
+                try writer.writeAll("[");
+                for (p, 0..) |x, i| {
+                    if (i > 0) try writer.writeAll(",");
+                    try writer.print("{d}", .{x});
+                }
+                try writer.writeAll("]");
+            } else try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        },
+    }
+}
+
+fn runHashPipeline(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    // Authoring rule: exactly ONE hash op. Zero or multiple => malformed =>
+    // SKIP (like the sorted-table `from_sorted` rule). Forward-compat: an
+    // unrecognised op kind also makes the scenario un-runnable here => SKIP.
+    if (operations.items.len != 1) {
+        std.debug.print("skip: hash-pipeline scenario must have exactly one op (forward-compat): got {d}\n", .{operations.items.len});
+        return;
+    }
+    const op = operations.items[0].object;
+    const op_name = op.get("op").?.string;
+
+    // Owned byte/positions buffers freed after the assertion loop.
+    var owned_bytes: ?[]u8 = null;
+    defer if (owned_bytes) |b| allocator.free(b);
+    var owned_positions: ?[]u32 = null;
+    defer if (owned_positions) |p| allocator.free(p);
+
+    var probe: HashProbe = undefined;
+    if (std.mem.eql(u8, op_name, "hash_word32")) {
+        const raw = parseHexWord(op.get("word").?);
+        if (raw > std.math.maxInt(u32)) @panic("hash_word32 `word` exceeds 32 bits");
+        probe = .{ .word32 = hash.hash32(@truncate(raw), parseSeed(op.get("seed").?)) };
+    } else if (std.mem.eql(u8, op_name, "hash_word64")) {
+        probe = .{ .word64 = hash.hash64(parseHexWord(op.get("word").?), parseSeed(op.get("seed").?)) };
+    } else if (std.mem.eql(u8, op_name, "hash_i32")) {
+        const value: i32 = @intCast(op.get("value").?.integer);
+        probe = .{ .i32_in = .{ .value = value, .seed = parseSeed(op.get("seed").?) } };
+    } else if (std.mem.eql(u8, op_name, "hash_bytes")) {
+        owned_bytes = try parseHexBytes(op.get("bytes").?, allocator);
+        probe = .{ .bytes_in = .{ .bytes = owned_bytes.?, .seed = parseSeed(op.get("seed").?) } };
+    } else if (std.mem.eql(u8, op_name, "positions")) {
+        const value: i32 = @intCast(op.get("value").?.integer);
+        const m: u32 = @intCast(op.get("m").?.integer);
+        const k: u32 = @intCast(op.get("k").?.integer);
+        // The byte encoding of an i32 element drives positions: encode the i32
+        // to its little-endian 4-byte form (the byte path the sketches use),
+        // then derive. No op-level seed (the scheme fixes 0 / SALT2).
+        var le: [4]u8 = undefined;
+        std.mem.writeInt(u32, &le, @bitCast(value), .little);
+        owned_positions = try allocator.alloc(u32, k);
+        hash.positions(&le, m, k, owned_positions.?);
+        probe = .{ .positions = owned_positions.? };
+    } else {
+        std.debug.print("skip: unknown hash-pipeline op (forward-compat): {s}\n", .{op_name});
+        return;
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalHashProbe(probe, key, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
     }
 }
 
