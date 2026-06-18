@@ -48,6 +48,35 @@ const Collection = union(CollectionKind) {
     array_stack: I32ArrayStack,
 };
 
+const I32Pairs = struct { keys: []i32, vals: []i32 };
+const I64Pairs = struct { keys: []i64, vals: []i32 };
+
+fn allocI32Pairs(allocator: Allocator, operations: std.json.Array) !I32Pairs {
+    const keys = try allocator.alloc(i32, operations.items.len);
+    errdefer allocator.free(keys);
+    const vals = try allocator.alloc(i32, operations.items.len);
+    errdefer allocator.free(vals);
+    for (operations.items, 0..) |op, i| {
+        const obj = op.object;
+        keys[i] = jsonToI32(obj.get("key").?).?;
+        vals[i] = jsonToI32(obj.get("value").?).?;
+    }
+    return .{ .keys = keys, .vals = vals };
+}
+
+fn allocI64Pairs(allocator: Allocator, operations: std.json.Array) !I64Pairs {
+    const keys = try allocator.alloc(i64, operations.items.len);
+    errdefer allocator.free(keys);
+    const vals = try allocator.alloc(i32, operations.items.len);
+    errdefer allocator.free(vals);
+    for (operations.items, 0..) |op, i| {
+        const obj = op.object;
+        keys[i] = parseI64Operand(obj.get("key").?);
+        vals[i] = @as(i32, @intCast(obj.get("value").?.integer));
+    }
+    return .{ .keys = keys, .vals = vals };
+}
+
 fn parseCollectionKind(name: []const u8) ?CollectionKind {
     if (std.mem.eql(u8, name, "HashMap<i32, i32>")) return .hash_map;
     if (std.mem.eql(u8, name, "ArrayList<i32>")) return .array_list;
@@ -949,6 +978,7 @@ pub fn main() !void {
 
     const name = root.get("name").?.string;
     const collection_type = root.get("collection").?.string;
+    const construction = if (root.get("construction")) |c| c.string else "";
     const operations = root.get("operations").?.array;
 
     // f32 collections take a separate dispatch path: the Collection union
@@ -989,17 +1019,27 @@ pub fn main() !void {
         return;
     }
     if (std.mem.eql(u8, collection_type, "ListMultimap<i64, i32>")) {
-        var m = I64I32ListMultimap.init(allocator);
+        var m = if (std.mem.eql(u8, construction, "fromSortedKeyValues")) blk: {
+            const pairs = try allocI64Pairs(allocator, operations);
+            defer allocator.free(pairs.keys);
+            defer allocator.free(pairs.vals);
+            break :blk try I64I32ListMultimap.fromSortedKeyValues(allocator, pairs.keys, pairs.vals);
+        } else I64I32ListMultimap.init(allocator);
         defer m.deinit();
-        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout);
+        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout, !std.mem.eql(u8, construction, "fromSortedKeyValues"));
         try stdout.flush();
         if (any_fail) std.process.exit(1);
         return;
     }
     if (std.mem.eql(u8, collection_type, "SetMultimap<i64, i32>")) {
-        var m = I64I32SetMultimap.init(allocator);
+        var m = if (std.mem.eql(u8, construction, "fromSortedKeyValues")) blk: {
+            const pairs = try allocI64Pairs(allocator, operations);
+            defer allocator.free(pairs.keys);
+            defer allocator.free(pairs.vals);
+            break :blk try I64I32SetMultimap.fromSortedKeyValues(allocator, pairs.keys, pairs.vals);
+        } else I64I32SetMultimap.init(allocator);
         defer m.deinit();
-        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout);
+        try runI64Multimap(@TypeOf(m), &m, name, operations, root.get("assertions").?.object, allocator, stdout, !std.mem.eql(u8, construction, "fromSortedKeyValues"));
         try stdout.flush();
         if (any_fail) std.process.exit(1);
         return;
@@ -1011,12 +1051,24 @@ pub fn main() !void {
     };
 
     // Initialize main collection
-    var coll = try initCollection(kind, allocator);
+    var coll: Collection = if (std.mem.eql(u8, collection_type, "HashMap<i32, i32>") and std.mem.eql(u8, construction, "bulkLoadExact")) blk: {
+        const pairs = try allocI32Pairs(allocator, operations);
+        defer allocator.free(pairs.keys);
+        defer allocator.free(pairs.vals);
+        break :blk .{ .hash_map = try I32I32HashMap.bulkLoadExact(allocator, pairs.keys, pairs.vals, pairs.keys.len, .err) };
+    } else if (std.mem.eql(u8, collection_type, "TreeMap<i32, i32>") and std.mem.eql(u8, construction, "fromSorted")) blk: {
+        const pairs = try allocI32Pairs(allocator, operations);
+        defer allocator.free(pairs.keys);
+        defer allocator.free(pairs.vals);
+        break :blk .{ .tree_map = try I32I32TreeMap.fromSorted(allocator, pairs.keys, pairs.vals, .err) };
+    } else try initCollection(kind, allocator);
     defer deinitCollection(&coll);
 
     // Apply operations
-    for (operations.items) |op| {
-        try applyOperation(&coll, op);
+    if (construction.len == 0) {
+        for (operations.items) |op| {
+            try applyOperation(&coll, op);
+        }
     }
 
     // Initialize "other" collection if present (for set operations)
@@ -1573,19 +1625,22 @@ fn runI64Multimap(
     assertions: std.json.ObjectMap,
     allocator: Allocator,
     writer: anytype,
+    apply_ops: bool,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    for (operations.items) |op| {
-        const obj = op.object;
-        const op_name = obj.get("op").?.string;
-        if (std.mem.eql(u8, op_name, "put")) {
-            const k = parseI64Operand(obj.get("key").?);
-            const v = @as(i32, @intCast(obj.get("value").?.integer));
-            _ = try m.put(k, v);
-        } else if (std.mem.eql(u8, op_name, "removeAll")) {
-            _ = m.removeAll(parseI64Operand(obj.get("key").?));
-        } else {
-            @panic("unknown i64-multimap op");
+    if (apply_ops) {
+        for (operations.items) |op| {
+            const obj = op.object;
+            const op_name = obj.get("op").?.string;
+            if (std.mem.eql(u8, op_name, "put")) {
+                const k = parseI64Operand(obj.get("key").?);
+                const v = @as(i32, @intCast(obj.get("value").?.integer));
+                _ = try m.put(k, v);
+            } else if (std.mem.eql(u8, op_name, "removeAll")) {
+                _ = m.removeAll(parseI64Operand(obj.get("key").?));
+            } else {
+                @panic("unknown i64-multimap op");
+            }
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
