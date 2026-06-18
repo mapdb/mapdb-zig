@@ -27,6 +27,9 @@ const F32ArrayList = @import("arraylist/arraylist.zig").F32ArrayList;
 const I64I32HashMap = @import("hashmap/hashmap.zig").I64I32HashMap;
 const I64I32ListMultimap = @import("multimap/multimap.zig").I64I32ListMultimap;
 const I64I32SetMultimap = @import("multimap/multimap.zig").I64I32SetMultimap;
+const range_mod = @import("range.zig");
+const I32Range = range_mod.I32Range;
+const BoundType = range_mod.BoundType;
 
 const CollectionKind = enum {
     hash_map,
@@ -346,7 +349,16 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
             }
         },
         .number_string => |s| try writer.writeAll(s),
-        .string => |s| try writeF32(writer, parseF32Label(s)), // float label scalar
+        // A string expected value is either a plain string scalar (mode .none,
+        // e.g. Range lower_bound_type: "closed") or a float label ("NaN", "max":
+        // "NaN") under a float mode. Mirrors the Rust runner's render_expected.
+        .string => |s| {
+            if (mode == .none) {
+                try writer.writeAll(s);
+            } else {
+                try writeF32(writer, parseF32Label(s));
+            }
+        },
         // Bits-escape float scalar (e.g. sum: {"bits":"0xffc00000"}).
         .object => {
             if (mode != .none) {
@@ -1004,10 +1016,20 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "Range<i32>")) {
+        try runRange(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
-        std.debug.print("Unknown collection type: {s}\n", .{collection_type});
-        std.process.exit(1);
+        // Forward-compat (README "unknown collection kinds skip"): a runner that
+        // does not understand a collection kind must SKIP, not fail, so newer
+        // scenarios never break an older runner. Mirrors the unknown-assertion
+        // skip in emitAssertion / the Rust runner's run() match arm.
+        std.debug.print("skip: unsupported collection kind (forward-compat): {s}\n", .{collection_type});
+        return;
     };
 
     // Initialize main collection
@@ -1058,6 +1080,166 @@ pub fn main() !void {
     if (any_fail) {
         try stdout.flush();
         std.process.exit(1);
+    }
+}
+
+// ── Range<i32> runner ────────────────────────────────────────────────────────
+//
+// The Bound/Range value model (spec/features/bound-range.md). Exactly ONE
+// constructor op builds the range under test; an optional "other" block (same
+// single-builder shape) supplies the second range for binary ops. Routed
+// through the production I32Range — every assertion is proved against the real
+// cut algebra, not re-derived here. Direct translation of the Rust runner's
+// run_range / eval_range_assertion (mapdb-rust/src/bin/validate.rs).
+
+fn buildRange(ops: std.json.Array) I32Range {
+    if (ops.items.len != 1) {
+        @panic("Range<i32> scenario must have exactly one constructor op");
+    }
+    const op = ops.items[0].object;
+    const op_name = op.get("op").?.string;
+    if (std.mem.eql(u8, op_name, "closed")) {
+        return I32Range.closed(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "open")) {
+        return I32Range.open(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "closed_open")) {
+        return I32Range.closedOpen(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "open_closed")) {
+        return I32Range.openClosed(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "at_least")) {
+        return I32Range.atLeast(jsonToI32(op.get("lower").?).?);
+    } else if (std.mem.eql(u8, op_name, "greater_than")) {
+        return I32Range.greaterThan(jsonToI32(op.get("lower").?).?);
+    } else if (std.mem.eql(u8, op_name, "at_most")) {
+        return I32Range.atMost(jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "less_than")) {
+        return I32Range.lessThan(jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "all")) {
+        return I32Range.all();
+    } else if (std.mem.eql(u8, op_name, "singleton")) {
+        return I32Range.singleton(jsonToI32(op.get("value").?).?);
+    }
+    @panic("unknown range op");
+}
+
+fn writeBoundType(writer: anytype, bt: ?BoundType) !void {
+    if (bt) |b| {
+        switch (b) {
+            .open => try writer.writeAll("open"),
+            .closed => try writer.writeAll("closed"),
+        }
+    } else {
+        try writeNull(writer);
+    }
+}
+
+fn writeOptI32(writer: anytype, v: ?i32) !void {
+    if (v) |x| try writeI32(writer, x) else try writeNull(writer);
+}
+
+fn runRange(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    const range = buildRange(operations);
+    var other: ?I32Range = null;
+    if (root.get("other")) |other_json| {
+        const other_ops = other_json.object.get("operations").?.array;
+        other = buildRange(other_ops);
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalRangeAssertion(key, range, other, cbuf.writer());
+        const computed = cbuf.items;
+        // Unknown assertion key -> skip silently (README forward-compat).
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+fn evalRangeAssertion(
+    key: []const u8,
+    range: I32Range,
+    other: ?I32Range,
+    writer: anytype,
+) !void {
+    // --- unary ---
+    if (std.mem.eql(u8, key, "is_empty")) {
+        try writeBool(writer, range.isEmpty());
+    } else if (std.mem.eql(u8, key, "has_lower_bound")) {
+        try writeBool(writer, range.hasLowerBound());
+    } else if (std.mem.eql(u8, key, "has_upper_bound")) {
+        try writeBool(writer, range.hasUpperBound());
+    } else if (std.mem.eql(u8, key, "lower_bound_type")) {
+        try writeBoundType(writer, range.lowerBoundType());
+    } else if (std.mem.eql(u8, key, "upper_bound_type")) {
+        try writeBoundType(writer, range.upperBoundType());
+    } else if (std.mem.eql(u8, key, "lower_endpoint")) {
+        try writeOptI32(writer, range.lowerEndpoint());
+    } else if (std.mem.eql(u8, key, "upper_endpoint")) {
+        try writeOptI32(writer, range.upperEndpoint());
+    } else if (parseThreshold(key, "contains_") != null) {
+        const n = parseThreshold(key, "contains_").?;
+        try writeBool(writer, range.contains(n));
+    }
+    // --- binary ops: require "other" ---
+    else if (std.mem.eql(u8, key, "encloses_other") and other != null) {
+        try writeBool(writer, range.encloses(other.?));
+    } else if (std.mem.eql(u8, key, "is_connected_other") and other != null) {
+        try writeBool(writer, range.isConnected(other.?));
+    } else if (std.mem.eql(u8, key, "span_lower") and other != null) {
+        try writeOptI32(writer, range.span(other.?).lowerEndpoint());
+    } else if (std.mem.eql(u8, key, "span_upper") and other != null) {
+        try writeOptI32(writer, range.span(other.?).upperEndpoint());
+    } else if (std.mem.eql(u8, key, "span_lower_type") and other != null) {
+        try writeBoundType(writer, range.span(other.?).lowerBoundType());
+    } else if (std.mem.eql(u8, key, "span_upper_type") and other != null) {
+        try writeBoundType(writer, range.span(other.?).upperBoundType());
+    } else if (std.mem.eql(u8, key, "intersection_is_none") and other != null) {
+        try writeBool(writer, range.intersection(other.?) == null);
+    } else if (std.mem.eql(u8, key, "intersection_is_empty") and other != null) {
+        const v = if (range.intersection(other.?)) |i| i.isEmpty() else false;
+        try writeBool(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_lower") and other != null) {
+        const v: ?i32 = if (range.intersection(other.?)) |i| i.lowerEndpoint() else null;
+        try writeOptI32(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_upper") and other != null) {
+        const v: ?i32 = if (range.intersection(other.?)) |i| i.upperEndpoint() else null;
+        try writeOptI32(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_lower_type") and other != null) {
+        const v: ?BoundType = if (range.intersection(other.?)) |i| i.lowerBoundType() else null;
+        try writeBoundType(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_upper_type") and other != null) {
+        const v: ?BoundType = if (range.intersection(other.?)) |i| i.upperBoundType() else null;
+        try writeBoundType(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_has_lower_bound") and other != null) {
+        const v = if (range.intersection(other.?)) |i| i.hasLowerBound() else false;
+        try writeBool(writer, v);
+    } else if (std.mem.eql(u8, key, "intersection_has_upper_bound") and other != null) {
+        const v = if (range.intersection(other.?)) |i| i.hasUpperBound() else false;
+        try writeBool(writer, v);
+    }
+    // --- unknown key ---
+    else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
     }
 }
 
