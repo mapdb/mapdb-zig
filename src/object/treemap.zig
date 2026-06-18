@@ -15,6 +15,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const strategy = @import("strategy.zig");
+const Range = @import("../range.zig").Range;
 
 /// Sorted map backed by a red-black tree.
 ///
@@ -53,11 +54,11 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         cmp: Cmp,
         allocator: Allocator,
 
-        pub fn init(allocator: Allocator, comparator: Cmp) Self {
+        pub fn init(allocator: Allocator, cmp: Cmp) Self {
             return .{
                 .root = null,
                 .size = 0,
-                .cmp = comparator,
+                .cmp = cmp,
                 .allocator = allocator,
             };
         }
@@ -165,6 +166,242 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             const r = self.root orelse return null;
             const n = maxNode(r);
             return .{ .key = n.key, .value = n.value };
+        }
+
+        /// Returns a copy of this map's comparator. Used to preserve ordering
+        /// semantics when building a materialized snapshot (`subMap`).
+        pub fn comparator(self: *const Self) Cmp {
+            return self.cmp;
+        }
+
+        // ---- NavigableMap surface ----
+        //
+        // Point navigation, poll, Range-based slice/descending iteration and
+        // removeRange on the comparator-bearing red-black tree. Mirrors the
+        // codex-approved Rust reference (mapdb-rust/src/object/treemap.rs) and
+        // the spec (spec/features/navigable-map.md). All comparisons go through
+        // the map's comparator, so reverse/custom/float-total ordering carries
+        // through exactly as in-order iteration does. Strictness: floor `<= k`,
+        // ceiling `>= k`, lower `< k` (strict), higher `> k` (strict). Range
+        // membership is EXACTLY `range.contains(key)`.
+
+        /// Which side of `k` a point-navigation query selects.
+        const Bound = enum { floor, ceiling, lower, higher };
+
+        /// An entry: the same `{ key, value }` shape `min`/`max` return.
+        pub const Entry = struct { key: K, value: V };
+
+        /// Shared walk for the four point-navigation queries: descend the tree
+        /// tracking the best candidate seen on the relevant side.
+        fn boundNode(self: *const Self, k: K, bound: Bound) ?*Node {
+            var current = self.root;
+            var best: ?*Node = null;
+            while (current) |n| {
+                const ord = self.cmp(k, n.key);
+                const take = switch (bound) {
+                    .floor => ord != .lt, // n.key <= k
+                    .lower => ord == .gt, // n.key <  k
+                    .ceiling => ord != .gt, // n.key >= k
+                    .higher => ord == .lt, // n.key >  k
+                };
+                if (take) {
+                    best = n;
+                    current = switch (bound) {
+                        .floor, .lower => n.right,
+                        .ceiling, .higher => n.left,
+                    };
+                } else {
+                    current = switch (bound) {
+                        .floor, .lower => n.left,
+                        .ceiling, .higher => n.right,
+                    };
+                }
+            }
+            return best;
+        }
+
+        fn boundEntry(self: *const Self, k: K, bound: Bound) ?Entry {
+            const n = self.boundNode(k, bound) orelse return null;
+            return .{ .key = n.key, .value = n.value };
+        }
+
+        /// Greatest key `<= k` and its value, or null.
+        pub fn floorEntry(self: *const Self, k: K) ?Entry {
+            return self.boundEntry(k, .floor);
+        }
+
+        /// Greatest key `<= k`, or null.
+        pub fn floorKey(self: *const Self, k: K) ?K {
+            const e = self.floorEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Least key `>= k` and its value, or null.
+        pub fn ceilingEntry(self: *const Self, k: K) ?Entry {
+            return self.boundEntry(k, .ceiling);
+        }
+
+        /// Least key `>= k`, or null.
+        pub fn ceilingKey(self: *const Self, k: K) ?K {
+            const e = self.ceilingEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Greatest key `< k` (strict) and its value, or null.
+        pub fn lowerEntry(self: *const Self, k: K) ?Entry {
+            return self.boundEntry(k, .lower);
+        }
+
+        /// Greatest key `< k` (strict), or null.
+        pub fn lowerKey(self: *const Self, k: K) ?K {
+            const e = self.lowerEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Least key `> k` (strict) and its value, or null.
+        pub fn higherEntry(self: *const Self, k: K) ?Entry {
+            return self.boundEntry(k, .higher);
+        }
+
+        /// Least key `> k` (strict), or null.
+        pub fn higherKey(self: *const Self, k: K) ?K {
+            const e = self.higherEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Minimum entry, or null. Alias for `min`.
+        pub fn firstEntry(self: *const Self) ?Entry {
+            const m = self.min() orelse return null;
+            return .{ .key = m.key, .value = m.value };
+        }
+
+        /// Minimum key, or null.
+        pub fn firstKey(self: *const Self) ?K {
+            const m = self.min() orelse return null;
+            return m.key;
+        }
+
+        /// Maximum entry, or null. Alias for `max`.
+        pub fn lastEntry(self: *const Self) ?Entry {
+            const m = self.max() orelse return null;
+            return .{ .key = m.key, .value = m.value };
+        }
+
+        /// Maximum key, or null.
+        pub fn lastKey(self: *const Self) ?K {
+            const m = self.max() orelse return null;
+            return m.key;
+        }
+
+        /// Removes and returns the minimum entry, or null if empty. Does not
+        /// trap on an empty map.
+        pub fn pollFirstEntry(self: *Self) ?Entry {
+            const r = self.root orelse return null;
+            const n = minNode(r);
+            const e = Entry{ .key = n.key, .value = n.value };
+            self.deleteNode(n);
+            self.size -= 1;
+            return e;
+        }
+
+        /// Removes and returns the maximum entry, or null if empty. Does not
+        /// trap on an empty map.
+        pub fn pollLastEntry(self: *Self) ?Entry {
+            const r = self.root orelse return null;
+            const n = maxNode(r);
+            const e = Entry{ .key = n.key, .value = n.value };
+            self.deleteNode(n);
+            self.size -= 1;
+            return e;
+        }
+
+        /// Keys whose key ∈ `range`, ascending. Caller owns the slice.
+        pub fn rangeKeysIn(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
+            var out = std.ArrayListUnmanaged(K){};
+            errdefer out.deinit(allocator);
+            var it = self.iterator();
+            while (it.next()) |e| {
+                if (range.contains(e.key)) try out.append(allocator, e.key);
+            }
+            return out.toOwnedSlice(allocator);
+        }
+
+        /// `{ key, value }` entries whose key ∈ `range`, ascending. Caller owns.
+        pub fn rangeEntriesIn(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
+            var out = std.ArrayListUnmanaged(Entry){};
+            errdefer out.deinit(allocator);
+            var it = self.iterator();
+            while (it.next()) |e| {
+                if (range.contains(e.key)) try out.append(allocator, .{ .key = e.key, .value = e.value });
+            }
+            return out.toOwnedSlice(allocator);
+        }
+
+        /// Keys whose key ∈ `range`, descending. Caller owns the slice.
+        pub fn descendingRangeKeys(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
+            const asc = try self.rangeKeysIn(range, allocator);
+            std.mem.reverse(K, asc);
+            return asc;
+        }
+
+        /// `{ key, value }` entries whose key ∈ `range`, descending. Caller owns.
+        pub fn descendingRangeEntries(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
+            const asc = try self.rangeEntriesIn(range, allocator);
+            std.mem.reverse(Entry, asc);
+            return asc;
+        }
+
+        /// All keys, descending. Caller owns the slice.
+        pub fn descendingKeys(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            const out = try allocator.alloc(K, self.size);
+            var it = self.iterator();
+            var i: usize = self.size;
+            while (it.next()) |e| {
+                i -= 1;
+                out[i] = e.key;
+            }
+            return out;
+        }
+
+        /// All `{ key, value }` entries, descending. Caller owns the slice.
+        pub fn descendingEntries(self: *const Self, allocator: Allocator) Allocator.Error![]Entry {
+            const out = try allocator.alloc(Entry, self.size);
+            var it = self.iterator();
+            var i: usize = self.size;
+            while (it.next()) |e| {
+                i -= 1;
+                out[i] = .{ .key = e.key, .value = e.value };
+            }
+            return out;
+        }
+
+        /// A new INDEPENDENT map of the entries whose key ∈ `range`
+        /// (materialized snapshot — not a live view). Mutating the snapshot
+        /// never affects the original and vice versa. The snapshot PRESERVES the
+        /// source map's comparator, so reverse/custom/float-total-order keyed
+        /// maps keep their ordering semantics in the slice. Caller owns the
+        /// returned map and must `deinit` it.
+        pub fn subMap(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error!Self {
+            var out = init(allocator, self.cmp);
+            errdefer out.deinit();
+            var it = self.iterator();
+            while (it.next()) |e| {
+                if (range.contains(e.key)) _ = try out.put(e.key, e.value);
+            }
+            return out;
+        }
+
+        /// Removes every entry whose key ∈ `range`; returns the count removed.
+        /// A range that matches nothing is a no-op returning 0.
+        pub fn removeRange(self: *Self, range: Range(K), allocator: Allocator) Allocator.Error!usize {
+            var victims = std.ArrayListUnmanaged(K){};
+            defer victims.deinit(allocator);
+            var it = self.iterator();
+            while (it.next()) |e| {
+                if (range.contains(e.key)) try victims.append(allocator, e.key);
+            }
+            for (victims.items) |k| _ = self.remove(k);
+            return victims.items.len;
         }
 
         pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
@@ -689,4 +926,108 @@ test "TreeMap stress insert 1000 remove half" {
         const expected: i32 = @intCast(idx * 2 + 1);
         try std.testing.expectEqual(expected, k);
     }
+}
+
+// ---------------------------------------------------------------------------
+// NavigableMap surface (comparator-bearing tree).
+// ---------------------------------------------------------------------------
+
+const ObjRange = Range(i32);
+
+fn objMapOf(allocator: Allocator, keys: []const i32) !TreeMap(i32, i32) {
+    var m = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
+    for (keys) |k| _ = try m.put(k, k *% 10);
+    return m;
+}
+
+test "object.TreeMap nav: floor/ceiling/lower/higher + entry + first/last" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 20), m.floorKey(25));
+    try std.testing.expectEqual(@as(?i32, 30), m.ceilingKey(25));
+    try std.testing.expectEqual(@as(?i32, 10), m.floorKey(10));
+    try std.testing.expectEqual(@as(?i32, null), m.lowerKey(10));
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(30));
+    try std.testing.expectEqual(@as(?i32, 10), m.ceilingKey(5));
+    try std.testing.expectEqual(@as(?i32, 20), m.lowerKey(25));
+    try std.testing.expectEqual(@as(?i32, 30), m.higherKey(25));
+    try std.testing.expectEqual(@as(i32, 200), m.floorEntry(25).?.value);
+    try std.testing.expectEqual(@as(?i32, 10), m.firstKey());
+    try std.testing.expectEqual(@as(?i32, 30), m.lastKey());
+}
+
+test "object.TreeMap nav: empty returns absence" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{});
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, null), m.floorKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.firstKey());
+    try std.testing.expect(m.pollFirstEntry() == null);
+    try std.testing.expect(m.pollLastEntry() == null);
+}
+
+test "object.TreeMap nav: signed extremes + descending" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), m.floorKey(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, null), m.lowerKey(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, 0), m.higherKey(-1));
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(std.math.maxInt(i32)));
+    const desc = try m.descendingKeys(allocator);
+    defer allocator.free(desc);
+    try std.testing.expectEqualSlices(i32, &.{ std.math.maxInt(i32), 1, 0, -1, std.math.minInt(i32) }, desc);
+}
+
+test "object.TreeMap poll: first/last then empty" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(i32, 10), m.pollFirstEntry().?.key);
+    try std.testing.expectEqual(@as(i32, 30), m.pollLastEntry().?.key);
+    try std.testing.expectEqual(@as(i32, 20), m.pollFirstEntry().?.key);
+    try std.testing.expect(m.pollFirstEntry() == null);
+}
+
+test "object.TreeMap range/removeRange + open(1,2) empty" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 });
+    defer m.deinit();
+    const rk = try m.rangeKeysIn(ObjRange.closedOpen(30, 70), allocator);
+    defer allocator.free(rk);
+    try std.testing.expectEqualSlices(i32, &.{ 30, 40, 50, 60 }, rk);
+    var m2 = try objMapOf(allocator, &.{ 1, 2 });
+    defer m2.deinit();
+    const empty = try m2.rangeKeysIn(ObjRange.open(1, 2), allocator);
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectEqual(@as(usize, 4), try m.removeRange(ObjRange.closedOpen(30, 70), allocator));
+    try std.testing.expectEqual(@as(usize, 0), try m.removeRange(ObjRange.closedOpen(30, 70), allocator));
+}
+
+test "object.TreeMap subMap: preserves reverse comparator + snapshot independence" {
+    const allocator = std.testing.allocator;
+    // Reverse comparator: source iterates descending.
+    var m = TreeMap(i32, i32).init(allocator, strat.reverseComparator(i32));
+    defer m.deinit();
+    for ([_]i32{ 10, 20, 30, 40, 50 }) |k| _ = try m.put(k, k * 10);
+    const src_keys = try m.keysToSlice(allocator);
+    defer allocator.free(src_keys);
+    try std.testing.expectEqualSlices(i32, &.{ 50, 40, 30, 20, 10 }, src_keys);
+    // subMap of {20,30,40} must ALSO be reverse-ordered, proving the comparator
+    // carried into the snapshot (not reset to natural order).
+    var sub = try m.subMap(ObjRange.closedOpen(20, 50), allocator);
+    defer sub.deinit();
+    const sub_keys = try sub.keysToSlice(allocator);
+    defer allocator.free(sub_keys);
+    try std.testing.expectEqualSlices(i32, &.{ 40, 30, 20 }, sub_keys);
+    // Independence: mutate snapshot, original unchanged; and vice versa.
+    _ = try sub.put(99, 990);
+    _ = sub.remove(20);
+    try std.testing.expect(m.containsKey(20));
+    try std.testing.expect(!m.containsKey(99));
+    _ = m.remove(30);
+    try std.testing.expect(sub.containsKey(30));
 }

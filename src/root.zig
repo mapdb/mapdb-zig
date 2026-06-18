@@ -47,6 +47,8 @@ comptime {
     _ = @import("float_order.zig");
     _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");
+    _ = @import("object/treemap.zig");
+    _ = @import("object/treeset.zig");
     _ = @import("api/api.zig");
     _ = @import("arraylist/arraylist.zig");
     _ = @import("arraylist/array_list.zig");

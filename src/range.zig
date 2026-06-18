@@ -144,6 +144,15 @@ pub fn Range(comptime T: type) type {
         /// the float matrix later routes floats through the IEEE-754 total
         /// order (`algorithms.md` §"Float ordering for tree collections").
         fn compareValues(a: T, b: T) std.math.Order {
+            // `bool` has no `<`; order it explicitly (false < true) so the
+            // generic tree collections can name `Range(bool)` when their
+            // declarations are force-compiled (refAllDeclsRecursive). Float
+            // widening (IEEE-754 total order) is deferred with the rest of the
+            // float matrix; v1 exercises i32.
+            if (T == bool) {
+                if (a == b) return .eq;
+                return if (!a and b) .lt else .gt;
+            }
             return std.math.order(a, b);
         }
 

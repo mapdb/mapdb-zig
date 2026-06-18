@@ -16,6 +16,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const float_order = @import("../float_order.zig");
+const Range = @import("../range.zig").Range;
 
 /// Total-ordering comparator for elements of type `T`.
 fn keyOrder(comptime T: type, a: T, b: T) std.math.Order {
@@ -333,17 +334,150 @@ pub fn TreeSet(comptime T: type) type {
             return result.toOwnedSlice(allocator);
         }
 
+        // ---- NavigableSet surface ----
+        //
+        // Element-form navigation, poll, Range-based slice/descending iteration
+        // and removeRange. Mirrors the codex-approved Rust reference
+        // (mapdb-rust/src/object/treeset.rs) and the spec
+        // (spec/features/navigable-map.md). Strictness: floor `<= x`,
+        // ceiling `>= x`, lower `< x` (strict), higher `> x` (strict). Range
+        // membership is EXACTLY `range.contains(x)` — `open(1, 2)` over i32
+        // matches NOTHING yet is a valid, non-cut-empty range.
+        //
+        // `floor`/`ceiling` already exist above (value form, == the spec's set
+        // analogue); `lower`/`higher`/`first`/`last` complete the surface.
+
+        /// Greatest element `< x` (strict), or null.
+        pub fn lower(self: *const Self, x: T) ?T {
+            var node = self.treap.root;
+            var best: ?T = null;
+            while (node) |current| {
+                // current.key < x : candidate, search right for a tighter one.
+                if (orderFn(current.key, x) == .lt) {
+                    best = current.key;
+                    node = current.children[1];
+                } else {
+                    node = current.children[0];
+                }
+            }
+            return best;
+        }
+
+        /// Least element `> x` (strict), or null.
+        pub fn higher(self: *const Self, x: T) ?T {
+            var node = self.treap.root;
+            var best: ?T = null;
+            while (node) |current| {
+                // current.key > x : candidate, search left for a tighter one.
+                if (orderFn(current.key, x) == .gt) {
+                    best = current.key;
+                    node = current.children[0];
+                } else {
+                    node = current.children[1];
+                }
+            }
+            return best;
+        }
+
+        /// Minimum element, or null. Alias for `min` completing the surface.
+        pub fn first(self: *const Self) ?T {
+            return self.min();
+        }
+
+        /// Maximum element, or null. Alias for `max`.
+        pub fn last(self: *const Self) ?T {
+            return self.max();
+        }
+
+        /// Removes and returns the minimum element, or null if empty. Does not
+        /// trap on an empty set.
+        pub fn pollFirst(self: *Self) ?T {
+            const v = self.min() orelse return null;
+            _ = self.remove(v);
+            return v;
+        }
+
+        /// Removes and returns the maximum element, or null if empty. Does not
+        /// trap on an empty set.
+        pub fn pollLast(self: *Self) ?T {
+            const v = self.max() orelse return null;
+            _ = self.remove(v);
+            return v;
+        }
+
+        /// Elements ∈ `range`, ascending. Caller owns the returned slice
+        /// (independent snapshot; not invalidated by later mutation).
+        pub fn rangeElements(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error![]T {
+            var result = std.ArrayListUnmanaged(T){};
+            errdefer result.deinit(allocator);
+            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
+            while (it.next()) |node| {
+                if (range.contains(node.key)) try result.append(allocator, node.key);
+            }
+            return result.toOwnedSlice(allocator);
+        }
+
+        /// Elements ∈ `range`, descending. Caller owns the slice.
+        pub fn descendingRangeElements(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error![]T {
+            const asc = try self.rangeElements(range, allocator);
+            std.mem.reverse(T, asc);
+            return asc;
+        }
+
+        /// All elements, descending. Caller owns the slice.
+        pub fn descending(self: *const Self, allocator: Allocator) Allocator.Error![]T {
+            const out = try allocator.alloc(T, self.node_count);
+            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
+            var i: usize = self.node_count;
+            while (it.next()) |node| {
+                i -= 1;
+                out[i] = node.key;
+            }
+            return out;
+        }
+
+        /// A new INDEPENDENT set of the elements ∈ `range` (materialized
+        /// snapshot — not a live view). Mutating the snapshot never affects the
+        /// original and vice versa. The snapshot uses the same fixed ordering as
+        /// the source (this generic tree is always natural / float-total order;
+        /// comparator-keyed ordering is preserved by the object-tree variant).
+        /// The caller owns the returned set and must `deinit` it.
+        pub fn subSet(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error!Self {
+            var out = init(allocator);
+            errdefer out.deinit();
+            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
+            while (it.next()) |node| {
+                if (range.contains(node.key)) _ = try out.add(node.key);
+            }
+            return out;
+        }
+
+        /// Removes every element ∈ `range`; returns the count removed. A range
+        /// that matches nothing is a no-op returning 0.
+        pub fn removeRange(self: *Self, range: Range(T)) Allocator.Error!usize {
+            // Collect victims first (the treap iterator must not see structural
+            // mutation), then remove them.
+            var victims = std.ArrayListUnmanaged(T){};
+            defer victims.deinit(self.allocator);
+            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
+            while (it.next()) |node| {
+                if (range.contains(node.key)) try victims.append(self.allocator, node.key);
+            }
+            for (victims.items) |v| _ = self.remove(v);
+            return victims.items.len;
+        }
+
         // ---- Formatting ----
 
         /// Formats as "{v1, v2, v3}" in sorted order.
         pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll("{");
-            var first = true;
+            var is_first = true;
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!first) try writer.writeAll(", ");
+                if (!is_first) try writer.writeAll(", ");
                 try writer.print("{any}", .{node.key});
-                first = false;
+                is_first = false;
             }
             try writer.writeAll("}");
         }
@@ -373,4 +507,122 @@ pub fn TreeSet(comptime T: type) type {
             return true;
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// NavigableSet surface tests (mirror mapdb-rust/src/object/treeset.rs).
+// ---------------------------------------------------------------------------
+
+const Range_i32 = Range(i32);
+
+fn setOf(allocator: Allocator, elems: []const i32) !TreeSet(i32) {
+    var s = TreeSet(i32).init(allocator);
+    for (elems) |e| _ = try s.add(e);
+    return s;
+}
+
+test "TreeSet nav: floor/ceiling/lower/higher strictness + first/last" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30 });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(?i32, 20), s.floor(25));
+    try std.testing.expectEqual(@as(?i32, 30), s.ceiling(25));
+    try std.testing.expectEqual(@as(?i32, 10), s.floor(10)); // inclusive
+    try std.testing.expectEqual(@as(?i32, null), s.lower(10)); // strict
+    try std.testing.expectEqual(@as(?i32, null), s.higher(30)); // strict
+    try std.testing.expectEqual(@as(?i32, 10), s.ceiling(5));
+    try std.testing.expectEqual(@as(?i32, 20), s.lower(25));
+    try std.testing.expectEqual(@as(?i32, 30), s.higher(25));
+    try std.testing.expectEqual(@as(?i32, 10), s.first());
+    try std.testing.expectEqual(@as(?i32, 30), s.last());
+}
+
+test "TreeSet nav: empty set returns absence" {
+    var s = try setOf(std.testing.allocator, &.{});
+    defer s.deinit();
+    try std.testing.expectEqual(@as(?i32, null), s.floor(5));
+    try std.testing.expectEqual(@as(?i32, null), s.ceiling(5));
+    try std.testing.expectEqual(@as(?i32, null), s.lower(5));
+    try std.testing.expectEqual(@as(?i32, null), s.higher(5));
+    try std.testing.expectEqual(@as(?i32, null), s.first());
+    try std.testing.expectEqual(@as(?i32, null), s.last());
+}
+
+test "TreeSet nav: signed i32 MIN/MAX + descending" {
+    var s = try setOf(std.testing.allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), s.floor(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, null), s.lower(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, 0), s.higher(-1));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), s.ceiling(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, null), s.higher(std.math.maxInt(i32)));
+    const desc = try s.descending(std.testing.allocator);
+    defer std.testing.allocator.free(desc);
+    try std.testing.expectEqualSlices(i32, &.{ std.math.maxInt(i32), 1, 0, -1, std.math.minInt(i32) }, desc);
+}
+
+test "TreeSet poll: first/last then empty (does not trap)" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30 });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(?i32, 10), s.pollFirst());
+    try std.testing.expectEqual(@as(?i32, 30), s.pollLast());
+    try std.testing.expectEqual(@as(?i32, 20), s.pollFirst());
+    try std.testing.expectEqual(@as(?i32, null), s.pollFirst());
+    try std.testing.expectEqual(@as(?i32, null), s.pollLast());
+}
+
+test "TreeSet poll: single element then empty" {
+    var s = try setOf(std.testing.allocator, &.{});
+    defer s.deinit();
+    _ = try s.add(7);
+    try std.testing.expectEqual(@as(?i32, 7), s.pollFirst());
+    try std.testing.expectEqual(@as(?i32, null), s.pollFirst());
+    try std.testing.expect(s.isEmpty());
+}
+
+test "TreeSet range + descending + open(1,2) empty" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 });
+    defer s.deinit();
+    const re = try s.rangeElements(Range_i32.closedOpen(30, 70), std.testing.allocator);
+    defer std.testing.allocator.free(re);
+    try std.testing.expectEqualSlices(i32, &.{ 30, 40, 50, 60 }, re);
+    const red = try s.descendingRangeElements(Range_i32.closedOpen(30, 70), std.testing.allocator);
+    defer std.testing.allocator.free(red);
+    try std.testing.expectEqualSlices(i32, &.{ 60, 50, 40, 30 }, red);
+    const oc = try s.rangeElements(Range_i32.openClosed(30, 70), std.testing.allocator);
+    defer std.testing.allocator.free(oc);
+    try std.testing.expectEqualSlices(i32, &.{ 40, 50, 60, 70 }, oc);
+
+    var s2 = try setOf(std.testing.allocator, &.{ 1, 2 });
+    defer s2.deinit();
+    const empty = try s2.rangeElements(Range_i32.open(1, 2), std.testing.allocator);
+    defer std.testing.allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "TreeSet removeRange: count + no-op repeat" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(usize, 4), try s.removeRange(Range_i32.closedOpen(30, 70)));
+    try std.testing.expectEqual(@as(usize, 0), try s.removeRange(Range_i32.closedOpen(30, 70)));
+    const v = try s.toSlice(std.testing.allocator);
+    defer std.testing.allocator.free(v);
+    try std.testing.expectEqualSlices(i32, &.{ 10, 20, 70, 80, 90, 100 }, v);
+}
+
+test "TreeSet subSet: independent materialized snapshot" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer s.deinit();
+    var snap = try s.subSet(Range_i32.closed(20, 40), std.testing.allocator);
+    defer snap.deinit();
+    const sv = try snap.toSlice(std.testing.allocator);
+    defer std.testing.allocator.free(sv);
+    try std.testing.expectEqualSlices(i32, &.{ 20, 30, 40 }, sv);
+    // Mutate snapshot — original unchanged.
+    _ = try snap.add(99);
+    _ = snap.remove(20);
+    try std.testing.expect(s.contains(20));
+    try std.testing.expect(!s.contains(99));
+    // Mutate original — snapshot unchanged.
+    _ = s.remove(30);
+    try std.testing.expect(snap.contains(30));
 }

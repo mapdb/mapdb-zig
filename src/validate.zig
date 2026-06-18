@@ -93,7 +93,57 @@ fn jsonToI32(val: std.json.Value) ?i32 {
     };
 }
 
-fn applyOperation(coll: *Collection, op: std.json.Value) !void {
+// NavigableMap/Set result-log: the runner records each poll/remove_range
+// return value in execution order while applying operations, then exposes
+// them through the poll_*/remove_range_counts assertion keys (see README
+// §NavigableMap). A null poll key/value marks an absent poll on an empty
+// collection.
+const NavLog = struct {
+    poll_first_keys: std.ArrayList(?i32) = .{},
+    poll_last_keys: std.ArrayList(?i32) = .{},
+    poll_first_values: std.ArrayList(?i32) = .{},
+    poll_last_values: std.ArrayList(?i32) = .{},
+    remove_range_counts: std.ArrayList(i32) = .{},
+
+    fn deinit(self: *NavLog, allocator: Allocator) void {
+        self.poll_first_keys.deinit(allocator);
+        self.poll_last_keys.deinit(allocator);
+        self.poll_first_values.deinit(allocator);
+        self.poll_last_values.deinit(allocator);
+        self.remove_range_counts.deinit(allocator);
+    }
+};
+
+// Build a Range<i32> from a single range-builder object (the 10-range op
+// shape). Shared by the `remove_range` op's `range` field and the scenario
+// `query` field; routed through the production I32Range.
+fn buildRangeFromObj(op: std.json.ObjectMap) I32Range {
+    const op_name = op.get("op").?.string;
+    if (std.mem.eql(u8, op_name, "closed")) {
+        return I32Range.closed(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "open")) {
+        return I32Range.open(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "closed_open")) {
+        return I32Range.closedOpen(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "open_closed")) {
+        return I32Range.openClosed(jsonToI32(op.get("lower").?).?, jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "at_least")) {
+        return I32Range.atLeast(jsonToI32(op.get("lower").?).?);
+    } else if (std.mem.eql(u8, op_name, "greater_than")) {
+        return I32Range.greaterThan(jsonToI32(op.get("lower").?).?);
+    } else if (std.mem.eql(u8, op_name, "at_most")) {
+        return I32Range.atMost(jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "less_than")) {
+        return I32Range.lessThan(jsonToI32(op.get("upper").?).?);
+    } else if (std.mem.eql(u8, op_name, "all")) {
+        return I32Range.all();
+    } else if (std.mem.eql(u8, op_name, "singleton")) {
+        return I32Range.singleton(jsonToI32(op.get("value").?).?);
+    }
+    @panic("unknown range op");
+}
+
+fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator: Allocator) !void {
     const obj = op.object;
     const op_name = obj.get("op").?.string;
 
@@ -188,6 +238,51 @@ fn applyOperation(coll: *Collection, op: std.json.Value) !void {
             .array_stack => |*s| _ = s.pop(),
             else => {},
         }
+    } else if (std.mem.eql(u8, op_name, "poll_first")) {
+        // Map: record key + value; set: record element as the key (no value).
+        switch (coll.*) {
+            .tree_map => |*m| {
+                if (m.pollFirstEntry()) |e| {
+                    try log.poll_first_keys.append(allocator, e.key);
+                    try log.poll_first_values.append(allocator, e.value);
+                } else {
+                    try log.poll_first_keys.append(allocator, null);
+                    try log.poll_first_values.append(allocator, null);
+                }
+            },
+            .tree_set => |*s| {
+                try log.poll_first_keys.append(allocator, s.pollFirst());
+            },
+            else => {},
+        }
+    } else if (std.mem.eql(u8, op_name, "poll_last")) {
+        switch (coll.*) {
+            .tree_map => |*m| {
+                if (m.pollLastEntry()) |e| {
+                    try log.poll_last_keys.append(allocator, e.key);
+                    try log.poll_last_values.append(allocator, e.value);
+                } else {
+                    try log.poll_last_keys.append(allocator, null);
+                    try log.poll_last_values.append(allocator, null);
+                }
+            },
+            .tree_set => |*s| {
+                try log.poll_last_keys.append(allocator, s.pollLast());
+            },
+            else => {},
+        }
+    } else if (std.mem.eql(u8, op_name, "remove_range")) {
+        const range = buildRangeFromObj(obj.get("range").?.object);
+        switch (coll.*) {
+            .tree_map => |*m| try log.remove_range_counts.append(allocator, @intCast(m.removeRange(range))),
+            .tree_set => |*s| try log.remove_range_counts.append(allocator, @intCast(try s.removeRange(range))),
+            else => {},
+        }
+    } else {
+        // Forward-compat (README + spec/features/navigable-map.md): on the
+        // ordered tree collections an unknown op is SKIPPED so a newer scenario
+        // never breaks an older runner. Other collections silently ignore too
+        // (this runner has always tolerated unrecognised ops in the if-chain).
     }
 }
 
@@ -378,7 +473,13 @@ fn renderExpected(writer: anytype, v: std.json.Value, key: []const u8, mode: Flo
                         try writer.writeAll("\"");
                     },
                     .f32_list => try writeF32(writer, elementToF32(e)),
-                    .none => try writer.print("{d}", .{e.integer}),
+                    // i32 arrays may carry null elements (NavigableMap poll
+                    // logs: e.g. poll_first_keys [7, null]).
+                    .none => switch (e) {
+                        .null => try writer.writeAll("null"),
+                        .integer => |n| try writer.print("{d}", .{n}),
+                        else => try writer.print("{d}", .{e.integer}),
+                    },
                 }
             }
             try writer.writeAll("]");
@@ -396,12 +497,14 @@ fn emitAssertion(
     coll: *Collection,
     other_coll: ?*Collection,
     mode: FloatMode,
+    log: *const NavLog,
+    query: ?I32Range,
     allocator: Allocator,
     stdout: anytype,
 ) !void {
     var cbuf = std.array_list.Managed(u8).init(allocator);
     defer cbuf.deinit();
-    try evaluateAssertion(key, coll, other_coll, allocator, cbuf.writer());
+    try evaluateAssertion(key, coll, other_coll, log, query, allocator, cbuf.writer());
     const computed = cbuf.items;
     if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) return;
 
@@ -416,6 +519,211 @@ fn emitAssertion(
     }
 }
 
+// Parse a signed base-10 i32 suffix after `prefix` (e.g. "floor_-2147483648").
+// Leading `-` and the full i32 range are accepted. Returns null if the key
+// does not start with `prefix` or the suffix is not a valid i32.
+fn parseSignedSuffix(key: []const u8, prefix: []const u8) ?i32 {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    return std.fmt.parseInt(i32, key[prefix.len..], 10) catch null;
+}
+
+fn writeOptArray(writer: anytype, items: []const ?i32) !void {
+    try writer.writeAll("[");
+    for (items, 0..) |item, i| {
+        if (i > 0) try writer.writeAll(",");
+        if (item) |x| try writer.print("{d}", .{x}) else try writer.writeAll("null");
+    }
+    try writer.writeAll("]");
+}
+
+// NavigableMap/Set assertion keys. Returns true when `key` is a nav-specific
+// key this function fully handled (writing the canonical value into `writer`);
+// false when `key` is not nav-specific, so the caller falls through to the
+// generic assertion handler (size/is_empty/contains_/sorted_keys/...).
+// Descending arrays are emitted DESCENDING (never re-sorted). Unknown nav-shape
+// keys whose range data is missing are reported via the false return (skip).
+fn evalNavAssertion(
+    key: []const u8,
+    coll: *Collection,
+    log: *const NavLog,
+    query: ?I32Range,
+    allocator: Allocator,
+    writer: anytype,
+) !bool {
+    // floor_<k> / ceiling_<k> / lower_<k> / higher_<k>: signed i32 suffix.
+    inline for (.{ "floor_", "ceiling_", "lower_", "higher_" }) |prefix| {
+        if (parseSignedSuffix(key, prefix)) |k| {
+            const r: ?i32 = switch (coll.*) {
+                .tree_map => |*m| if (std.mem.eql(u8, prefix, "floor_"))
+                    m.floorKey(k)
+                else if (std.mem.eql(u8, prefix, "ceiling_"))
+                    m.ceilingKey(k)
+                else if (std.mem.eql(u8, prefix, "lower_"))
+                    m.lowerKey(k)
+                else
+                    m.higherKey(k),
+                .tree_set => |*s| if (std.mem.eql(u8, prefix, "floor_"))
+                    s.floor(k)
+                else if (std.mem.eql(u8, prefix, "ceiling_"))
+                    s.ceiling(k)
+                else if (std.mem.eql(u8, prefix, "lower_"))
+                    s.lower(k)
+                else
+                    s.higher(k),
+                else => null,
+            };
+            try writeOptI32(writer, r);
+            return true;
+        }
+    }
+
+    // first/last (map: first_key/last_key; set: first/last).
+    if (std.mem.eql(u8, key, "first_key")) {
+        switch (coll.*) {
+            .tree_map => |*m| try writeOptI32(writer, m.firstKey()),
+            else => return false,
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "last_key")) {
+        switch (coll.*) {
+            .tree_map => |*m| try writeOptI32(writer, m.lastKey()),
+            else => return false,
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "first")) {
+        switch (coll.*) {
+            .tree_set => |*s| try writeOptI32(writer, s.first()),
+            else => return false,
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "last")) {
+        switch (coll.*) {
+            .tree_set => |*s| try writeOptI32(writer, s.last()),
+            else => return false,
+        }
+        return true;
+    }
+
+    // Full descending iteration over ALL keys/elements (emitted DESCENDING).
+    if (std.mem.eql(u8, key, "descending_keys")) {
+        switch (coll.*) {
+            .tree_map => |*m| {
+                const d = try m.descendingKeys(allocator);
+                defer allocator.free(d);
+                try writeArray(writer, d);
+            },
+            else => return false,
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "descending_elements")) {
+        switch (coll.*) {
+            .tree_set => |*s| {
+                const d = try s.descending(allocator);
+                defer allocator.free(d);
+                try writeArray(writer, d);
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    // range_* assertions reference the scenario-level `query` range. With no
+    // query the key is unknown for this scenario -> not handled (skip).
+    if (std.mem.eql(u8, key, "range_keys") or std.mem.eql(u8, key, "range_elements") or
+        std.mem.eql(u8, key, "range_keys_desc") or std.mem.eql(u8, key, "range_elements_desc") or
+        std.mem.eql(u8, key, "range_size"))
+    {
+        const q = query orelse return false;
+        if (std.mem.eql(u8, key, "range_keys")) {
+            switch (coll.*) {
+                .tree_map => |*m| {
+                    const r = try m.rangeKeysIn(q, allocator);
+                    defer allocator.free(r);
+                    try writeArray(writer, r);
+                },
+                else => return false,
+            }
+        } else if (std.mem.eql(u8, key, "range_elements")) {
+            switch (coll.*) {
+                .tree_set => |*s| {
+                    const r = try s.rangeElements(q, allocator);
+                    defer allocator.free(r);
+                    try writeArray(writer, r);
+                },
+                else => return false,
+            }
+        } else if (std.mem.eql(u8, key, "range_keys_desc")) {
+            switch (coll.*) {
+                .tree_map => |*m| {
+                    const r = try m.descendingRangeKeys(q, allocator);
+                    defer allocator.free(r);
+                    try writeArray(writer, r);
+                },
+                else => return false,
+            }
+        } else if (std.mem.eql(u8, key, "range_elements_desc")) {
+            switch (coll.*) {
+                .tree_set => |*s| {
+                    const r = try s.descendingRangeElements(q, allocator);
+                    defer allocator.free(r);
+                    try writeArray(writer, r);
+                },
+                else => return false,
+            }
+        } else { // range_size
+            const n: i64 = switch (coll.*) {
+                .tree_map => |*m| blk: {
+                    const r = try m.rangeKeysIn(q, allocator);
+                    defer allocator.free(r);
+                    break :blk @intCast(r.len);
+                },
+                .tree_set => |*s| blk: {
+                    const r = try s.rangeElements(q, allocator);
+                    defer allocator.free(r);
+                    break :blk @intCast(r.len);
+                },
+                else => return false,
+            };
+            try writeI64(writer, n);
+        }
+        return true;
+    }
+
+    // Result-log keys (replayed from execution order).
+    if (std.mem.eql(u8, key, "poll_first_keys")) {
+        try writeOptArray(writer, log.poll_first_keys.items);
+        return true;
+    }
+    if (std.mem.eql(u8, key, "poll_last_keys")) {
+        try writeOptArray(writer, log.poll_last_keys.items);
+        return true;
+    }
+    if (std.mem.eql(u8, key, "poll_first_values")) {
+        switch (coll.*) {
+            .tree_map => try writeOptArray(writer, log.poll_first_values.items),
+            else => return false, // sets have no values
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "poll_last_values")) {
+        switch (coll.*) {
+            .tree_map => try writeOptArray(writer, log.poll_last_values.items),
+            else => return false,
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, key, "remove_range_counts")) {
+        try writeArray(writer, log.remove_range_counts.items);
+        return true;
+    }
+
+    return false;
+}
+
 // Writes ONLY the canonical computed value for `key` into `writer` (no
 // "key: " prefix, no trailing newline). Unknown keys write the sentinel
 // "UNKNOWN_ASSERTION:<key>" which the caller treats as skip.
@@ -423,9 +731,27 @@ fn evaluateAssertion(
     key: []const u8,
     coll: *Collection,
     other_coll: ?*Collection,
+    log: *const NavLog,
+    query: ?I32Range,
     allocator: Allocator,
     writer: anytype,
 ) !void {
+    // --- NavigableMap / NavigableSet (ordered tree navigation) ---
+    // Point-nav and range_*/*descending assertions reflect the POST-operation
+    // state (the harness applies all ops, then evaluates). Result-log keys
+    // (poll_*, remove_range_counts) replay values recorded during execution.
+    // Handled before the generic keys so the signed floor_/ceiling_/... suffix
+    // does not collide with other prefix parses.
+    {
+        const is_tree = switch (coll.*) {
+            .tree_map, .tree_set => true,
+            else => false,
+        };
+        if (is_tree) {
+            if (try evalNavAssertion(key, coll, log, query, allocator, writer)) return;
+        }
+    }
+
     // --- size ---
     if (std.mem.eql(u8, key, "size")) {
         const sz: i64 = @intCast(getCollectionSize(coll));
@@ -1036,12 +1362,20 @@ pub fn main() !void {
     var coll = try initCollection(kind, allocator);
     defer deinitCollection(&coll);
 
-    // Apply operations
+    // Apply operations. The NavLog records poll/remove_range return values in
+    // execution order for the NavigableMap/Set result-log assertion keys.
+    var log: NavLog = .{};
+    defer log.deinit(allocator);
     for (operations.items) |op| {
-        try applyOperation(&coll, op);
+        try applyOperation(&coll, op, &log, allocator);
     }
 
-    // Initialize "other" collection if present (for set operations)
+    // The optional scenario-level `query` range names the range that range_*
+    // assertions refer to (same builder-op shape as 10-range / remove_range).
+    const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
+
+    // Initialize "other" collection if present (for set operations). Its own
+    // NavLog is discarded — `other` is never the assertion subject for nav.
     var other_coll: ?Collection = null;
     if (root.get("other")) |other_json| {
         const other_obj = other_json.object;
@@ -1051,9 +1385,11 @@ pub fn main() !void {
             std.process.exit(1);
         };
         other_coll = try initCollection(other_kind, allocator);
+        var other_log: NavLog = .{};
+        defer other_log.deinit(allocator);
         const other_ops = other_obj.get("operations").?.array;
         for (other_ops.items) |op| {
-            try applyOperation(&other_coll.?, op);
+            try applyOperation(&other_coll.?, op, &other_log, allocator);
         }
     }
     defer {
@@ -1074,7 +1410,7 @@ pub fn main() !void {
         // line up.
         if (std.mem.eql(u8, key, "comment")) continue;
         const other_ptr: ?*Collection = if (other_coll != null) &other_coll.? else null;
-        try emitAssertion(name, key, expected, &coll, other_ptr, .none, allocator, stdout);
+        try emitAssertion(name, key, expected, &coll, other_ptr, .none, &log, query, allocator, stdout);
     }
 
     if (any_fail) {
