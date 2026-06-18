@@ -115,6 +115,28 @@ pub fn TreeSet(comptime T: type) type {
             return self.inner.higherKey(x);
         }
 
+        // ---- Order statistics (rank / select) ----
+        //
+        // Backed by the subtree-size augmentation on the backing `TreeMap`;
+        // both run in O(log n). See `treemap.zig` for the exact semantics.
+
+        /// Returns the number of elements strictly less than `value` under the
+        /// set's comparator — the 0-based lower-bound index. Defined for present
+        /// and absent elements alike; result in `0..=len()`. Pure query.
+        pub fn rank(self: *const Self, value: T) usize {
+            return self.inner.rank(value);
+        }
+
+        /// Returns the `i`-th smallest element (0-based), or null if
+        /// `i >= len()`. `i == len()` (and any larger index, including on an
+        /// empty set) is absence, not a trap. Round-trips with `rank`. This is
+        /// the ORDER-STATISTIC select — distinct from the functional
+        /// `selectWhere(predicate)` filter.
+        pub fn select(self: *const Self, i: usize) ?T {
+            const e = self.inner.selectEntry(i) orelse return null;
+            return e.key;
+        }
+
         /// Minimum element, or null. Alias for `min`.
         pub fn first(self: *const Self) ?T {
             return self.min();
@@ -387,4 +409,47 @@ test "object.TreeSet subSet: preserves reverse comparator + snapshot independenc
     try std.testing.expect(!s.contains(99));
     _ = s.remove(30);
     try std.testing.expect(sub.contains(30));
+}
+
+// ---------------------------------------------------------------------------
+// Order statistics (rank / select).
+// ---------------------------------------------------------------------------
+
+test "object.TreeSet rank/select: present, absent, signed, round-trip" {
+    const allocator = std.testing.allocator;
+    var s = try objSetOf(allocator, &.{ 10, 20, 30, 40, 50 });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(usize, 0), s.rank(10));
+    try std.testing.expectEqual(@as(usize, 2), s.rank(30));
+    try std.testing.expectEqual(@as(usize, 4), s.rank(50));
+    try std.testing.expectEqual(@as(usize, 0), s.rank(5));
+    try std.testing.expectEqual(@as(usize, 2), s.rank(25));
+    try std.testing.expectEqual(@as(usize, 5), s.rank(55));
+    try std.testing.expectEqual(@as(?i32, 10), s.select(0));
+    try std.testing.expectEqual(@as(?i32, 30), s.select(2));
+    try std.testing.expectEqual(@as(?i32, 50), s.select(4));
+    try std.testing.expectEqual(@as(?i32, null), s.select(5));
+    // round-trip
+    var i: usize = 0;
+    while (i < s.len()) : (i += 1) {
+        const v = s.select(i).?;
+        try std.testing.expectEqual(i, s.rank(v));
+    }
+}
+
+test "object.TreeSet rank/select: empty and single" {
+    const allocator = std.testing.allocator;
+    var empty = try objSetOf(allocator, &.{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.rank(5));
+    try std.testing.expectEqual(@as(?i32, null), empty.select(0));
+
+    var single = try objSetOf(allocator, &.{});
+    defer single.deinit();
+    _ = try single.add(7);
+    try std.testing.expectEqual(@as(usize, 0), single.rank(6));
+    try std.testing.expectEqual(@as(usize, 0), single.rank(7));
+    try std.testing.expectEqual(@as(usize, 1), single.rank(8));
+    try std.testing.expectEqual(@as(?i32, 7), single.select(0));
+    try std.testing.expectEqual(@as(?i32, null), single.select(1));
 }

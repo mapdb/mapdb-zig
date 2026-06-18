@@ -527,6 +527,34 @@ fn parseSignedSuffix(key: []const u8, prefix: []const u8) ?i32 {
     return std.fmt.parseInt(i32, key[prefix.len..], 10) catch null;
 }
 
+// rank_<k>: matches EXACTLY ^rank_(-?[0-9]+)$. The suffix is a signed base-10
+// i32 (leading `-` allowed and the full i32 range); a leading `+` or any other
+// non-digit is rejected (returns null → skip). std.fmt.parseInt already rejects
+// a `+`-prefixed suffix here because we only admit an optional leading `-`.
+fn parseRankSuffix(key: []const u8) ?i32 {
+    const prefix = "rank_";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    if (rest.len == 0) return null;
+    // Reject a leading `+` explicitly (parseInt would otherwise accept it).
+    if (rest[0] == '+') return null;
+    return std.fmt.parseInt(i32, rest, 10) catch null;
+}
+
+// select_<i>: matches EXACTLY ^select_([0-9]+)$. The suffix is a NON-NEGATIVE
+// decimal index — a `-`, `+`, or any non-digit is rejected so the functional
+// select_<pred> keys (select_gt_N, select_even) are never misclassified.
+fn parseSelectIndex(key: []const u8) ?usize {
+    const prefix = "select_";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    if (rest.len == 0) return null;
+    for (rest) |c| {
+        if (c < '0' or c > '9') return null;
+    }
+    return std.fmt.parseInt(usize, rest, 10) catch null;
+}
+
 fn writeOptArray(writer: anytype, items: []const ?i32) !void {
     try writer.writeAll("[");
     for (items, 0..) |item, i| {
@@ -575,6 +603,32 @@ fn evalNavAssertion(
             try writeOptI32(writer, r);
             return true;
         }
+    }
+
+    // Order statistics (rank / select; see spec/features/rank-select.md).
+    //
+    // rank_<k> matches EXACTLY ^rank_(-?[0-9]+)$ (signed i32 suffix, leading
+    // `+` rejected); select_<i> matches EXACTLY ^select_([0-9]+)$ (non-negative
+    // decimal index). The strict parse keeps the functional select_<pred> keys
+    // (select_gt_N, select_even, …) — handled by the generic dispatcher — from
+    // being misclassified as the order-statistic select.
+    if (parseRankSuffix(key)) |k| {
+        const r: usize = switch (coll.*) {
+            .tree_map => |*m| m.rank(k),
+            .tree_set => |*s| s.rank(k),
+            else => return false,
+        };
+        try writeI64(writer, @intCast(r));
+        return true;
+    }
+    if (parseSelectIndex(key)) |i| {
+        const r: ?i32 = switch (coll.*) {
+            .tree_map => |*m| m.selectKey(i),
+            .tree_set => |*s| s.select(i),
+            else => return false,
+        };
+        try writeOptI32(writer, r);
+        return true;
     }
 
     // first/last (map: first_key/last_key; set: first/last).

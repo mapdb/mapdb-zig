@@ -193,7 +193,13 @@ pub fn TreeSet(comptime T: type) type {
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        /// Functional FILTER convenience: a new set of the elements matching
+        /// `predicate`. Named `selectWhere` (not `select`) because the bare
+        /// `select` name is reserved for the order-statistic select (i-th
+        /// smallest by 0-based rank); see `select` below and
+        /// `spec/features/rank-select.md`. The statically-typed ports cannot
+        /// host both a predicate `select` and the order-statistic `select`.
+        pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
@@ -377,6 +383,63 @@ pub fn TreeSet(comptime T: type) type {
                 }
             }
             return best;
+        }
+
+        // ---- Order statistics (rank / select) ----
+        //
+        // This generic set is backed by `std.Treap`, whose `Node` carries no
+        // subtree-size augmentation and whose rotations are internal (not
+        // interceptable), so the size field cannot be threaded here. The
+        // order-statistic forms are therefore computed by a BST descent (rank)
+        // and an in-order index walk (select) over the treap's child links.
+        // Observable results match the augmented comparator-bearing object-tree
+        // variant (`object/treeset.zig`), which carries the O(log n) subtree-size
+        // augmentation and the size-invariant native test; only the per-port
+        // complexity guarantee differs (correctness is the cross-language
+        // contract). See `spec/features/rank-select.md`.
+
+        /// Counts every key in the subtree rooted at `node`.
+        fn subtreeCount(node: ?*TreapType.Node) usize {
+            const n = node orelse return 0;
+            return 1 + subtreeCount(n.children[0]) + subtreeCount(n.children[1]);
+        }
+
+        /// Returns the number of elements strictly less than `value` under the
+        /// set's ordering — the 0-based lower-bound index. Defined for present
+        /// and absent elements alike; result in `0..=len()`. Pure query.
+        pub fn rank(self: *const Self, value: T) usize {
+            var r: usize = 0;
+            var node = self.treap.root;
+            while (node) |n| {
+                switch (orderFn(value, n.key)) {
+                    // value < n.key: n and its right subtree are >= value.
+                    .lt => node = n.children[0],
+                    // value > n.key: n and its whole left subtree are < value.
+                    .gt => {
+                        r += 1 + subtreeCount(n.children[0]);
+                        node = n.children[1];
+                    },
+                    // value == n.key: exactly the left subtree is strictly less.
+                    .eq => return r + subtreeCount(n.children[0]),
+                }
+            }
+            return r;
+        }
+
+        /// Returns the `i`-th smallest element (0-based), or null if
+        /// `i >= len()`. `i == len()` (and any larger index, including on an
+        /// empty set) is absence, not a trap. Round-trips with `rank`. This is
+        /// the ORDER-STATISTIC select — distinct from the functional
+        /// `selectWhere(predicate)` filter.
+        pub fn select(self: *const Self, i: usize) ?T {
+            if (i >= self.node_count) return null;
+            var remaining = i;
+            var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
+            while (it.next()) |node| {
+                if (remaining == 0) return node.key;
+                remaining -= 1;
+            }
+            return null;
         }
 
         /// Minimum element, or null. Alias for `min` completing the surface.
@@ -625,4 +688,49 @@ test "TreeSet subSet: independent materialized snapshot" {
     // Mutate original — snapshot unchanged.
     _ = s.remove(30);
     try std.testing.expect(snap.contains(30));
+}
+
+test "TreeSet rank/select: present, absent, signed, round-trip" {
+    var s = try setOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer s.deinit();
+    try std.testing.expectEqual(@as(usize, 0), s.rank(10));
+    try std.testing.expectEqual(@as(usize, 2), s.rank(30));
+    try std.testing.expectEqual(@as(usize, 4), s.rank(50));
+    try std.testing.expectEqual(@as(usize, 0), s.rank(5));
+    try std.testing.expectEqual(@as(usize, 2), s.rank(25));
+    try std.testing.expectEqual(@as(usize, 5), s.rank(55));
+    try std.testing.expectEqual(@as(?i32, 10), s.select(0));
+    try std.testing.expectEqual(@as(?i32, 30), s.select(2));
+    try std.testing.expectEqual(@as(?i32, 50), s.select(4));
+    try std.testing.expectEqual(@as(?i32, null), s.select(5));
+    var i: usize = 0;
+    while (i < s.len()) : (i += 1) {
+        const v = s.select(i).?;
+        try std.testing.expectEqual(i, s.rank(v));
+    }
+}
+
+test "TreeSet rank/select: empty, single, signed extremes" {
+    var empty = try setOf(std.testing.allocator, &.{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.rank(5));
+    try std.testing.expectEqual(@as(?i32, null), empty.select(0));
+
+    var single = try setOf(std.testing.allocator, &.{});
+    defer single.deinit();
+    _ = try single.add(7);
+    try std.testing.expectEqual(@as(usize, 0), single.rank(6));
+    try std.testing.expectEqual(@as(usize, 0), single.rank(7));
+    try std.testing.expectEqual(@as(usize, 1), single.rank(8));
+    try std.testing.expectEqual(@as(?i32, 7), single.select(0));
+    try std.testing.expectEqual(@as(?i32, null), single.select(1));
+
+    var ext = try setOf(std.testing.allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer ext.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ext.rank(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(usize, 2), ext.rank(0));
+    try std.testing.expectEqual(@as(usize, 4), ext.rank(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), ext.select(0));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), ext.select(4));
+    try std.testing.expectEqual(@as(?i32, null), ext.select(5));
 }

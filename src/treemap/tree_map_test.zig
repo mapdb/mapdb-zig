@@ -453,3 +453,71 @@ test "TreeMap descendingEntries: all entries descending" {
     try std.testing.expectEqual(@as(i32, 300), de[0].value);
     try std.testing.expectEqual(@as(i32, 10), de[2].key);
 }
+
+// ---------------------------------------------------------------------------
+// Order statistics (rank / select).
+// ---------------------------------------------------------------------------
+
+test "TreeMap rank: present and absent keys" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), m.rank(10));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(30));
+    try std.testing.expectEqual(@as(usize, 4), m.rank(50));
+    try std.testing.expectEqual(@as(usize, 0), m.rank(5));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(25));
+    try std.testing.expectEqual(@as(usize, 5), m.rank(55));
+}
+
+test "TreeMap selectKey/selectEntry and round-trip" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 10), m.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, 30), m.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, 50), m.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(999));
+    try std.testing.expectEqual(@as(i32, 10), m.selectEntry(0).?.key);
+    try std.testing.expectEqual(@as(i32, 100), m.selectEntry(0).?.value);
+    try std.testing.expectEqual(@as(i32, 300), m.selectEntry(2).?.value);
+    try std.testing.expect(m.selectEntry(5) == null);
+    var i: usize = 0;
+    while (i < m.len()) : (i += 1) {
+        const k = m.selectKey(i).?;
+        try std.testing.expectEqual(i, m.rank(k));
+        try std.testing.expectEqual(@as(?i32, k), m.selectKey(m.rank(k)));
+    }
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(m.len()));
+}
+
+test "TreeMap rank/select: empty, single, signed extremes, after remove" {
+    var empty = I32Map.init(std.testing.allocator);
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.rank(5));
+    try std.testing.expectEqual(@as(?i32, null), empty.selectKey(0));
+
+    var single = try mapOf(std.testing.allocator, &.{7});
+    defer single.deinit();
+    try std.testing.expectEqual(@as(usize, 0), single.rank(6));
+    try std.testing.expectEqual(@as(usize, 0), single.rank(7));
+    try std.testing.expectEqual(@as(usize, 1), single.rank(8));
+    try std.testing.expectEqual(@as(?i32, 7), single.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, null), single.selectKey(1));
+
+    var ext = try mapOf(std.testing.allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer ext.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ext.rank(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(usize, 2), ext.rank(0));
+    try std.testing.expectEqual(@as(usize, 4), ext.rank(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), ext.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), ext.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), ext.selectKey(5));
+
+    var rem = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer rem.deinit();
+    _ = rem.remove(30);
+    try std.testing.expectEqual(@as(usize, 2), rem.rank(40));
+    try std.testing.expectEqual(@as(usize, 2), rem.rank(35));
+    try std.testing.expectEqual(@as(?i32, 40), rem.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, null), rem.selectKey(4));
+}

@@ -47,7 +47,25 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             right: ?*Node = null,
             parent: ?*Node = null,
             color: Color = .red,
+            /// Number of nodes in the subtree rooted here (this node plus both
+            /// children's subtrees). Maintained in O(1) on every structural
+            /// change — insert, remove, and all rotations — so the
+            /// order-statistic `rank`/`select` run in O(log n). Invariant after
+            /// any operation: `size == 1 + size(left) + size(right)`.
+            size: usize = 1,
         };
+
+        /// Subtree size of a node link (0 if null).
+        fn nodeSize(n: ?*Node) usize {
+            const node = n orelse return 0;
+            return node.size;
+        }
+
+        /// Recompute a node's cached subtree size from its children. Called after
+        /// any rotation or child relinking so the augmentation stays consistent.
+        fn fixSize(n: *Node) void {
+            n.size = 1 + nodeSize(n.left) + nodeSize(n.right);
+        }
 
         root: ?*Node,
         size: usize,
@@ -96,6 +114,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                             const n = try self.allocator.create(Node);
                             n.* = .{ .key = key, .value = value, .parent = current };
                             current.left = n;
+                            incSizeToRoot(current);
                             self.fixAfterInsert(n);
                             self.size += 1;
                             return null;
@@ -108,6 +127,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                             const n = try self.allocator.create(Node);
                             n.* = .{ .key = key, .value = value, .parent = current };
                             current.right = n;
+                            incSizeToRoot(current);
                             self.fixAfterInsert(n);
                             self.size += 1;
                             return null;
@@ -267,6 +287,91 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         pub fn higherKey(self: *const Self, k: K) ?K {
             const e = self.higherEntry(k) orelse return null;
             return e.key;
+        }
+
+        // ── Order statistics (rank / select) ────────────────────────────
+        //
+        // Backed by the per-node subtree-size augmentation; both run in
+        // O(log n) on the balanced tree. Comparisons go through the map's
+        // comparator, so the order is exactly the in-order traversal order
+        // (reverse/custom/float-total ordering carries through).
+
+        /// Returns the number of keys strictly less than `key` under the map's
+        /// comparator — the 0-based lower-bound index the key occupies (if
+        /// present) or would occupy (if absent). Defined for present and absent
+        /// keys alike; the result is in `0..=len()` (`len()` for any key greater
+        /// than the maximum). Pure query; never mutates.
+        pub fn rank(self: *const Self, key: K) usize {
+            var r: usize = 0;
+            var current = self.root;
+            while (current) |n| {
+                switch (self.cmp(key, n.key)) {
+                    // key < n.key: n and its right subtree are >= key; descend
+                    // left without counting.
+                    .lt => current = n.left,
+                    // key > n.key: n and its whole left subtree are strictly
+                    // less than key; count them, then descend right.
+                    .gt => {
+                        r += 1 + nodeSize(n.left);
+                        current = n.right;
+                    },
+                    // key == n.key: exactly the left subtree is strictly less.
+                    .eq => return r + nodeSize(n.left),
+                }
+            }
+            return r;
+        }
+
+        /// Walks to the node at 0-based sorted index `i`, or null if out of
+        /// range. The subtree-size augmentation makes this O(log n).
+        fn selectNode(self: *const Self, i: usize) ?*Node {
+            var idx = i;
+            var current = self.root;
+            while (current) |n| {
+                const left = nodeSize(n.left);
+                if (idx < left) {
+                    current = n.left;
+                } else if (idx == left) {
+                    return n;
+                } else {
+                    // Skip the left subtree and this node.
+                    idx -= left + 1;
+                    current = n.right;
+                }
+            }
+            return null;
+        }
+
+        /// Returns the `i`-th smallest key (0-based), or null if `i >= len()`.
+        /// `i == len()` (and any larger index, including on an empty map) is
+        /// absence, not a trap. Round-trips with `rank`:
+        /// `selectKey(rank(k)) == k` for any present `k`, and
+        /// `rank(selectKey(i)) == i` for every `0 <= i < len()`.
+        pub fn selectKey(self: *const Self, i: usize) ?K {
+            const n = self.selectNode(i) orelse return null;
+            return n.key;
+        }
+
+        /// Returns the `i`-th smallest `{ key, value }` entry (0-based), or null
+        /// if `i >= len()`. Same index domain as `selectKey`.
+        pub fn selectEntry(self: *const Self, i: usize) ?Entry {
+            const n = self.selectNode(i) orelse return null;
+            return .{ .key = n.key, .value = n.value };
+        }
+
+        /// Test-only: verifies the subtree-size invariant at every node and that
+        /// the root total equals `len()`. Returns the recomputed total.
+        fn checkSizeInvariant(node: ?*Node) usize {
+            const n = node orelse return 0;
+            const l = checkSizeInvariant(n.left);
+            const r = checkSizeInvariant(n.right);
+            std.debug.assert(n.size == 1 + l + r);
+            return n.size;
+        }
+
+        /// Test-only helper asserting the whole-tree size invariant.
+        pub fn assertSizeInvariant(self: *const Self) void {
+            std.debug.assert(checkSizeInvariant(self.root) == self.size);
         }
 
         /// Minimum entry, or null. Alias for `min`.
@@ -593,6 +698,11 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             }
             r.left = n;
             n.parent = r;
+            // `r` took `n`'s former position, so it inherits `n`'s old subtree
+            // size; recompute bottom-up — the demoted `n` first (now `r`'s left
+            // child), then the promoted `r`.
+            fixSize(n);
+            fixSize(r);
         }
 
         fn rotateRight(self: *Self, n: *Node) void {
@@ -613,6 +723,25 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             }
             l.right = n;
             n.parent = l;
+            // Symmetric to rotateLeft: recompute the demoted `n`, then the
+            // promoted `l`.
+            fixSize(n);
+            fixSize(l);
+        }
+
+        /// Walks from `n` up to the root, bumping each ancestor's cached subtree
+        /// size by one after a new leaf was linked below `n`.
+        fn incSizeToRoot(start: ?*Node) void {
+            var n = start;
+            while (n) |node| : (n = node.parent) node.size += 1;
+        }
+
+        /// Walks from `n` up to the root recomputing each node's cached subtree
+        /// size from its children. Used after a delete splice — the rotations
+        /// inside `fixAfterDelete` already maintain their own sizes.
+        fn fixSizeToRoot(start: ?*Node) void {
+            var n = start;
+            while (n) |node| : (n = node.parent) fixSize(node);
         }
 
         fn fixAfterInsert(self: *Self, node: *Node) void {
@@ -667,6 +796,12 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                 n.value = succ.value;
                 n = succ;
             }
+            // `n` is the node physically spliced out. `fix_size_from` is the
+            // lowest surviving node whose cached subtree size must be refreshed;
+            // recomputing that path to the root once the structure is final
+            // restores the invariant. Rotations inside `fixAfterDelete` maintain
+            // their own sizes and everything below `fix_size_from` stays consistent.
+            var fix_size_from: ?*Node = null;
             const child: ?*Node = n.left orelse n.right;
             if (child) |c| {
                 c.parent = n.parent;
@@ -679,6 +814,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                 } else {
                     self.root = c;
                 }
+                fix_size_from = c;
                 if (n.color == .black) {
                     self.fixAfterDelete(c);
                 }
@@ -688,6 +824,8 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                 if (n.color == .black) {
                     self.fixAfterDelete(n);
                 }
+                // fixAfterDelete may have rotated `n` to a new parent; read it now.
+                fix_size_from = n.parent;
                 if (n.parent) |p| {
                     if (n == p.left) {
                         p.left = null;
@@ -696,6 +834,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
                     }
                 }
             }
+            fixSizeToRoot(fix_size_from);
             self.allocator.destroy(n);
         }
 
@@ -1030,4 +1169,157 @@ test "object.TreeMap subMap: preserves reverse comparator + snapshot independenc
     try std.testing.expect(!m.containsKey(99));
     _ = m.remove(30);
     try std.testing.expect(sub.containsKey(30));
+}
+
+// ---------------------------------------------------------------------------
+// Order statistics (rank / select).
+// ---------------------------------------------------------------------------
+
+test "object.TreeMap rank: present and absent keys" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    // present keys → their 0-based index
+    try std.testing.expectEqual(@as(usize, 0), m.rank(10));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(30));
+    try std.testing.expectEqual(@as(usize, 4), m.rank(50));
+    // absent keys → lower-bound index
+    try std.testing.expectEqual(@as(usize, 0), m.rank(5)); // before min
+    try std.testing.expectEqual(@as(usize, 2), m.rank(25)); // between 20 and 30
+    try std.testing.expectEqual(@as(usize, 5), m.rank(55)); // past max → size
+    m.assertSizeInvariant();
+}
+
+test "object.TreeMap selectKey/selectEntry" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 10), m.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, 30), m.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, 50), m.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(5)); // == size
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(999));
+    // entry form carries value = key*10
+    try std.testing.expectEqual(@as(i32, 10), m.selectEntry(0).?.key);
+    try std.testing.expectEqual(@as(i32, 100), m.selectEntry(0).?.value);
+    try std.testing.expectEqual(@as(i32, 300), m.selectEntry(2).?.value);
+    try std.testing.expect(m.selectEntry(5) == null);
+}
+
+test "object.TreeMap rank/select: empty and single" {
+    const allocator = std.testing.allocator;
+    var empty = try objMapOf(allocator, &.{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.rank(5));
+    try std.testing.expectEqual(@as(?i32, null), empty.selectKey(0));
+
+    var single = try objMapOf(allocator, &.{});
+    defer single.deinit();
+    _ = try single.put(7, 70);
+    try std.testing.expectEqual(@as(usize, 0), single.rank(6));
+    try std.testing.expectEqual(@as(usize, 0), single.rank(7));
+    try std.testing.expectEqual(@as(usize, 1), single.rank(8));
+    try std.testing.expectEqual(@as(?i32, 7), single.selectKey(0));
+    try std.testing.expectEqual(@as(i32, 70), single.selectEntry(0).?.value);
+    try std.testing.expectEqual(@as(?i32, null), single.selectKey(1));
+}
+
+test "object.TreeMap rank/select: signed extremes" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), m.rank(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(0));
+    try std.testing.expectEqual(@as(usize, 4), m.rank(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), m.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), m.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(5));
+}
+
+test "object.TreeMap rank/select: stable after remove" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 300), m.remove(30));
+    // stale subtree sizes after a remove/transplant would corrupt these
+    try std.testing.expectEqual(@as(usize, 2), m.rank(40));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(35));
+    try std.testing.expectEqual(@as(?i32, 40), m.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(4));
+    m.assertSizeInvariant();
+}
+
+test "object.TreeMap round-trip select(rank(k))==k and rank(select(i))==i" {
+    const allocator = std.testing.allocator;
+    var m = try objMapOf(allocator, &.{ 10, 20, 30, 40, 50, -7, 0, 99 });
+    defer m.deinit();
+    const keys = try m.keysToSlice(allocator);
+    defer allocator.free(keys);
+    for (keys) |k| {
+        try std.testing.expectEqual(@as(?i32, k), m.selectKey(m.rank(k)));
+    }
+    var i: usize = 0;
+    while (i < m.len()) : (i += 1) {
+        const k = m.selectKey(i).?;
+        try std.testing.expectEqual(i, m.rank(k));
+    }
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(m.len()));
+}
+
+test "object.TreeMap rank/select: follows reverse comparator" {
+    const allocator = std.testing.allocator;
+    var m = TreeMap(i32, i32).init(allocator, strat.reverseComparator(i32));
+    defer m.deinit();
+    for ([_]i32{ 10, 20, 30, 40, 50 }) |k| _ = try m.put(k, k * 10);
+    // Under reverse order the 0-th element is the largest natural key.
+    try std.testing.expectEqual(@as(?i32, 50), m.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, 10), m.selectKey(4));
+    try std.testing.expectEqual(@as(usize, 0), m.rank(50));
+    try std.testing.expectEqual(@as(usize, 4), m.rank(10));
+    m.assertSizeInvariant();
+}
+
+/// Deterministic xorshift mirroring the Rust reference's randomized invariant
+/// test, so the seeded churn is reproducible across ports.
+fn nextRand(state: *u64) u64 {
+    var x = state.*;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    state.* = x;
+    return x;
+}
+
+test "object.TreeMap subtree-size invariant over randomized insert/remove" {
+    const allocator = std.testing.allocator;
+    var m = TreeMap(i32, i32).init(allocator, strat.naturalComparator(i32));
+    defer m.deinit();
+    // Oracle: a sorted set of the present keys, kept via a generic TreeSet.
+    var present = std.AutoHashMap(i32, void).init(allocator);
+    defer present.deinit();
+    var state: u64 = 0x9E37_79B9_7F4A_7C15;
+    var iter: usize = 0;
+    while (iter < 4000) : (iter += 1) {
+        const key: i32 = @intCast(nextRand(&state) % 200);
+        if (nextRand(&state) & 1 == 0) {
+            _ = try m.put(key, key *% 10);
+            try present.put(key, {});
+        } else {
+            _ = m.remove(key);
+            _ = present.remove(key);
+        }
+        m.assertSizeInvariant();
+        try std.testing.expectEqual(present.count(), m.len());
+    }
+    // After the churn, rank/select must agree with the sorted oracle ordering.
+    var sorted = std.ArrayListUnmanaged(i32){};
+    defer sorted.deinit(allocator);
+    var kit = present.keyIterator();
+    while (kit.next()) |k| try sorted.append(allocator, k.*);
+    std.mem.sort(i32, sorted.items, {}, std.sort.asc(i32));
+    for (sorted.items, 0..) |k, i| {
+        try std.testing.expectEqual(i, m.rank(k));
+        try std.testing.expectEqual(@as(?i32, k), m.selectKey(i));
+    }
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(sorted.items.len));
 }

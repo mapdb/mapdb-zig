@@ -260,7 +260,12 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        /// Functional FILTER convenience: a new map of the entries matching
+        /// `predicate`. Named `selectWhere` (not `select`) because the bare
+        /// `select` name is reserved for the order-statistic select on the
+        /// sorted set/tree surface (see `selectKey`/`selectEntry`); see
+        /// `spec/features/rank-select.md`.
+        pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             for (self.keys.items, self.vals.items) |k, val| {
                 if (predicate(ctx, k, val)) _ = try result.put(k, val);
@@ -412,6 +417,37 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         pub fn higherKey(self: *const Self, k: K) ?K {
             const e = self.higherEntry(k) orelse return null;
             return e.key;
+        }
+
+        // ---- Order statistics (rank / select) ----
+        //
+        // The keys/values are held in lock-step SORTED ArrayLists, so the
+        // order-statistic forms are direct index arithmetic over the backing
+        // slices — `rank` is the binary-search lower bound, `select` is an index
+        // into the sorted slice. Observable results match the comparator-bearing
+        // object-tree variant. See `spec/features/rank-select.md`.
+
+        /// Returns the number of keys strictly less than `key` under the map's
+        /// key ordering — the 0-based lower-bound index the key occupies (if
+        /// present) or would occupy (if absent). Defined for present and absent
+        /// keys alike; result in `0..=len()`. Pure query.
+        pub fn rank(self: *const Self, key: K) usize {
+            return self.findIndex(key).index;
+        }
+
+        /// Returns the `i`-th smallest key (0-based), or null if `i >= len()`.
+        /// `i == len()` (and any larger index, including on an empty map) is
+        /// absence, not a trap. Round-trips with `rank`.
+        pub fn selectKey(self: *const Self, i: usize) ?K {
+            if (i >= self.keys.items.len) return null;
+            return self.keys.items[i];
+        }
+
+        /// Returns the `i`-th smallest `{ key, value }` entry (0-based), or null
+        /// if `i >= len()`. Same index domain as `selectKey`.
+        pub fn selectEntry(self: *const Self, i: usize) ?Entry {
+            if (i >= self.keys.items.len) return null;
+            return .{ .key = self.keys.items[i], .value = self.vals.items[i] };
         }
 
         /// Minimum entry, or null. Alias for `min` completing the surface.
