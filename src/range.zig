@@ -293,6 +293,82 @@ pub fn Range(comptime T: type) type {
             return self.upper.isFinite();
         }
 
+        // ---- sorted-slice bracketing (cut-derived, overflow-safe) ---------
+
+        /// Bracket the contiguous `[start, end)` index window of a **strictly
+        /// ascending** slice whose elements fall inside this range. Membership
+        /// over a sorted slice is contiguous (the range is convex), so two
+        /// binary searches suffice: `start` is the lower bound of the in-range
+        /// window, `end` one past its last element.
+        ///
+        /// The brackets are derived purely from the cut comparison
+        /// (`below`/`above`/unbounded sentinels) — never from `v ± 1`
+        /// predecessor/successor arithmetic — so open/closed bounds at
+        /// `INT_MIN`/`INT_MAX` never overflow. `start == end` is an empty
+        /// (possibly cut-empty or discrete-empty, e.g. `open(1, 2)` over `i32`)
+        /// result, never an error. This is the bracketing the
+        /// `sorted-table-map` packed-array range queries ride on
+        /// (`spec/features/sorted-table-map.md` §"Range-query semantics").
+        pub fn bracket(self: Self, sorted: []const T) [2]usize {
+            // start: first index whose key is strictly ABOVE the lower cut.
+            const start: usize = switch (self.lower) {
+                .below_all => 0,
+                // Closed lower `[v`: include v -> first key >= v.
+                .below => |v| partitionPointLt(sorted, v),
+                // Open lower `(v`: exclude v -> first key > v.
+                .above => |v| partitionPointLe(sorted, v),
+                // A lower cut is never above_all (factory invariant); empty.
+                .above_all => sorted.len,
+            };
+            // end: first index whose key is NOT below the upper cut (one past
+            // the last in-range key).
+            const end: usize = switch (self.upper) {
+                .above_all => sorted.len,
+                // Open upper `v)`: exclude v -> first key >= v.
+                .below => |v| partitionPointLt(sorted, v),
+                // Closed upper `v]`: include v -> first key > v.
+                .above => |v| partitionPointLe(sorted, v),
+                // An upper cut is never below_all (factory invariant); empty.
+                .below_all => 0,
+            };
+            // A fully-disjoint range can yield start > end; normalise to an
+            // empty window so callers slice safely.
+            if (start > end) return .{ end, end };
+            return .{ start, end };
+        }
+
+        /// First index `i` with `!(sorted[i] < v)` — i.e. first key `>= v`.
+        /// Overflow-safe midpoint (`lo + (hi - lo) / 2`) over `usize` indices;
+        /// the comparison is the total-order `compareValues`, never a bare `<`.
+        fn partitionPointLt(sorted: []const T, v: T) usize {
+            var lo: usize = 0;
+            var hi: usize = sorted.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (compareValues(sorted[mid], v) == .lt) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo;
+        }
+
+        /// First index `i` with `!(sorted[i] <= v)` — i.e. first key `> v`.
+        fn partitionPointLe(sorted: []const T, v: T) usize {
+            var lo: usize = 0;
+            var hi: usize = sorted.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (compareValues(sorted[mid], v) != .gt) { // sorted[mid] <= v
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo;
+        }
+
         // ---- algebra (all via cut comparison) -----------------------------
 
         /// Structural equality on the two cuts. `closedOpen(v, v)` and
@@ -568,6 +644,61 @@ test "trap: closed(5,1) and open(3,3) trap (verified out of process)" {
     // (closed(5,1) and open(3,3) trap via always-on @panic in fromCuts in all
     //  build profiles — verified out of process; the test runner cannot
     //  intercept @panic.)
+}
+
+test "bracket: cut-derived, overflow-safe at signed extremes" {
+    const min = std.math.minInt(i32);
+    const max = std.math.maxInt(i32);
+    const keys = [_]i32{ min, -1, 0, 1, max };
+
+    // closed_open(30,70) over a 10-key strided slice.
+    const strided = [_]i32{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
+    {
+        const b = I32Range.closedOpen(30, 70).bracket(&strided);
+        try testing.expectEqual(@as(usize, 2), b[0]);
+        try testing.expectEqual(@as(usize, 6), b[1]);
+    }
+    // greater_than(MIN): excludes MIN, no MIN-1 arithmetic.
+    {
+        const b = I32Range.greaterThan(min).bracket(&keys);
+        try testing.expectEqual(@as(usize, 1), b[0]);
+        try testing.expectEqual(@as(usize, 5), b[1]);
+    }
+    // less_than(MAX): excludes MAX, no MAX+1 arithmetic.
+    {
+        const b = I32Range.lessThan(max).bracket(&keys);
+        try testing.expectEqual(@as(usize, 0), b[0]);
+        try testing.expectEqual(@as(usize, 4), b[1]);
+    }
+    // closed(MIN,MAX): full span.
+    {
+        const b = I32Range.closed(min, max).bracket(&keys);
+        try testing.expectEqual(@as(usize, 0), b[0]);
+        try testing.expectEqual(@as(usize, 5), b[1]);
+    }
+    // singleton(MAX): one element.
+    {
+        const b = I32Range.singleton(max).bracket(&keys);
+        try testing.expectEqual(@as(usize, 4), b[0]);
+        try testing.expectEqual(@as(usize, 5), b[1]);
+    }
+    // open(1,2) over adjacent ints: empty window, not an error.
+    {
+        const adj = [_]i32{ 1, 2 };
+        const b = I32Range.open(1, 2).bracket(&adj);
+        try testing.expectEqual(b[0], b[1]);
+    }
+    // cut-empty closed_open(5,5): empty.
+    {
+        const b = I32Range.closedOpen(5, 5).bracket(&strided);
+        try testing.expectEqual(b[0], b[1]);
+    }
+    // all(): full slice.
+    {
+        const b = I32Range.all().bracket(&strided);
+        try testing.expectEqual(@as(usize, 0), b[0]);
+        try testing.expectEqual(@as(usize, strided.len), b[1]);
+    }
 }
 
 test "format: interval notation" {

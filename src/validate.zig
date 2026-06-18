@@ -30,6 +30,9 @@ const I64I32SetMultimap = @import("multimap/multimap.zig").I64I32SetMultimap;
 const range_mod = @import("range.zig");
 const I32Range = range_mod.I32Range;
 const BoundType = range_mod.BoundType;
+const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
+const ImmutableI32I32SortedMap = immutable_sorted.ImmutableI32I32SortedMap;
+const ImmutableI32SortedSet = immutable_sorted.ImmutableI32SortedSet;
 
 const CollectionKind = enum {
     hash_map,
@@ -1402,6 +1405,18 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "ImmutableSortedMap<i32, i32>")) {
+        try runImmutableSortedMap(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "ImmutableSortedSet<i32>")) {
+        try runImmutableSortedSet(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -1629,6 +1644,286 @@ fn evalRangeAssertion(
     }
     // --- unknown key ---
     else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+// ── ImmutableSortedMap<i32,i32> / ImmutableSortedSet<i32> runners ───────────
+//
+// The compact immutable sorted map/set (spec/features/sorted-table-map.md).
+// Routed through the PRODUCTION ImmutableI32I32SortedMap / ImmutableI32SortedSet
+// — every assertion is proved against the real packed-array binary-search code,
+// not re-derived here. Direct translation of the Rust runner's
+// run_immutable_sorted_map / run_immutable_sorted_set (mapdb-rust/src/bin/validate.rs).
+//
+// Construction is a SINGLE `from_sorted` bulk op (no incremental put/add):
+//   map: {"op":"from_sorted","keys":[...],"values":[...]}  (strictly ascending)
+//   set: {"op":"from_sorted","elements":[...]}             (strictly ascending)
+// Authoring rule (spec §"Cross-language test scenarios"): exactly ONE
+// `from_sorted` op. Zero or multiple is a MALFORMED scenario -> SKIP it (do not
+// silently apply the first, do not fail), pinning the behaviour so runner
+// authors do not each invent their own. Scenarios in the suite are authored
+// strictly-ascending, so production never traps here.
+
+/// The single `from_sorted` op from a well-formed sorted-table scenario, or
+/// `null` (malformed) -> the caller SKIPs. A sorted-table collection is built
+/// by EXACTLY ONE bulk `from_sorted` op: the `operations` array must be that
+/// one op and nothing else.
+fn singleFromSorted(operations: std.json.Array) ?std.json.ObjectMap {
+    if (operations.items.len != 1) return null;
+    const obj = operations.items[0].object;
+    const op_name = obj.get("op") orelse return null;
+    if (op_name != .string) return null;
+    if (!std.mem.eql(u8, op_name.string, "from_sorted")) return null;
+    return obj;
+}
+
+/// Parse a JSON array of i32 into a caller-owned slice.
+fn jsonI32Array(arr: std.json.Array, allocator: Allocator) ![]i32 {
+    const out = try allocator.alloc(i32, arr.items.len);
+    for (arr.items, 0..) |e, i| out[i] = jsonToI32(e).?;
+    return out;
+}
+
+fn runImmutableSortedMap(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    const op = singleFromSorted(operations) orelse {
+        // Malformed (zero or multiple from_sorted) -> SKIP, do not fail.
+        std.debug.print("skip: malformed sorted-table scenario (expected exactly one from_sorted)\n", .{});
+        return;
+    };
+    const keys = try jsonI32Array(op.get("keys").?.array, allocator);
+    defer allocator.free(keys);
+    const values = try jsonI32Array(op.get("values").?.array, allocator);
+    defer allocator.free(values);
+    var map = try ImmutableI32I32SortedMap.fromSorted(allocator, keys, values);
+    defer map.deinit();
+
+    const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalSortedMapAssertion(key, &map, query, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+fn evalSortedMapAssertion(
+    key: []const u8,
+    map: *const ImmutableI32I32SortedMap,
+    query: ?I32Range,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    // floor_/ceiling_/lower_/higher_<k>: signed i32 suffix.
+    inline for (.{ "floor_", "ceiling_", "lower_", "higher_" }) |prefix| {
+        if (parseSignedSuffix(key, prefix)) |k| {
+            const r: ?i32 = if (std.mem.eql(u8, prefix, "floor_"))
+                map.floorKey(k)
+            else if (std.mem.eql(u8, prefix, "ceiling_"))
+                map.ceilingKey(k)
+            else if (std.mem.eql(u8, prefix, "lower_"))
+                map.lowerKey(k)
+            else
+                map.higherKey(k);
+            try writeOptI32(writer, r);
+            return;
+        }
+    }
+    if (parseRankSuffix(key)) |k| {
+        try writeI64(writer, @intCast(map.rank(k)));
+        return;
+    }
+    if (parseSelectIndex(key)) |i| {
+        try writeOptI32(writer, map.selectKey(i));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "size")) {
+        try writeI64(writer, @intCast(map.len()));
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writeBool(writer, map.isEmpty());
+    } else if (std.mem.eql(u8, key, "min") or std.mem.eql(u8, key, "first_key")) {
+        try writeOptI32(writer, map.firstKey());
+    } else if (std.mem.eql(u8, key, "max") or std.mem.eql(u8, key, "last_key")) {
+        try writeOptI32(writer, map.lastKey());
+    } else if (std.mem.eql(u8, key, "sorted_keys")) {
+        // Stored keys are already strictly ascending; emit verbatim.
+        try writeArray(writer, map.keysSlice());
+    } else if (std.mem.eql(u8, key, "sorted_values")) {
+        // values() iterates in ascending-KEY order; the suite's sorted_values
+        // means "all values sorted ascending" (it cannot pin key-order
+        // pairing — that is a native test), so sort a copy.
+        const copy = try allocator.dupe(i32, map.valuesSlice());
+        defer allocator.free(copy);
+        try writeSortedArray(writer, copy);
+    } else if (std.mem.eql(u8, key, "descending_keys")) {
+        const d = try map.descendingKeys(allocator);
+        defer allocator.free(d);
+        try writeArray(writer, d);
+    } else if (std.mem.eql(u8, key, "range_keys")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try map.rangeKeys(q, allocator);
+        defer allocator.free(r);
+        try writeArray(writer, r);
+    } else if (std.mem.eql(u8, key, "range_keys_desc")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try map.descendingRangeKeys(q, allocator);
+        defer allocator.free(r);
+        try writeArray(writer, r);
+    } else if (std.mem.eql(u8, key, "range_size")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try map.rangeKeys(q, allocator);
+        defer allocator.free(r);
+        try writeI64(writer, @intCast(r.len));
+    } else if (parseThreshold(key, "get_") != null and !std.mem.startsWith(u8, key, "get_at_")) {
+        try writeOptI32(writer, map.get(parseThreshold(key, "get_").?));
+    } else if (parseThreshold(key, "contains_") != null) {
+        try writeBool(writer, map.containsKey(parseThreshold(key, "contains_").?));
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+fn runImmutableSortedSet(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    const op = singleFromSorted(operations) orelse {
+        std.debug.print("skip: malformed sorted-table scenario (expected exactly one from_sorted)\n", .{});
+        return;
+    };
+    const elements = try jsonI32Array(op.get("elements").?.array, allocator);
+    defer allocator.free(elements);
+    var set = try ImmutableI32SortedSet.fromSorted(allocator, elements);
+    defer set.deinit();
+
+    const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalSortedSetAssertion(key, &set, query, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+fn evalSortedSetAssertion(
+    key: []const u8,
+    set: *const ImmutableI32SortedSet,
+    query: ?I32Range,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    inline for (.{ "floor_", "ceiling_", "lower_", "higher_" }) |prefix| {
+        if (parseSignedSuffix(key, prefix)) |k| {
+            const r: ?i32 = if (std.mem.eql(u8, prefix, "floor_"))
+                set.floor(k)
+            else if (std.mem.eql(u8, prefix, "ceiling_"))
+                set.ceiling(k)
+            else if (std.mem.eql(u8, prefix, "lower_"))
+                set.lower(k)
+            else
+                set.higher(k);
+            try writeOptI32(writer, r);
+            return;
+        }
+    }
+    if (parseRankSuffix(key)) |k| {
+        try writeI64(writer, @intCast(set.rank(k)));
+        return;
+    }
+    if (parseSelectIndex(key)) |i| {
+        try writeOptI32(writer, set.select(i));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "size")) {
+        try writeI64(writer, @intCast(set.len()));
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writeBool(writer, set.isEmpty());
+    } else if (std.mem.eql(u8, key, "min") or std.mem.eql(u8, key, "first")) {
+        try writeOptI32(writer, set.first());
+    } else if (std.mem.eql(u8, key, "max") or std.mem.eql(u8, key, "last")) {
+        try writeOptI32(writer, set.last());
+    } else if (std.mem.eql(u8, key, "to_sorted_array")) {
+        // Stored elements are already strictly ascending; emit verbatim.
+        try writeArray(writer, set.elementsSlice());
+    } else if (std.mem.eql(u8, key, "descending_elements")) {
+        const d = try set.descendingElements(allocator);
+        defer allocator.free(d);
+        try writeArray(writer, d);
+    } else if (std.mem.eql(u8, key, "range_elements")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try set.rangeElements(q, allocator);
+        defer allocator.free(r);
+        try writeArray(writer, r);
+    } else if (std.mem.eql(u8, key, "range_elements_desc")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try set.descendingRangeElements(q, allocator);
+        defer allocator.free(r);
+        try writeArray(writer, r);
+    } else if (std.mem.eql(u8, key, "range_size")) {
+        const q = query orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const r = try set.rangeElements(q, allocator);
+        defer allocator.free(r);
+        try writeI64(writer, @intCast(r.len));
+    } else if (parseThreshold(key, "contains_") != null) {
+        try writeBool(writer, set.contains(parseThreshold(key, "contains_").?));
+    } else {
         try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
     }
 }

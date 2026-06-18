@@ -16,6 +16,7 @@ pub const deque = @import("deque/deque.zig");
 pub const hashmap = @import("hashmap/hashmap.zig");
 pub const hashset = @import("hashset/hashset.zig");
 pub const immutable = @import("immutable/immutable.zig");
+pub const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 pub const interval = @import("interval/interval.zig");
 pub const multimap = @import("multimap/multimap.zig");
 pub const parallel = @import("parallel/parallel.zig");
@@ -42,6 +43,10 @@ pub const ImmutableI32ArrayList = @import("immutable/immutable.zig").ImmutableI3
 pub const ImmutableI32HashSet = @import("immutable/immutable.zig").ImmutableI32HashSet;
 pub const ImmutableI32HashBag = @import("immutable/immutable.zig").ImmutableI32HashBag;
 pub const ImmutableI32ArrayStack = @import("immutable/immutable.zig").ImmutableI32ArrayStack;
+pub const ImmutableSortedMap = @import("immutable_sorted/immutable_sorted.zig").ImmutableSortedMap;
+pub const ImmutableSortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableSortedSet;
+pub const ImmutableI32I32SortedMap = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32I32SortedMap;
+pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32SortedSet;
 
 comptime {
     _ = @import("float_order.zig");
@@ -67,6 +72,8 @@ comptime {
     _ = @import("hashset/hash_set.zig");
     _ = @import("immutable/immutable.zig");
     _ = @import("immutable/immutable_test.zig");
+    _ = @import("immutable_sorted/immutable_sorted.zig");
+    _ = @import("immutable_sorted/immutable_sorted_test.zig");
     _ = @import("interval/interval.zig");
     _ = @import("interval/interval_test.zig");
     _ = @import("multimap/multimap.zig");
