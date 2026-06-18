@@ -65,7 +65,13 @@ pub const Bloom = struct {
     /// every `positions` modulo would be by zero). `k == 0` is degenerate but
     /// **legal** (see `mightContain`).
     pub fn withParams(allocator: Allocator, m_bits: u32, k_funcs: u32) !Bloom {
-        std.debug.assert(m_bits != 0); // m_bits must be >= 1
+        // `m_bits == 0` is the one construction error and MUST trap in EVERY
+        // build mode (the spec's `MUST trap`; the Rust reference uses an always-on
+        // `assert!`, Go panics, TS/Java throw). A bare `std.debug.assert` is
+        // compiled out in ReleaseFast/ReleaseSmall, which would silently return a
+        // zero-bit filter (and later divide-by-zero in `% m`); `@panic` traps
+        // unconditionally, matching the other four ports.
+        if (m_bits == 0) @panic("Bloom.withParams: m_bits must be >= 1");
         const n_words: usize = (@as(usize, m_bits) + 63) / 64;
         const words = try allocator.alloc(u64, n_words);
         @memset(words, 0);
@@ -347,10 +353,12 @@ test "optimal() pinned integer table" {
     }
 }
 
-test "m=0 traps (debug assert)" {
-    // m_bits == 0 is the one construction error. In safe builds the assert in
-    // withParams fires; we cannot catch an assert, so just document the
-    // contract by asserting the precondition holds for the legal path.
+test "m=0 traps (unconditional @panic)" {
+    // m_bits == 0 is the one construction error and now traps via an
+    // unconditional `@panic` (active in EVERY build mode, including ReleaseFast/
+    // ReleaseSmall — unlike `std.debug.assert`, which is compiled out there). We
+    // cannot catch a panic in a Zig test, so document the contract by exercising
+    // the smallest legal filter (m_bits == 1) on the non-trapping path.
     var b = try Bloom.withParams(testing.allocator, 1, 4);
     defer b.deinit();
     try testing.expectEqual(@as(u32, 1), b.mBits());
