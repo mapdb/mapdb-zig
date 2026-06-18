@@ -34,6 +34,7 @@ const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 const ImmutableI32I32SortedMap = immutable_sorted.ImmutableI32I32SortedMap;
 const ImmutableI32SortedSet = immutable_sorted.ImmutableI32SortedSet;
 const hash = @import("hash.zig");
+const Bloom = @import("bloom.zig").Bloom;
 
 const CollectionKind = enum {
     hash_map,
@@ -1424,6 +1425,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "Bloom")) {
+        try runBloom(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2109,6 +2116,205 @@ fn runHashPipeline(
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalHashProbe(probe, key, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+// ── Bloom runner (spec/features/bloom.md) ────────────────────────────────────
+//
+// A stored `Bloom` filter: exactly ONE `with_params {m,k}` op builds it (zero or
+// multiple => malformed => SKIP, the from_sorted/HashPipeline rule), then any
+// number of `add {value}` ops. A `union` scenario carries a second filter in the
+// top-level "other" block (same shape); the union_* assertions describe
+// self.unionInto(other). Routed through the PRODUCTION src/bloom.zig. Outputs:
+// bytes/union_bytes as lower-case 0x-hex (byte 0 first); set_bits/union_set_bits
+// sorted ascending; contains_<v>/union_contains_<v> parse a signed-i32 suffix;
+// bit_count/union_bit_count/m_bits/k/is_empty. Unknown ops/keys/kinds SKIP
+// (forward-compat). Guards (m=0 / out-of-range / union mismatch) => SKIP.
+
+/// Build a `Bloom` from an `operations` array: exactly one `with_params` then
+/// `add`s. Returns `null` (malformed / un-runnable) for the caller to SKIP.
+fn buildBloom(operations: std.json.Array, allocator: Allocator) !?Bloom {
+    // Find the single with_params op (must be exactly one, and the others adds).
+    var n_params: usize = 0;
+    var m: u32 = 0;
+    var k: u32 = 0;
+    for (operations.items) |op_v| {
+        const op = op_v.object;
+        const op_name = op.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "with_params")) {
+            n_params += 1;
+            const mi = op.get("m").?.integer;
+            const ki = op.get("k").?.integer;
+            // Guard: m must be 1 ..= 2^32-1; k must be 0 ..= 2^32-1.
+            if (mi < 1 or mi > std.math.maxInt(u32)) return null;
+            if (ki < 0 or ki > std.math.maxInt(u32)) return null;
+            m = @intCast(mi);
+            k = @intCast(ki);
+        } else if (std.mem.eql(u8, op_name, "add")) {
+            // handled in the second pass
+        } else {
+            // Unrecognised op kind => un-runnable here => SKIP.
+            return null;
+        }
+    }
+    if (n_params != 1) return null;
+
+    // Validate every add value is an in-range i32 BEFORE constructing (so an
+    // out-of-range value makes the scenario un-runnable => SKIP, not a trap).
+    for (operations.items) |op_v| {
+        const op = op_v.object;
+        if (!std.mem.eql(u8, op.get("op").?.string, "add")) continue;
+        const vi = op.get("value").?.integer;
+        if (vi < std.math.minInt(i32) or vi > std.math.maxInt(i32)) return null;
+    }
+
+    var b = try Bloom.withParams(allocator, m, k);
+    errdefer b.deinit();
+    for (operations.items) |op_v| {
+        const op = op_v.object;
+        if (!std.mem.eql(u8, op.get("op").?.string, "add")) continue;
+        const value: i32 = @intCast(op.get("value").?.integer);
+        b.add(value);
+    }
+    return b;
+}
+
+/// Parse the signed-i32 suffix of a `contains_<v>` / `union_contains_<v>` key
+/// after stripping `prefix`. Returns null if the suffix is not a valid i32.
+fn parseContainsSuffix(key: []const u8, prefix: []const u8) ?i32 {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    return std.fmt.parseInt(i32, key[prefix.len..], 10) catch null;
+}
+
+/// Emit one Bloom assertion (`key`) for filter `b` (and optional `other` for
+/// union_* keys) into `writer`. Writes `UNKNOWN_ASSERTION:<key>` for keys this
+/// runner does not understand (caller skips them, forward-compat).
+fn evalBloomKey(
+    b: *const Bloom,
+    other: ?*const Bloom,
+    key: []const u8,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.eql(u8, key, "m_bits")) {
+        try writer.print("{d}", .{b.mBits()});
+    } else if (std.mem.eql(u8, key, "k")) {
+        try writer.print("{d}", .{b.k()});
+    } else if (std.mem.eql(u8, key, "bit_count")) {
+        try writer.print("{d}", .{b.bitCount()});
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writer.writeAll(if (b.isEmpty()) "true" else "false");
+    } else if (std.mem.eql(u8, key, "set_bits")) {
+        const sb = try b.setBitsAlloc(allocator);
+        defer allocator.free(sb);
+        try writeU32Array(writer, sb);
+    } else if (std.mem.eql(u8, key, "bytes")) {
+        const bytes = try b.toBytesAlloc(allocator);
+        defer allocator.free(bytes);
+        try writeHexBytes(writer, bytes);
+    } else if (parseContainsSuffix(key, "contains_")) |v| {
+        try writer.writeAll(if (b.mightContain(v)) "true" else "false");
+    } else if (std.mem.startsWith(u8, key, "union_")) {
+        // Union keys require an "other" filter; without it the scenario is not
+        // runnable for these keys => emit UNKNOWN so the caller skips.
+        const o = other orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        var u = b.unionInto(allocator, o) catch |err| switch (err) {
+            // Param mismatch => the union assertion is not evaluable => skip.
+            // Allocation failure propagates (a real resource error, not a skip).
+            error.ParamMismatch => {
+                try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+                return;
+            },
+            else => |e| return e,
+        };
+        defer u.deinit();
+        if (std.mem.eql(u8, key, "union_bit_count")) {
+            try writer.print("{d}", .{u.bitCount()});
+        } else if (std.mem.eql(u8, key, "union_set_bits")) {
+            const sb = try u.setBitsAlloc(allocator);
+            defer allocator.free(sb);
+            try writeU32Array(writer, sb);
+        } else if (std.mem.eql(u8, key, "union_bytes")) {
+            const bytes = try u.toBytesAlloc(allocator);
+            defer allocator.free(bytes);
+            try writeHexBytes(writer, bytes);
+        } else if (parseContainsSuffix(key, "union_contains_")) |v| {
+            try writer.writeAll(if (u.mightContain(v)) "true" else "false");
+        } else {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+/// Write a `[a,b,c]` decimal array (no spaces) matching renderExpected for
+/// .none arrays.
+fn writeU32Array(writer: anytype, xs: []const u32) !void {
+    try writer.writeAll("[");
+    for (xs, 0..) |x, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writer.print("{d}", .{x});
+    }
+    try writer.writeAll("]");
+}
+
+/// Write a byte slice as a lower-case `0x`-prefixed hex string, byte 0 first.
+fn writeHexBytes(writer: anytype, bytes: []const u8) !void {
+    try writer.writeAll("0x");
+    for (bytes) |bb| try writer.print("{x:0>2}", .{bb});
+}
+
+fn runBloom(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var b = (try buildBloom(operations, allocator)) orelse {
+        std.debug.print("skip: malformed/unsupported Bloom scenario (forward-compat): {s}\n", .{name});
+        return;
+    };
+    defer b.deinit();
+
+    // Optional "other" filter for union_* assertions.
+    var other: ?Bloom = null;
+    defer if (other) |*o| o.deinit();
+    if (root.get("other")) |other_json| {
+        const other_obj = other_json.object;
+        const other_kind = other_obj.get("collection").?.string;
+        if (std.mem.eql(u8, other_kind, "Bloom")) {
+            const other_ops = other_obj.get("operations").?.array;
+            other = try buildBloom(other_ops, allocator);
+            // A malformed "other" simply leaves the union_* keys un-evaluable;
+            // evalBloomKey emits UNKNOWN for them and they are skipped.
+        }
+    }
+    const other_ptr: ?*const Bloom = if (other) |*o| o else null;
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalBloomKey(&b, other_ptr, key, allocator, cbuf.writer());
         const computed = cbuf.items;
         if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
 

@@ -6,6 +6,8 @@
 
 pub const hash_table = @import("hash_table.zig");
 pub const hash = @import("hash.zig");
+pub const bloom = @import("bloom.zig");
+pub const Bloom = @import("bloom.zig").Bloom;
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
@@ -51,6 +53,7 @@ pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig
 
 comptime {
     _ = @import("hash.zig");
+    _ = @import("bloom.zig");
     _ = @import("float_order.zig");
     _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");
