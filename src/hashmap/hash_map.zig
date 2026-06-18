@@ -8,6 +8,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
 const immutable = @import("../immutable/immutable.zig");
+const pump = @import("../pump.zig");
+const DupPolicy = pump.DupPolicy;
 
 /// Lowercase file-token for a primitive type, used to build the immutable
 /// module name (`immutable_<k>_<v>_hash_map`). Matches the project's filename
@@ -181,6 +183,62 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
             if (new_capacity <= self.inner.len()) return;
             return self.inner.ensureCapacity(new_capacity - self.inner.len());
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this map.
+        pub const BulkError = (error{DuplicateKey} || Allocator.Error);
+
+        /// Bulk-loads a fresh `HashMap` from parallel key/value slices, pre-sizing
+        /// the open-addressing table to fit every element at the load factor in
+        /// one allocation (`cap = nextPow2(floor(4n/3)+1)`), then inserting via
+        /// the normal probe. No mid-load rehash; the resulting slot layout is
+        /// byte-identical to the same pairs inserted one-by-one. O(n).
+        ///
+        /// Input order is irrelevant (hash). On a duplicate key:
+        /// `policy == .err` → `error.DuplicateKey`; `policy == .ignore` → keep
+        /// the first occurrence, skip the rest. On any error nothing leaks.
+        pub fn bulkLoad(
+            allocator: Allocator,
+            keys: []const K,
+            vals: []const V,
+            policy: DupPolicy,
+        ) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = try initWithCapacity(allocator, keys.len);
+            errdefer self.deinit();
+            try self.bulkInsert(keys, vals, policy);
+            return self;
+        }
+
+        /// Like `bulkLoad`, but `n` is an exact upper bound on the element count
+        /// and the table is sized for exactly `n` with a guaranteed zero
+        /// mid-load rehash. Asserts `keys.len <= n` (a programmer error — the
+        /// caller promised an exact size).
+        pub fn bulkLoadExact(
+            allocator: Allocator,
+            keys: []const K,
+            vals: []const V,
+            n: usize,
+            policy: DupPolicy,
+        ) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            std.debug.assert(keys.len <= n);
+            var self = try initWithCapacity(allocator, n);
+            errdefer self.deinit();
+            try self.bulkInsert(keys, vals, policy);
+            return self;
+        }
+
+        fn bulkInsert(self: *Self, keys: []const K, vals: []const V, policy: DupPolicy) BulkError!void {
+            for (keys, vals) |k, v| {
+                if (self.inner.getPtr(k) != null) {
+                    if (policy == .err) return error.DuplicateKey;
+                    continue; // .ignore: keep the first occurrence
+                }
+                _ = try self.inner.put(k, v);
+            }
         }
 
         // ---- Iteration ----

@@ -7,6 +7,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const float_order = @import("../float_order.zig");
+const pump = @import("../pump.zig");
+const DupPolicy = pump.DupPolicy;
 
 /// Total-ordering comparator for tree-map keys of type `K`.
 ///
@@ -365,6 +367,134 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         pub fn withoutKey(self: *Self, key: K) *Self {
             _ = self.remove(key);
             return self;
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this map.
+        pub const BulkError = (error{ NotSorted, DuplicateKey } || Allocator.Error);
+
+        /// Streaming builder for a fresh `TreeMap` from ascending key/value
+        /// input. This is the canonical home of the ordered-pump algorithm;
+        /// `fromSorted` is a thin wrapper over it.
+        ///
+        /// Each `put` validates that the new key is strictly greater than the
+        /// previous one under `keyOrder` (the collection's own comparator —
+        /// IEEE-754 total order for floats, `false < true` for bool), then
+        /// `appendAssumeCapacity`-style appends — no per-element binary-search or
+        /// array shift. The result is byte-identical to the same pairs inserted
+        /// one-by-one with sorted `put`, but built in O(n).
+        ///
+        /// Lifecycle: `init` → `put`* / `putAll` → `create`. After any error the
+        /// Sink is POISONED: every subsequent `put`/`create` returns
+        /// `error.PumpPoisoned`, and the partially-built map is freed. `create`
+        /// is once-only (a second call returns `error.PumpPoisoned`). If the
+        /// Sink is dropped without `create` after a successful run, call
+        /// `deinit` to free the in-progress map.
+        pub const Sink = struct {
+            map: Self,
+            last_key: ?K = null,
+            policy: DupPolicy,
+            poisoned: bool = false,
+            done: bool = false,
+
+            pub const Error = (BulkError || error{PumpPoisoned});
+
+            pub fn init(allocator: Allocator, policy: DupPolicy) Sink {
+                return .{ .map = Self.init(allocator), .policy = policy };
+            }
+
+            /// Frees the in-progress map. Only needed if `create` was never
+            /// called (a successful `create` moves ownership to the caller).
+            pub fn deinit(self: *Sink) void {
+                self.map.deinit();
+            }
+
+            fn poison(self: *Sink) void {
+                self.poisoned = true;
+                self.map.deinit();
+                self.map = Self.init(self.map.allocator);
+            }
+
+            /// Appends one ascending key/value pair. Returns `error.NotSorted`
+            /// if `key` is not strictly greater than the previous key (and
+            /// `error.DuplicateKey` on an equal key when `policy == .err`).
+            pub fn put(self: *Sink, key: K, value: V) Error!void {
+                if (self.poisoned or self.done) return error.PumpPoisoned;
+                if (self.last_key) |prev| {
+                    switch (orderFn(prev, key)) {
+                        .lt => {},
+                        .eq => {
+                            if (self.policy == .err) {
+                                self.poison();
+                                return error.DuplicateKey;
+                            }
+                            // .ignore: keep first, skip this duplicate.
+                            return;
+                        },
+                        .gt => {
+                            self.poison();
+                            return error.NotSorted;
+                        },
+                    }
+                }
+                self.map.keys.ensureUnusedCapacity(self.map.allocator, 1) catch |e| {
+                    self.poison();
+                    return e;
+                };
+                self.map.vals.ensureUnusedCapacity(self.map.allocator, 1) catch |e| {
+                    self.poison();
+                    return e;
+                };
+                self.map.keys.appendAssumeCapacity(key);
+                self.map.vals.appendAssumeCapacity(value);
+                self.last_key = key;
+            }
+
+            /// Convenience: `put` every pair from parallel `keys`/`vals` slices.
+            pub fn putAll(self: *Sink, keys: []const K, vals: []const V) Error!void {
+                std.debug.assert(keys.len == vals.len);
+                for (keys, vals) |k, v| try self.put(k, v);
+            }
+
+            /// Finishes the build and returns the fresh map by value (move).
+            /// Once-only: a second call (or a call after an error) returns
+            /// `error.PumpPoisoned`.
+            pub fn create(self: *Sink) Error!Self {
+                if (self.poisoned or self.done) return error.PumpPoisoned;
+                self.done = true;
+                const out = self.map;
+                self.map = Self.init(self.map.allocator);
+                return out;
+            }
+        };
+
+        /// Bulk-loads a fresh `TreeMap` from presorted (strictly ascending)
+        /// parallel key/value slices in O(n): reserve once, then two bulk
+        /// appends, validating order with the map's own `keyOrder`.
+        ///
+        /// `keys[i]` must be strictly less than `keys[i+1]`. A descending pair is
+        /// `error.NotSorted`; an equal pair is `error.DuplicateKey` when
+        /// `policy == .err`, else the first of the run is kept. On any error
+        /// nothing leaks (the partial map is freed) and no map is returned.
+        pub fn fromSorted(
+            allocator: Allocator,
+            keys: []const K,
+            vals: []const V,
+            policy: DupPolicy,
+        ) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var sink = Sink.init(allocator, policy);
+            // Reserve up front so the common no-duplicate path never reallocates.
+            sink.map.ensureUnusedCapacity(keys.len) catch |e| {
+                sink.deinit();
+                return e;
+            };
+            sink.putAll(keys, vals) catch |e| switch (e) {
+                error.PumpPoisoned => unreachable, // fresh sink, single pass
+                else => |narrow| return narrow,
+            };
+            return sink.create() catch unreachable;
         }
 
         // ---- Equality ----

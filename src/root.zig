@@ -8,6 +8,13 @@ pub const hash_table = @import("hash_table.zig");
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
+// Data pump (bulk import) shared vocabulary. The per-collection pump methods
+// (`fromSorted` / `bulkLoad` / `Sink`) live on the comptime-generic structs and
+// ride the existing aliases; only these shared enums/errors are re-exported.
+pub const pump = @import("pump.zig");
+pub const DupPolicy = pump.DupPolicy;
+pub const PumpError = pump.PumpError;
+
 pub const api = @import("api/api.zig");
 pub const arraylist = @import("arraylist/arraylist.zig");
 pub const bag = @import("bag/bag.zig");
@@ -41,6 +48,8 @@ pub const ImmutableI32ArrayStack = @import("immutable/immutable.zig").ImmutableI
 
 comptime {
     _ = @import("float_order.zig");
+    _ = @import("pump.zig");
+    _ = @import("pump_test.zig");
     _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");
     _ = @import("api/api.zig");
