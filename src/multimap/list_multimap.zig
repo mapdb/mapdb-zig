@@ -43,6 +43,18 @@ fn valueEql(comptime V: type, a: V, b: V) bool {
     return a == b;
 }
 
+fn valueOrder(comptime V: type, a: V, b: V) std.math.Order {
+    return switch (@typeInfo(V)) {
+        .float => switch (V) {
+            f32 => float_order.totalCmpF32(a, b),
+            f64 => float_order.totalCmpF64(a, b),
+            else => @compileError("unsupported float value type: " ++ @typeName(V)),
+        },
+        .bool => if (a == b) std.math.Order.eq else if (!a and b) std.math.Order.lt else std.math.Order.gt,
+        else => std.math.order(a, b),
+    };
+}
+
 /// List multimap from `K` keys to `V` values.
 ///
 /// Each key maps to a list of values, preserving insertion order per key.
@@ -118,6 +130,39 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
                 }
                 try gop.value_ptr.ensureUnusedCapacity(self.allocator, j - i);
                 for (vals[i..j]) |v| gop.value_ptr.appendAssumeCapacity(v);
+                self.total_size += j - i;
+                i = j;
+            }
+            return self;
+        }
+
+        /// Bulk-loads a fresh `ListMultimap` from input sorted by key and then
+        /// by value within each key run. List values are preserved exactly; the
+        /// value order validation exists to expose the stricter multimap source
+        /// contract shared with set-valued multimaps.
+        pub fn fromSortedKeyValues(allocator: Allocator, keys: []const K, vals: []const V) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = Self.init(allocator);
+            errdefer self.deinit();
+            var i: usize = 0;
+            while (i < keys.len) {
+                const k = keys[i];
+                var j = i;
+                var run = std.ArrayListUnmanaged(V){};
+                errdefer run.deinit(allocator);
+                while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {
+                    if (j > i and valueOrder(V, vals[j - 1], vals[j]) == .gt) return error.NotSorted;
+                    try run.append(allocator, vals[j]);
+                }
+                if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
+                const map_key = mapKey(k);
+                const gop = try self.inner.getOrPut(self.allocator, map_key);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = run;
+                    run = .{};
+                } else {
+                    try gop.value_ptr.appendSlice(self.allocator, run.items);
+                }
                 self.total_size += j - i;
                 i = j;
             }

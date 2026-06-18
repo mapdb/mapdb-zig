@@ -64,11 +64,11 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// the bijection. O(n). Input order is irrelevant (hash).
         ///
         /// Conflict handling, since a bimap must remain a bijection:
-        ///   * a duplicate KEY → `error.DuplicateKey` (`.err`) or skip (`.ignore`);
-        ///   * a duplicate VALUE → `error.DuplicateValue` (`.err`) or skip
-        ///     (`.ignore`).
-        /// Under `.ignore` a pair is skipped if EITHER side already exists, so
-        /// the bijection is never violated. On any error nothing leaks and no
+        ///   * a duplicate KEY → `error.DuplicateKey`;
+        ///   * a duplicate VALUE → `error.DuplicateValue`.
+        /// The duplicate policy is accepted for API symmetry but intentionally
+        /// ignored: BiMap duplicate keys/values are always errors, even for an
+        /// identical `(key, value)` replay. On any error nothing leaks and no
         /// table is left half-updated.
         pub fn bulkLoad(
             allocator: Allocator,
@@ -81,15 +81,13 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             errdefer self.deinit();
             try self.forward.ensureCapacity(keys.len);
             try self.reverse.ensureCapacity(keys.len);
+            _ = policy;
             for (keys, vals) |k, v| {
                 const dup_key = self.forward.containsKey(k);
                 const dup_val = self.reverse.containsKey(v);
                 if (dup_key or dup_val) {
-                    if (policy == .err) {
-                        // Report the key conflict first to mirror put-loop order.
-                        return if (dup_key) error.DuplicateKey else error.DuplicateValue;
-                    }
-                    continue; // .ignore: skip; the bijection is preserved.
+                    // Report the key conflict first to mirror put-loop order.
+                    return if (dup_key) error.DuplicateKey else error.DuplicateValue;
                 }
                 // Both sides are free — insert into both, keeping them in lock-step.
                 _ = try self.forward.put(k, v);

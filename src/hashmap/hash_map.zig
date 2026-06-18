@@ -85,6 +85,13 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             };
         }
 
+        fn initForElements(allocator: Allocator, n: usize) Allocator.Error!Self {
+            return .{
+                .inner = try OpenHashMap(K, V).initForElements(allocator, n),
+                .allocator = allocator,
+            };
+        }
+
         pub fn deinit(self: *Self) void {
             self.inner.deinit();
         }
@@ -188,7 +195,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         // ---- Data pump (bulk import) ----
 
         /// Effective error set of every pump entry point on this map.
-        pub const BulkError = (error{DuplicateKey} || Allocator.Error);
+        pub const BulkError = (error{ DuplicateKey, TooManyElements } || Allocator.Error);
 
         /// Bulk-loads a fresh `HashMap` from parallel key/value slices, pre-sizing
         /// the open-addressing table to fit every element at the load factor in
@@ -206,16 +213,16 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             policy: DupPolicy,
         ) BulkError!Self {
             std.debug.assert(keys.len == vals.len);
-            var self = try initWithCapacity(allocator, keys.len);
+            var self = try initForElements(allocator, keys.len);
             errdefer self.deinit();
             try self.bulkInsert(keys, vals, policy);
             return self;
         }
 
-        /// Like `bulkLoad`, but `n` is an exact upper bound on the element count
-        /// and the table is sized for exactly `n` with a guaranteed zero
-        /// mid-load rehash. Asserts `keys.len <= n` (a programmer error — the
-        /// caller promised an exact size).
+        /// Like `bulkLoad`, but `n` is an exact upper bound on the consumed
+        /// source count and the table is sized for exactly `n` with a
+        /// guaranteed zero mid-load rehash. Returns `error.TooManyElements` if
+        /// the source exceeds `n`, even if extras would be ignored duplicates.
         pub fn bulkLoadExact(
             allocator: Allocator,
             keys: []const K,
@@ -224,8 +231,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             policy: DupPolicy,
         ) BulkError!Self {
             std.debug.assert(keys.len == vals.len);
-            std.debug.assert(keys.len <= n);
-            var self = try initWithCapacity(allocator, n);
+            if (keys.len > n) return error.TooManyElements;
+            var self = try initForElements(allocator, n);
             errdefer self.deinit();
             try self.bulkInsert(keys, vals, policy);
             return self;

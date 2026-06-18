@@ -370,6 +370,13 @@ test "HashMap.bulkLoadExact: zero rehash at n = 3*2^k" {
     const a = testing.allocator;
     const ns = [_]usize{ 3, 6, 12, 24, 48 };
     inline for (ns) |n| {
+        const expected_cap: usize = switch (n) {
+            3, 6 => 16,
+            12 => 32,
+            24 => 64,
+            48 => 128,
+            else => unreachable,
+        };
         var keys: [n]i32 = undefined;
         var vals: [n]i64 = undefined;
         for (0..n) |i| {
@@ -383,10 +390,19 @@ test "HashMap.bulkLoadExact: zero rehash at n = 3*2^k" {
         // single pre-sized power-of-two with NO mid-load growth.
         try testing.expectEqual(n, m.len());
         try testing.expectEqual(cap_after, m.inner.capacity);
+        try testing.expectEqual(expected_cap, cap_after);
         // Pre-sized table fits n strictly below the 0.75 load factor.
         try testing.expect(m.len() * 4 < cap_after * 3);
         for (0..n) |i| try testing.expectEqual(@as(?i64, @intCast(i)), m.get(@intCast(i)));
     }
+}
+
+test "HashMap.bulkLoadExact: source length, not inserted cardinality, enforces n" {
+    const a = testing.allocator;
+    try testing.expectError(
+        error.TooManyElements,
+        HashMap(i32, i64).bulkLoadExact(a, &[_]i32{ 1, 1, 1 }, &[_]i64{ 10, 11, 12 }, 2, .ignore),
+    );
 }
 
 test "HashMap.bulkLoad: DuplicateKey at first/middle/last" {
@@ -429,6 +445,13 @@ test "HashSet.bulkLoad / bulkLoadExact: equivalence + zero rehash" {
     const a = testing.allocator;
     const ns = [_]usize{ 3, 6, 12, 24, 48 };
     inline for (ns) |n| {
+        const expected_cap: usize = switch (n) {
+            3, 6 => 16,
+            12 => 32,
+            24 => 64,
+            48 => 128,
+            else => unreachable,
+        };
         var vals: [n]i32 = undefined;
         for (0..n) |i| vals[i] = @intCast(i);
         var s = try HashSet(i32).bulkLoadExact(a, &vals, n, .err);
@@ -436,12 +459,14 @@ test "HashSet.bulkLoad / bulkLoadExact: equivalence + zero rehash" {
         const cap_after = s.inner.capacity;
         try testing.expectEqual(n, s.len());
         try testing.expectEqual(cap_after, s.inner.capacity);
+        try testing.expectEqual(expected_cap, cap_after);
         for (0..n) |i| try testing.expect(s.contains(@intCast(i)));
     }
     var s2 = try HashSet(i32).bulkLoad(a, &[_]i32{ 5, 1, 5, 3 }, .ignore);
     defer s2.deinit();
     try testing.expectEqual(@as(usize, 3), s2.len());
     try testing.expectError(error.DuplicateKey, HashSet(i32).bulkLoad(a, &[_]i32{ 1, 2, 1 }, .err));
+    try testing.expectError(error.TooManyElements, HashSet(i32).bulkLoadExact(a, &[_]i32{ 1, 1, 1 }, 2, .ignore));
 }
 
 test "HashBag.bulkLoad: flat values count; equals incremental" {
@@ -478,12 +503,9 @@ test "HashBiMap.bulkLoad: bijection + two-sided conflict + no leak" {
     try testing.expectError(error.DuplicateKey, HashBiMap(i32, i64).bulkLoad(a, &[_]i32{ 1, 1 }, &[_]i64{ 10, 20 }, .err));
     // duplicate VALUE (distinct keys, same value)
     try testing.expectError(error.DuplicateValue, HashBiMap(i32, i64).bulkLoad(a, &[_]i32{ 1, 2 }, &[_]i64{ 10, 10 }, .err));
-    // .ignore skips either-side conflict, preserving the bijection
-    var bm2 = try HashBiMap(i32, i64).bulkLoad(a, &[_]i32{ 1, 1, 2, 3 }, &[_]i64{ 10, 99, 10, 30 }, .ignore);
-    defer bm2.deinit();
-    try testing.expectEqual(@as(usize, 2), bm2.len()); // (1->10), (3->30)
-    try testing.expectEqual(@as(?i64, 10), bm2.get(1));
-    try testing.expectEqual(@as(?i64, 30), bm2.get(3));
+    // BiMap ignores duplicate policy: duplicate key/value always errors.
+    try testing.expectError(error.DuplicateKey, HashBiMap(i32, i64).bulkLoad(a, &[_]i32{ 1, 1 }, &[_]i64{ 10, 10 }, .ignore));
+    try testing.expectError(error.DuplicateValue, HashBiMap(i32, i64).bulkLoad(a, &[_]i32{ 1, 2 }, &[_]i64{ 10, 10 }, .ignore));
 }
 
 // ===========================================================================
@@ -521,6 +543,15 @@ test "ListMultimap.bulkLoad: any order accumulates" {
     try testing.expectEqual(@as(usize, 4), m.size());
 }
 
+test "ListMultimap.fromSortedKeyValues: validates value order and preserves duplicates" {
+    const a = testing.allocator;
+    var m = try ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1, 2 }, &[_]i32{ 10, 10, 11, 20 });
+    defer m.deinit();
+    try testing.expectEqualSlices(i32, &[_]i32{ 10, 10, 11 }, m.get(1));
+    try testing.expectEqual(@as(usize, 4), m.size());
+    try testing.expectError(error.NotSorted, ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 2, 1, 2 }));
+}
+
 test "SetMultimap.fromSortedKeys: dedupes values per key" {
     const a = testing.allocator;
     const keys = [_]i32{ 1, 1, 1, 2 };
@@ -540,6 +571,16 @@ test "SetMultimap.fromSortedKeys: dedupes values per key" {
 test "SetMultimap.fromSortedKeys: NotSorted" {
     const a = testing.allocator;
     try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeys(a, &[_]i32{ 2, 1 }, &[_]i32{ 0, 0 }));
+}
+
+test "SetMultimap.fromSortedKeyValues: validates value order and dedupes adjacent values" {
+    const a = testing.allocator;
+    var m = try SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1, 2 }, &[_]i32{ 10, 10, 11, 20 });
+    defer m.deinit();
+    try testing.expectEqual(@as(usize, 2), m.getCount(1));
+    try testing.expectEqual(@as(usize, 3), m.size());
+    try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 2, 1, 2 }));
+    try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 10, 10, 9 }));
 }
 
 // ===========================================================================

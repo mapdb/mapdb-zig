@@ -43,6 +43,18 @@ fn valueEql(comptime V: type, a: V, b: V) bool {
     return a == b;
 }
 
+fn valueOrder(comptime V: type, a: V, b: V) std.math.Order {
+    return switch (@typeInfo(V)) {
+        .float => switch (V) {
+            f32 => float_order.totalCmpF32(a, b),
+            f64 => float_order.totalCmpF64(a, b),
+            else => @compileError("unsupported float value type: " ++ @typeName(V)),
+        },
+        .bool => if (a == b) std.math.Order.eq else if (!a and b) std.math.Order.lt else std.math.Order.gt,
+        else => std.math.order(a, b),
+    };
+}
+
 /// Set multimap from `K` keys to `V` values.
 ///
 /// Each key maps to a set of unique values (duplicates on put are ignored).
@@ -125,6 +137,43 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                     try gop.value_ptr.append(self.allocator, v);
                     self.total_size += 1;
                 }
+                i = j;
+            }
+            return self;
+        }
+
+        /// Bulk-loads a fresh `SetMultimap` from input sorted by key and then
+        /// by value within each key run. Equal adjacent values are deduped; a
+        /// descending value within a key run is `error.NotSorted`.
+        pub fn fromSortedKeyValues(allocator: Allocator, keys: []const K, vals: []const V) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = Self.init(allocator);
+            errdefer self.deinit();
+            var i: usize = 0;
+            while (i < keys.len) {
+                const k = keys[i];
+                var j = i;
+                var run = std.ArrayListUnmanaged(V){};
+                errdefer run.deinit(allocator);
+                while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {
+                    if (run.items.len > 0) {
+                        const ord = valueOrder(V, run.items[run.items.len - 1], vals[j]);
+                        if (ord == .gt) return error.NotSorted;
+                        if (ord == .eq) continue;
+                    }
+                    try run.append(allocator, vals[j]);
+                }
+                if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
+                const run_len = run.items.len;
+                const map_key = mapKey(k);
+                const gop = try self.inner.getOrPut(self.allocator, map_key);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = run;
+                    run = .{};
+                } else {
+                    try gop.value_ptr.appendSlice(self.allocator, run.items);
+                }
+                self.total_size += run_len;
                 i = j;
             }
             return self;

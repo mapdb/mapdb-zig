@@ -50,7 +50,7 @@ pub fn HashSet(comptime T: type) type {
         // ---- Data pump (bulk import) ----
 
         /// Effective error set of every pump entry point on this set.
-        pub const BulkError = (error{DuplicateKey} || Allocator.Error);
+        pub const BulkError = (error{ DuplicateKey, TooManyElements } || Allocator.Error);
 
         /// Bulk-loads a fresh `HashSet` from a value slice, pre-sizing the
         /// open-addressing table to fit every element at the load factor in one
@@ -63,7 +63,7 @@ pub fn HashSet(comptime T: type) type {
         /// the first occurrence, skip the rest. On any error nothing leaks.
         pub fn bulkLoad(allocator: Allocator, values: []const T, policy: DupPolicy) BulkError!Self {
             var self = Self{
-                .inner = try OpenHashSet(T).initCapacity(allocator, values.len),
+                .inner = try OpenHashSet(T).initForElements(allocator, values.len),
                 .allocator = allocator,
             };
             errdefer self.deinit();
@@ -71,13 +71,14 @@ pub fn HashSet(comptime T: type) type {
             return self;
         }
 
-        /// Like `bulkLoad`, but `n` is an exact upper bound on the element count
-        /// and the table is sized for exactly `n` with a guaranteed zero
-        /// mid-load rehash. Asserts `values.len <= n`.
+        /// Like `bulkLoad`, but `n` is an exact upper bound on the consumed
+        /// source count and the table is sized for exactly `n` with a
+        /// guaranteed zero mid-load rehash. Returns `error.TooManyElements` if
+        /// the source exceeds `n`, even if extras would be ignored duplicates.
         pub fn bulkLoadExact(allocator: Allocator, values: []const T, n: usize, policy: DupPolicy) BulkError!Self {
-            std.debug.assert(values.len <= n);
+            if (values.len > n) return error.TooManyElements;
             var self = Self{
-                .inner = try OpenHashSet(T).initCapacity(allocator, n),
+                .inner = try OpenHashSet(T).initForElements(allocator, n),
                 .allocator = allocator,
             };
             errdefer self.deinit();

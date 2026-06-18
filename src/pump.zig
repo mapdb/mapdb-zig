@@ -28,6 +28,8 @@
 //!   * `error.DuplicateKey`  — a duplicate key/value under `DupPolicy.err`;
 //!   * `error.DuplicateValue`— a duplicate VALUE in a BiMap bulk load (the
 //!                             bijection precondition was violated);
+//!   * `error.TooManyElements`— a `bulkLoadExact` source exceeded the promised
+//!                             consumed element count;
 //!   * `error.CountOverflow` — a bag run length overflowed the count type.
 //! All of these compose with `Allocator.Error`; a mid-load failure frees what
 //! it built via `errdefer`, so no half-built collection ever escapes.
@@ -47,5 +49,6 @@ pub const PumpError = error{
     NotSorted,
     DuplicateKey,
     DuplicateValue,
+    TooManyElements,
     CountOverflow,
 };
