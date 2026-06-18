@@ -104,7 +104,13 @@ pub fn Range(comptime T: type) type {
             /// Total order: `below_all < below(v) < above(v) < above_all`.
             /// Finite cuts at different values order by value; at the same
             /// value `below(v) < above(v)`.
-            fn cmp(a: Cut, b: Cut) std.math.Order {
+            ///
+            /// Public so the `RangeSet` / `RangeMap` cut algebra (coalescing,
+            /// splitting, complement, ascending order) reduces to this single
+            /// comparator — the `bound-range.md` "single source of truth" rule —
+            /// instead of re-deriving boundary order from `(value, inclusive)`
+            /// booleans or `±1` arithmetic.
+            pub fn cmp(a: Cut, b: Cut) std.math.Order {
                 const av: ?T = switch (a) {
                     .below, .above => |v| v,
                     else => null,

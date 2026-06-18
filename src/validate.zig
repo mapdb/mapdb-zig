@@ -30,6 +30,8 @@ const I64I32SetMultimap = @import("multimap/multimap.zig").I64I32SetMultimap;
 const range_mod = @import("range.zig");
 const I32Range = range_mod.I32Range;
 const BoundType = range_mod.BoundType;
+const I32RangeSet = @import("range_set.zig").I32RangeSet;
+const I32I32RangeMap = @import("range_map.zig").I32I32RangeMap;
 const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 const ImmutableI32I32SortedMap = immutable_sorted.ImmutableI32I32SortedMap;
 const ImmutableI32SortedSet = immutable_sorted.ImmutableI32SortedSet;
@@ -1424,6 +1426,18 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "RangeSet<i32>")) {
+        try runRangeSet(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "RangeMap<i32, i32>")) {
+        try runRangeMap(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2753,5 +2767,318 @@ fn emitI64Multimap(
     if (!std.mem.eql(u8, computed, ebuf.items)) {
         try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
         any_fail = true;
+    }
+}
+
+// ── RangeSet<i32> / RangeMap<i32, i32> runners ──────────────────────────────
+//
+// The auto-coalescing RangeSet / piecewise RangeMap (spec/features/
+// range-set-map.md). Routed through the PRODUCTION I32RangeSet /
+// I32I32RangeMap — every assertion is proved against the real cut algebra
+// (coalescing add, splitting remove/put, putCoalescing, complement, sub-range
+// snapshots), not re-derived here. Direct translation of the Rust runner's
+// run_range_set / run_range_map (mapdb-rust/src/bin/validate.rs).
+//
+// Both kinds are stateful: many mutating ops (add/remove_range/clear for the
+// set; put/put_coalescing/remove_range/clear for the map), each carrying a
+// range-builder object (the 10-range op shape, via buildRangeFromObj). An
+// optional top-level `query` (same shape) supplies the range for the
+// query-based assertions (encloses/intersects/sub-range).
+//
+// Object-shaped / explicit-order assertions (as_ranges, complement_ranges,
+// sub_range_set_ranges, range_containing_<v>, as_map_of_ranges,
+// sub_range_map_entries, get_entry_<v>) are compared against a compact-JSON
+// canonical form that matches the Rust serde key order
+// (lower, lower_type, upper, upper_type [, value]). Unknown ops / keys / kinds
+// SKIP (README forward-compat).
+
+/// Render a `Range<i32>`'s lower endpoint as compact JSON (`<i32>` or `null`).
+fn writeOptI32Json(writer: anytype, v: ?i32) !void {
+    if (v) |x| try writer.print("{d}", .{x}) else try writer.writeAll("null");
+}
+
+/// Render a `BoundType` as compact JSON (`"open"` / `"closed"` / `null`).
+fn writeBoundTypeJson(writer: anytype, bt: ?BoundType) !void {
+    switch (bt orelse {
+        try writer.writeAll("null");
+        return;
+    }) {
+        .open => try writer.writeAll("\"open\""),
+        .closed => try writer.writeAll("\"closed\""),
+    }
+}
+
+/// Serialize a range as the fixed-shape canonical object (key order matching
+/// the Rust serde output and the scenario encoding).
+fn writeRangeObj(writer: anytype, r: I32Range) !void {
+    try writer.writeAll("{\"lower\":");
+    try writeOptI32Json(writer, r.lowerEndpoint());
+    try writer.writeAll(",\"lower_type\":");
+    try writeBoundTypeJson(writer, r.lowerBoundType());
+    try writer.writeAll(",\"upper\":");
+    try writeOptI32Json(writer, r.upperEndpoint());
+    try writer.writeAll(",\"upper_type\":");
+    try writeBoundTypeJson(writer, r.upperBoundType());
+    try writer.writeAll("}");
+}
+
+/// Serialize a `(Range<i32>, value)` RangeMap entry: the range object plus a
+/// trailing `"value":<i32>`.
+fn writeEntryObj(writer: anytype, r: I32Range, value: i32) !void {
+    try writer.writeAll("{\"lower\":");
+    try writeOptI32Json(writer, r.lowerEndpoint());
+    try writer.writeAll(",\"lower_type\":");
+    try writeBoundTypeJson(writer, r.lowerBoundType());
+    try writer.writeAll(",\"upper\":");
+    try writeOptI32Json(writer, r.upperEndpoint());
+    try writer.writeAll(",\"upper_type\":");
+    try writeBoundTypeJson(writer, r.upperBoundType());
+    try writer.writeAll(",\"value\":");
+    try writer.print("{d}", .{value});
+    try writer.writeAll("}");
+}
+
+fn writeRangeArray(writer: anytype, ranges: []const I32Range) !void {
+    try writer.writeAll("[");
+    for (ranges, 0..) |r, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writeRangeObj(writer, r);
+    }
+    try writer.writeAll("]");
+}
+
+fn writeEntryArray(writer: anytype, entries: []const I32I32RangeMap.Entry) !void {
+    try writer.writeAll("[");
+    for (entries, 0..) |e, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writeEntryObj(writer, e.range, e.value);
+    }
+    try writer.writeAll("]");
+}
+
+/// Render an expected JSON value into the compact canonical form the RangeSet/
+/// RangeMap runner emits (objects/arrays render their members in source
+/// insertion order — std.json.ObjectMap preserves it — matching the fixed
+/// lower/lower_type/upper/upper_type[/value] order). Mirrors serde's
+/// Value::to_string() for the scenario-authored objects.
+fn renderExpectedCompact(writer: anytype, v: std.json.Value) !void {
+    switch (v) {
+        .null => try writer.writeAll("null"),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .integer => |i| try writer.print("{d}", .{i}),
+        .float => |f| try writer.print("{d}", .{@as(i64, @intFromFloat(f))}),
+        .number_string => |s| try writer.writeAll(s),
+        .string => |s| {
+            try writer.writeAll("\"");
+            try writer.writeAll(s);
+            try writer.writeAll("\"");
+        },
+        .array => |arr| {
+            try writer.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try writer.writeAll(",");
+                try renderExpectedCompact(writer, e);
+            }
+            try writer.writeAll("]");
+        },
+        .object => |obj| {
+            try writer.writeAll("{");
+            for (obj.keys(), obj.values(), 0..) |k, val, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("\"");
+                try writer.writeAll(k);
+                try writer.writeAll("\":");
+                try renderExpectedCompact(writer, val);
+            }
+            try writer.writeAll("}");
+        },
+    }
+}
+
+/// Parse a signed base-10 i32 suffix (leading `-` allowed, rejects `+`) from a
+/// `<prefix><N>` assertion key — the contains_<v> / get_<v> /
+/// range_containing_<v> / get_entry_<v> convention. Returns null (-> skip) when
+/// the suffix is absent or malformed.
+fn signedI32Suffix(key: []const u8, prefix: []const u8) ?i32 {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    if (rest.len == 0) return null;
+    // Reject '+' explicitly; std.fmt.parseInt(i32, .., 10) already rejects it,
+    // but the digit scan below makes the contract clear (only '-' + digits).
+    const digits = if (rest[0] == '-') rest[1..] else rest;
+    if (digits.len == 0) return null;
+    for (digits) |c| {
+        if (c < '0' or c > '9') return null;
+    }
+    return std.fmt.parseInt(i32, rest, 10) catch null;
+}
+
+/// Compute one RangeSet/RangeMap assertion, print the canonical `key: value`
+/// line, and compare against the expected (rendered to the same compact form).
+/// `computed` starting with "UNKNOWN_ASSERTION:" -> skip silently.
+fn emitRangeAssertion(
+    name: []const u8,
+    key: []const u8,
+    computed: []const u8,
+    expected: std.json.Value,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) return;
+    try writer.print("{s}: {s}\n", .{ key, computed });
+    var ebuf = std.array_list.Managed(u8).init(allocator);
+    defer ebuf.deinit();
+    try renderExpectedCompact(ebuf.writer(), expected);
+    if (!std.mem.eql(u8, computed, ebuf.items)) {
+        try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+        any_fail = true;
+    }
+}
+
+fn runRangeSet(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var set = I32RangeSet.init(allocator);
+    defer set.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            try set.add(buildRangeFromObj(obj.get("range").?.object));
+        } else if (std.mem.eql(u8, op_name, "remove_range")) {
+            try set.remove(buildRangeFromObj(obj.get("range").?.object));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        }
+        // Forward-compat: unknown op kinds skip (do not crash the runner).
+    }
+
+    const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
+    const span = set.span();
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        const w = cbuf.writer();
+
+        if (std.mem.eql(u8, key, "is_empty")) {
+            try w.writeAll(if (set.isEmpty()) "true" else "false");
+        } else if (std.mem.eql(u8, key, "as_ranges")) {
+            try writeRangeArray(w, set.items());
+        } else if (std.mem.eql(u8, key, "span_lower")) {
+            try writeOptI32Json(w, if (span) |r| r.lowerEndpoint() else null);
+        } else if (std.mem.eql(u8, key, "span_upper")) {
+            try writeOptI32Json(w, if (span) |r| r.upperEndpoint() else null);
+        } else if (std.mem.eql(u8, key, "span_lower_type")) {
+            try writeBoundTypeJson(w, if (span) |r| r.lowerBoundType() else null);
+        } else if (std.mem.eql(u8, key, "span_upper_type")) {
+            try writeBoundTypeJson(w, if (span) |r| r.upperBoundType() else null);
+        } else if (std.mem.eql(u8, key, "encloses_query")) {
+            if (query) |q| {
+                try w.writeAll(if (set.encloses(q)) "true" else "false");
+            } else try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        } else if (std.mem.eql(u8, key, "intersects_query")) {
+            if (query) |q| {
+                try w.writeAll(if (set.intersects(q)) "true" else "false");
+            } else try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        } else if (std.mem.eql(u8, key, "complement_ranges")) {
+            var c = try set.complement(allocator);
+            defer c.deinit();
+            try writeRangeArray(w, c.items());
+        } else if (std.mem.eql(u8, key, "sub_range_set_ranges")) {
+            if (query) |q| {
+                var sub = try set.subRangeSet(q, allocator);
+                defer sub.deinit();
+                try writeRangeArray(w, sub.items());
+            } else try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        } else if (signedI32Suffix(key, "range_containing_")) |n| {
+            if (set.rangeContaining(n)) |r| {
+                try writeRangeObj(w, r);
+            } else try w.writeAll("null");
+        } else if (signedI32Suffix(key, "contains_")) |n| {
+            try w.writeAll(if (set.contains(n)) "true" else "false");
+        } else {
+            try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+
+        try emitRangeAssertion(name, key, cbuf.items, expected, allocator, writer);
+    }
+}
+
+fn runRangeMap(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var map = I32I32RangeMap.init(allocator);
+    defer map.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const value = jsonToI32(obj.get("value").?).?;
+            try map.put(buildRangeFromObj(obj.get("range").?.object), value);
+        } else if (std.mem.eql(u8, op_name, "put_coalescing")) {
+            const value = jsonToI32(obj.get("value").?).?;
+            try map.putCoalescing(buildRangeFromObj(obj.get("range").?.object), value);
+        } else if (std.mem.eql(u8, op_name, "remove_range")) {
+            try map.remove(buildRangeFromObj(obj.get("range").?.object));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            map.clear();
+        }
+        // Forward-compat: unknown op kinds skip.
+    }
+
+    const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
+    const span = map.span();
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        const w = cbuf.writer();
+
+        if (std.mem.eql(u8, key, "is_empty")) {
+            try w.writeAll(if (map.isEmpty()) "true" else "false");
+        } else if (std.mem.eql(u8, key, "as_map_of_ranges")) {
+            try writeEntryArray(w, map.items());
+        } else if (std.mem.eql(u8, key, "span_lower")) {
+            try writeOptI32Json(w, if (span) |r| r.lowerEndpoint() else null);
+        } else if (std.mem.eql(u8, key, "span_upper")) {
+            try writeOptI32Json(w, if (span) |r| r.upperEndpoint() else null);
+        } else if (std.mem.eql(u8, key, "span_lower_type")) {
+            try writeBoundTypeJson(w, if (span) |r| r.lowerBoundType() else null);
+        } else if (std.mem.eql(u8, key, "span_upper_type")) {
+            try writeBoundTypeJson(w, if (span) |r| r.upperBoundType() else null);
+        } else if (std.mem.eql(u8, key, "sub_range_map_entries")) {
+            if (query) |q| {
+                var sub = try map.subRangeMap(q, allocator);
+                defer sub.deinit();
+                try writeEntryArray(w, sub.items());
+            } else try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        } else if (signedI32Suffix(key, "get_entry_")) |n| {
+            if (map.getEntry(n)) |e| {
+                try writeEntryObj(w, e.range, e.value);
+            } else try w.writeAll("null");
+        } else if (signedI32Suffix(key, "get_")) |n| {
+            try writeOptI32Json(w, map.get(n));
+        } else {
+            try w.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+
+        try emitRangeAssertion(name, key, cbuf.items, expected, allocator, writer);
     }
 }
