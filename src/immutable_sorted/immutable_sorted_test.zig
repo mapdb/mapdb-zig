@@ -183,6 +183,21 @@ test "construction takes an independent snapshot (set)" {
     try testing.expect(!s.contains(99));
 }
 
+// ── Immutable backing: fields are `[]const`, so direct field access
+//    cannot mutate the structure (Zig structs have no private fields). This
+//    pins the cross-language immutability guarantee — the other ports
+//    encapsulate their storage; Zig expresses the same via the const element
+//    type, making `map.keys_buf[0] = x` / `set.elems_buf[0] = x` a COMPILE
+//    ERROR rather than legal caller code that would diverge observably.
+
+test "backing buffers are const (immutable through direct field access)" {
+    // @FieldType gives each field's declared type; the pointer/slice must be
+    // const-qualified so element writes through the field do not compile.
+    try testing.expect(@typeInfo(@FieldType(Map, "keys_buf")).pointer.is_const);
+    try testing.expect(@typeInfo(@FieldType(Map, "values_buf")).pointer.is_const);
+    try testing.expect(@typeInfo(@FieldType(Set, "elems_buf")).pointer.is_const);
+}
+
 // ── select(rank(k)) == k round-trip identity ─────────────────────────
 
 test "select(rank(k)) round-trip identity" {

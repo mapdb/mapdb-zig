@@ -132,8 +132,14 @@ fn assertStrictlyAscending(comptime T: type, xs: []const T) void {
 /// `deinit`.
 pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
     return struct {
-        keys_buf: []K,
-        values_buf: []V,
+        // `[]const` so the packed backing is immutable even through direct
+        // field access: `map.keys_buf[0] = x` is a COMPILE ERROR. Zig structs
+        // have no private fields, so without the `const` element type the
+        // backing would be externally mutable (unlike the Rust/Go/TS/Java
+        // ports' encapsulated storage) — a cross-language immutability
+        // divergence. The buffers are still owned (freed by `deinit`).
+        keys_buf: []const K,
+        values_buf: []const V,
         allocator: Allocator,
 
         const Self = @This();
@@ -423,7 +429,12 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
 /// `ImmutableSortedMap`. Free with `deinit`.
 pub fn ImmutableSortedSet(comptime T: type) type {
     return struct {
-        elems_buf: []T,
+        // `[]const` so the packed backing is immutable even through direct
+        // field access (`set.elems_buf[0] = x` is a COMPILE ERROR) — Zig
+        // structs have no private fields, so an `[]T` would be externally
+        // mutable unlike the other ports' encapsulated storage. Still owned
+        // (freed by `deinit`).
+        elems_buf: []const T,
         allocator: Allocator,
 
         const Self = @This();
