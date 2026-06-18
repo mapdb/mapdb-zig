@@ -2928,7 +2928,17 @@ fn emitRangeAssertion(
     try writer.print("{s}: {s}\n", .{ key, computed });
     var ebuf = std.array_list.Managed(u8).init(allocator);
     defer ebuf.deinit();
-    try renderExpectedCompact(ebuf.writer(), expected);
+    // The standalone span_*_type scalars are emitted as BARE strings
+    // (`closed` / `open` / `null`) to match the Rust oracle's bound_type_str
+    // and the go/ts/java runners. Render the expected bare too for these keys;
+    // the bound type inside range/entry OBJECTS stays quoted (renderExpectedCompact).
+    if ((std.mem.eql(u8, key, "span_lower_type") or std.mem.eql(u8, key, "span_upper_type")) and
+        expected == .string)
+    {
+        try ebuf.writer().writeAll(expected.string);
+    } else {
+        try renderExpectedCompact(ebuf.writer(), expected);
+    }
     if (!std.mem.eql(u8, computed, ebuf.items)) {
         try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
         any_fail = true;
@@ -2978,9 +2988,9 @@ fn runRangeSet(
         } else if (std.mem.eql(u8, key, "span_upper")) {
             try writeOptI32Json(w, if (span) |r| r.upperEndpoint() else null);
         } else if (std.mem.eql(u8, key, "span_lower_type")) {
-            try writeBoundTypeJson(w, if (span) |r| r.lowerBoundType() else null);
+            try writeBoundType(w, if (span) |r| r.lowerBoundType() else null);
         } else if (std.mem.eql(u8, key, "span_upper_type")) {
-            try writeBoundTypeJson(w, if (span) |r| r.upperBoundType() else null);
+            try writeBoundType(w, if (span) |r| r.upperBoundType() else null);
         } else if (std.mem.eql(u8, key, "encloses_query")) {
             if (query) |q| {
                 try w.writeAll(if (set.encloses(q)) "true" else "false");
@@ -3060,9 +3070,9 @@ fn runRangeMap(
         } else if (std.mem.eql(u8, key, "span_upper")) {
             try writeOptI32Json(w, if (span) |r| r.upperEndpoint() else null);
         } else if (std.mem.eql(u8, key, "span_lower_type")) {
-            try writeBoundTypeJson(w, if (span) |r| r.lowerBoundType() else null);
+            try writeBoundType(w, if (span) |r| r.lowerBoundType() else null);
         } else if (std.mem.eql(u8, key, "span_upper_type")) {
-            try writeBoundTypeJson(w, if (span) |r| r.upperBoundType() else null);
+            try writeBoundType(w, if (span) |r| r.upperBoundType() else null);
         } else if (std.mem.eql(u8, key, "sub_range_map_entries")) {
             if (query) |q| {
                 var sub = try map.subRangeMap(q, allocator);
