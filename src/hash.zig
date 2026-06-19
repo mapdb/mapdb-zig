@@ -181,7 +181,12 @@ pub fn positionsFromHashes(h1: u32, h2: u32, m: u32, out: []u32) void {
 /// Kirsch–Mitzenmacher double hashing. `h1 = hash32(input, 0)`,
 /// `h2 = hash32(input, SALT2)`; then `positionsFromHashes`. `out.len` is `k`.
 pub fn positions(input: []const u8, m: u32, k: u32, out: []u32) void {
-    std.debug.assert(out.len >= k);
+    // Caller-contract guard: `out` must hold at least `k` positions. A bare
+    // `std.debug.assert` is compiled out in ReleaseFast/ReleaseSmall, which
+    // would let an undersized `out` slice silently overrun in release. An
+    // unconditional `@panic` traps in EVERY build mode, preserving the safety
+    // contract (sibling ports `assert!`/panic/throw on the same condition).
+    if (!(out.len >= k)) @panic("hash.positions: out.len must be >= k");
     const h1 = hash32Bytes(input, 0);
     const h2 = hash32Bytes(input, SALT2);
     positionsFromHashes(h1, h2, m, out[0..k]);
@@ -200,7 +205,12 @@ pub fn positions(input: []const u8, m: u32, k: u32, out: []u32) void {
 pub const HllSplit = struct { idx: u32, rho: u32 };
 
 pub fn hllSplit(input: []const u8, p: u5) HllSplit {
-    std.debug.assert(p >= 4 and p <= 18);
+    // Caller-contract guard: `p` (the HLL precision) must be in [4, 18]. A bare
+    // `std.debug.assert` is compiled out in ReleaseFast/ReleaseSmall, which
+    // would let an out-of-range `p` produce a bogus split (or an out-of-bounds
+    // shift) in release. An unconditional `@panic` traps in EVERY build mode,
+    // preserving the safety contract across all build configurations.
+    if (!(p >= 4 and p <= 18)) @panic("hash.hllSplit: p must be in [4, 18]");
     const x: u64 = hash64Bytes(input, 0);
     const shift: u6 = @intCast(64 - @as(u7, p));
     const idx: u32 = @truncate(x >> shift);
