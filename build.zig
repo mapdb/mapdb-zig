@@ -58,6 +58,19 @@ pub fn build(b: *std.Build) void {
     const trapprobe_step = b.step("trapprobe", "Run the out-of-process required-input trap probe");
     trapprobe_step.dependOn(&run_trapprobe.step);
 
+    // hash.zig caller-contract trap probe. The in-process unit-test runner
+    // cannot catch `@panic`, so the always-on hash guards (positions out.len < k
+    // and hllSplit p out of [4,18]) are exercised out-of-process: with no args
+    // this exe re-execs itself once per trap case and asserts each child
+    // terminated non-cleanly. Wired into `zig build test` so a ReleaseFast run
+    // confirms the traps fire in release builds too.
+    const hashtrapprobe_exe = addExe(b, "hashtrapprobe", b.path("src/hashtrapprobe.zig"), target, optimize);
+    b.installArtifact(hashtrapprobe_exe);
+
+    const run_hashtrapprobe = b.addRunArtifact(hashtrapprobe_exe);
+    const hashtrapprobe_step = b.step("hashtrapprobe", "Run the out-of-process hash.zig caller-contract trap probe");
+    hashtrapprobe_step.dependOn(&run_hashtrapprobe.step);
+
     // Unit tests
     const lib_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -71,6 +84,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_trapprobe.step);
+    test_step.dependOn(&run_hashtrapprobe.step);
 }
 
 /// Add an executable in a way that works on both Zig 0.14 and 0.15.
