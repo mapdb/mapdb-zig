@@ -19,6 +19,7 @@
 const std = @import("std");
 
 const Bloom = @import("bloom.zig").Bloom;
+const hash = @import("hash.zig");
 
 const cases = [_][]const u8{
     "bloom_m0", // Bloom.withParams(0, _): m_bits must be >= 1
@@ -28,6 +29,9 @@ const cases = [_][]const u8{
     "bloom_p_nan", // Bloom.optimal(_, NaN): p must be finite
     "bloom_p_inf", // Bloom.optimal(_, Inf): p must be finite
     "bloom_tobytes_short", // Bloom.toBytes(out): out.len must equal byteLen()
+    "positions_out_short", // hash.positions(.., out) with out.len < k
+    "hll_p_low", // hash.hllSplit(.., p < 4)
+    "hll_p_high", // hash.hllSplit(.., p > 18)
 };
 
 pub fn main() !void {
@@ -138,6 +142,28 @@ fn fireTrap(name: []const u8, allocator: std.mem.Allocator) !void {
         var out: [1]u8 = undefined;
         b.toBytes(&out);
         std.mem.doNotOptimizeAway(&out);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "positions_out_short")) {
+        // out.len (1) < k (3) violates the positions() caller contract.
+        var out: [1]u32 = undefined;
+        hash.positions("x", 64, 3, &out);
+        std.mem.doNotOptimizeAway(&out);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "hll_p_low")) {
+        // p == 3 violates 4 <= p <= 18.
+        const s = hash.hllSplit("x", 3);
+        std.mem.doNotOptimizeAway(s);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "hll_p_high")) {
+        // p == 19 violates 4 <= p <= 18.
+        const s = hash.hllSplit("x", 19);
+        std.mem.doNotOptimizeAway(s);
         return;
     }
 
