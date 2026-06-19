@@ -28,6 +28,7 @@ const I64I32HashMap = @import("hashmap/hashmap.zig").I64I32HashMap;
 const I64I32ListMultimap = @import("multimap/multimap.zig").I64I32ListMultimap;
 const I64I32SetMultimap = @import("multimap/multimap.zig").I64I32SetMultimap;
 const range_mod = @import("range.zig");
+const FenwickTree = @import("fenwick.zig").FenwickTree;
 const I32Range = range_mod.I32Range;
 const BoundType = range_mod.BoundType;
 const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
@@ -1424,6 +1425,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "FenwickTree")) {
+        try runFenwick(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2116,6 +2123,214 @@ fn runHashPipeline(
         var ebuf = std.array_list.Managed(u8).init(allocator);
         defer ebuf.deinit();
         try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+// ── FenwickTree runner (spec/features/fenwick.md) ────────────────────────────
+//
+// A fixed-size i32-element / i64-accumulator Binary Indexed Tree. Construction
+// is EXACTLY ONE op (with_size or from_values) FIRST, then any number of
+// update/set point ops (all indices in-range; out-of-range traps are
+// native-test-only). Sum-returning assertions (total, get_<i>, prefix_sum_<i>,
+// range_sum_<lo>_<hi>, and each `tree` element) are i64 and wire-encoded as
+// DECIMAL STRINGS; the runner emits them as bare decimals via {d} (never via a
+// f64 round-trip), and the expected decimal-string ("total": "8589934588")
+// renders bare too (renderExpected, mode .none), so they compare equal. `tree`
+// is the canonical 1-based BIT array in 1-based index order — an explicit-order
+// key, NOT sorted, rendered as a bare-decimal array `[5,5,0,...]` mirroring the
+// Rust/Go runners. Unknown ops / kinds / assertion keys SKIP (forward-compat).
+// A negative index in an op maps (via asFenwickIndex) to an out-of-domain
+// usize, which the trap path rejects; a negative index in an assertion-key
+// SUFFIX is rejected by parseFenwickIndex -> UNKNOWN_ASSERTION -> SKIP.
+
+/// Parse a JSON number into a usize index for an OP field. A negative index is
+/// out of the representable `usize` domain, so it must reach the same trap the
+/// spec mandates for an out-of-range mutator/accessor index: we return
+/// `std.math.maxInt(usize)` (an index `>= n` for any tree), which the Fenwick
+/// trap path then rejects.
+fn asFenwickIndex(v: std.json.Value) usize {
+    const i = v.integer;
+    if (i < 0) return std.math.maxInt(usize);
+    return @intCast(i);
+}
+
+fn asFenwickI32(v: std.json.Value) i32 {
+    return switch (v) {
+        .integer => |i| @intCast(i),
+        else => @panic("fenwick i32 operand must be an integer"),
+    };
+}
+
+/// Parse a non-negative decimal index from an assertion-key suffix. A leading
+/// '-' (negative index) or any non-digit yields null -> UNKNOWN_ASSERTION -> SKIP.
+fn parseFenwickIndex(s: []const u8) ?usize {
+    return std.fmt.parseInt(usize, s, 10) catch null;
+}
+
+/// Render the computed value for one Fenwick assertion key. Writes
+/// "UNKNOWN_ASSERTION:<key>" for an unrecognised key (caller skips it).
+fn evalFenwickAssertion(
+    tree: *const FenwickTree,
+    key: []const u8,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.eql(u8, key, "size")) {
+        try writer.print("{d}", .{tree.len()});
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writer.writeAll(if (tree.isEmpty()) "true" else "false");
+    } else if (std.mem.eql(u8, key, "total")) {
+        try writer.print("{d}", .{tree.total()});
+    } else if (std.mem.eql(u8, key, "tree")) {
+        // Canonical 1-based BIT array, in 1-based index order (NOT sorted),
+        // rendered as a bare-decimal array.
+        const ct = try tree.canonicalTree(allocator);
+        defer allocator.free(ct);
+        try writer.writeAll("[");
+        for (ct, 0..) |v, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("{d}", .{v});
+        }
+        try writer.writeAll("]");
+    } else if (std.mem.startsWith(u8, key, "get_")) {
+        const i = parseFenwickIndex(key["get_".len..]) orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        try writer.print("{d}", .{tree.get(i)});
+    } else if (std.mem.startsWith(u8, key, "prefix_sum_")) {
+        const i = parseFenwickIndex(key["prefix_sum_".len..]) orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        try writer.print("{d}", .{tree.prefixSum(i)});
+    } else if (std.mem.startsWith(u8, key, "range_sum_")) {
+        const rest = key["range_sum_".len..];
+        const us = std.mem.indexOfScalar(u8, rest, '_') orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const lo = parseFenwickIndex(rest[0..us]) orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        const hi = parseFenwickIndex(rest[us + 1 ..]) orelse {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        try writer.print("{d}", .{tree.rangeSum(lo, hi)});
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+/// Render the EXPECTED value for one Fenwick assertion key into the same
+/// canonical string `evalFenwickAssertion` emits. Scalars are i64 decimal
+/// strings (or bare numbers) -> bare decimal; the `tree` array's elements are
+/// decimal strings (or bare numbers) -> bare-decimal array. Mirrors the
+/// Rust/Go renderExpected for the Fenwick wire encoding.
+fn renderFenwickExpected(writer: anytype, key: []const u8, v: std.json.Value) !void {
+    if (std.mem.eql(u8, key, "tree")) {
+        const arr = v.array;
+        try writer.writeAll("[");
+        for (arr.items, 0..) |e, i| {
+            if (i > 0) try writer.writeAll(",");
+            switch (e) {
+                .string => |s| try writer.writeAll(s), // bare decimal, unquoted
+                .integer => |n| try writer.print("{d}", .{n}),
+                .number_string => |s| try writer.writeAll(s),
+                else => @panic("unexpected fenwick tree element"),
+            }
+        }
+        try writer.writeAll("]");
+        return;
+    }
+    switch (v) {
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .integer => |i| try writer.print("{d}", .{i}),
+        .string => |s| try writer.writeAll(s),
+        .number_string => |s| try writer.writeAll(s),
+        else => @panic("unexpected fenwick expected value"),
+    }
+}
+
+fn runFenwick(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    // Authoring rule: the FIRST op MUST be exactly one construction op
+    // (with_size OR from_values); a missing/late/duplicate construction op is a
+    // malformed scenario => SKIP (forward-compat), like the hash-pipeline rule.
+    if (operations.items.len == 0) {
+        std.debug.print("skip: fenwick scenario must begin with a construction op (forward-compat)\n", .{});
+        return;
+    }
+    const first_op = operations.items[0].object;
+    const first = first_op.get("op").?.string;
+
+    var tree: FenwickTree = undefined;
+    var constructed = false;
+    if (std.mem.eql(u8, first, "with_size")) {
+        const n_raw = first_op.get("n").?.integer;
+        if (n_raw < 0) {
+            std.debug.print("skip: fenwick with_size negative n (malformed): {d}\n", .{n_raw});
+            return;
+        }
+        tree = try FenwickTree.withSize(allocator, @intCast(n_raw));
+        constructed = true;
+    } else if (std.mem.eql(u8, first, "from_values")) {
+        const raw = first_op.get("values").?.array;
+        const vals = try allocator.alloc(i32, raw.items.len);
+        defer allocator.free(vals);
+        for (raw.items, 0..) |e, i| vals[i] = asFenwickI32(e);
+        tree = try FenwickTree.fromValues(allocator, vals);
+        constructed = true;
+    } else {
+        std.debug.print("skip: fenwick first op must be with_size/from_values (forward-compat): {s}\n", .{first});
+        return;
+    }
+    std.debug.assert(constructed);
+    defer tree.deinit();
+
+    // Any subsequent construction op is malformed => SKIP; an unknown op kind
+    // is forward-compat => SKIP. (Either drops the whole scenario.)
+    for (operations.items[1..]) |op_v| {
+        const op = op_v.object;
+        const op_name = op.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "update")) {
+            tree.update(asFenwickIndex(op.get("index").?), asFenwickI32(op.get("delta").?));
+        } else if (std.mem.eql(u8, op_name, "set")) {
+            tree.set(asFenwickIndex(op.get("index").?), asFenwickI32(op.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "with_size") or std.mem.eql(u8, op_name, "from_values")) {
+            std.debug.print("skip: fenwick has a non-first construction op (malformed)\n", .{});
+            return;
+        } else {
+            std.debug.print("skip: unknown fenwick op (forward-compat): {s}\n", .{op_name});
+            return;
+        }
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalFenwickAssertion(&tree, key, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderFenwickExpected(ebuf.writer(), key, expected);
         if (!std.mem.eql(u8, computed, ebuf.items)) {
             try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
             any_fail = true;
