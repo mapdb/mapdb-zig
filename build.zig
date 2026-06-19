@@ -45,6 +45,19 @@ pub fn build(b: *std.Build) void {
     const nanprobe_step = b.step("nanprobe", "Run the NaN semantics probe");
     nanprobe_step.dependOn(&run_nanprobe.step);
 
+    // Required-input panic/trap probe. The in-process unit-test runner cannot
+    // catch `@panic`, so the always-on Bloom traps (`withParams` m_bits == 0 and
+    // `optimal` n == 0 / p <= 0 / p >= 1 / NaN / Inf) are verified out of
+    // process: with no args this exe re-execs itself once per trap case and
+    // asserts each child terminates non-cleanly. Made a `test` dependency so
+    // `zig build test` (incl. `-Doptimize=ReleaseFast`) exercises it.
+    const trapprobe_exe = addExe(b, "trapprobe", b.path("src/trapprobe.zig"), target, optimize);
+    b.installArtifact(trapprobe_exe);
+
+    const run_trapprobe = b.addRunArtifact(trapprobe_exe);
+    const trapprobe_step = b.step("trapprobe", "Run the out-of-process required-input trap probe");
+    trapprobe_step.dependOn(&run_trapprobe.step);
+
     // Unit tests
     const lib_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -57,6 +70,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
+    test_step.dependOn(&run_trapprobe.step);
 }
 
 /// Add an executable in a way that works on both Zig 0.14 and 0.15.

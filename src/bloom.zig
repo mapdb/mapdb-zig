@@ -100,12 +100,20 @@ pub const Bloom = struct {
     /// Requires `n >= 1` and `0 < p < 1`. `n == 0`, `p <= 0`, `p >= 1`, `NaN`,
     /// and `±Infinity` are invalid and trap.
     pub fn optimal(allocator: Allocator, n_expected: u64, p: f64) !Bloom {
-        std.debug.assert(n_expected >= 1); // n_expected must be >= 1
-        std.debug.assert(std.math.isFinite(p) and p > 0.0 and p < 1.0); // p in (0,1)
+        // These are REQUIRED-INPUT preconditions and MUST trap in EVERY build
+        // mode (the spec's `MUST trap`; the other ports panic/throw). A bare
+        // `std.debug.assert` is compiled out in ReleaseFast/ReleaseSmall, which
+        // would let an invalid `(n, p)` slip through to a divide-by-zero, an
+        // `@log` of a non-positive value, or a non-finite `m`. `@panic` traps
+        // unconditionally, matching `withParams(m_bits == 0)` and the count-min
+        // port. (The out-of-process `trapprobe.zig` verifies these fire under
+        // `-Doptimize=ReleaseFast`.)
+        if (n_expected < 1) @panic("Bloom.optimal: n_expected must be >= 1");
+        if (!(std.math.isFinite(p) and p > 0.0 and p < 1.0)) @panic("Bloom.optimal: p must be finite and in (0, 1)");
         const n: f64 = @floatFromInt(n_expected);
         const ln2: f64 = std.math.ln2; // ln(2) in f64
         const m_f = @ceil(-n * @log(p) / (ln2 * ln2));
-        std.debug.assert(std.math.isFinite(m_f) and m_f >= 1.0 and m_f <= @as(f64, @floatFromInt(std.math.maxInt(u32))));
+        if (!(std.math.isFinite(m_f) and m_f >= 1.0 and m_f <= @as(f64, @floatFromInt(std.math.maxInt(u32))))) @panic("Bloom.optimal: derived m out of range");
         const m: u32 = @intFromFloat(m_f);
         // round-half-away-from-zero (the common `round()`), clamped to >= 1.
         const k_f = @round((@as(f64, @floatFromInt(m)) / n) * ln2);
