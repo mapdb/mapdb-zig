@@ -27,6 +27,7 @@ const cases = [_][]const u8{
     "bloom_p_one", // Bloom.optimal(_, 1.0): p must be < 1
     "bloom_p_nan", // Bloom.optimal(_, NaN): p must be finite
     "bloom_p_inf", // Bloom.optimal(_, Inf): p must be finite
+    "bloom_tobytes_short", // Bloom.toBytes(out): out.len must equal byteLen()
 };
 
 pub fn main() !void {
@@ -126,6 +127,17 @@ fn fireTrap(name: []const u8, allocator: std.mem.Allocator) !void {
         var b = try Bloom.optimal(allocator, 1000, std.math.inf(f64));
         defer b.deinit();
         std.mem.doNotOptimizeAway(b);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "bloom_tobytes_short")) {
+        // out.len (1) != byteLen() (>= 2 for m_bits == 16) violates the
+        // toBytes() caller contract.
+        var b = try Bloom.withParams(allocator, 16, 4);
+        defer b.deinit();
+        var out: [1]u8 = undefined;
+        b.toBytes(&out);
+        std.mem.doNotOptimizeAway(&out);
         return;
     }
 

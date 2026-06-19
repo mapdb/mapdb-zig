@@ -217,7 +217,12 @@ pub const Bloom = struct {
     /// **little-endian on every host**; unused tail bits `0`.
     pub fn toBytes(self: *const Bloom, out: []u8) void {
         const n_bytes = self.byteLen();
-        std.debug.assert(out.len == n_bytes);
+        // Caller-contract guard: `out` must be exactly `byteLen()` bytes. A bare
+        // `std.debug.assert` is compiled out in ReleaseFast/ReleaseSmall, which
+        // would let a mis-sized `out` silently truncate or leave a stale tail in
+        // release. An unconditional `@panic` traps in EVERY build mode, matching
+        // the always-on Bloom construction traps above.
+        if (!(out.len == n_bytes)) @panic("Bloom.toBytes: out.len must equal byteLen()");
         @memset(out, 0);
         for (self.words, 0..) |w, wi| {
             // Each word holds bits [wi*64 .. wi*64 + 64). Emit its 8 bytes
