@@ -16,6 +16,7 @@ pub const bitset = @import("bitset/bitset.zig");
 pub const deque = @import("deque/deque.zig");
 pub const hashmap = @import("hashmap/hashmap.zig");
 pub const hashset = @import("hashset/hashset.zig");
+pub const hyperloglog = @import("hyperloglog/hyperloglog.zig");
 pub const immutable = @import("immutable/immutable.zig");
 pub const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 pub const interval = @import("interval/interval.zig");
@@ -48,8 +49,10 @@ pub const ImmutableSortedMap = @import("immutable_sorted/immutable_sorted.zig").
 pub const ImmutableSortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableSortedSet;
 pub const ImmutableI32I32SortedMap = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32I32SortedMap;
 pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32SortedSet;
+pub const HyperLogLog = @import("hyperloglog/hyperloglog.zig").HyperLogLog;
 
 comptime {
+    _ = @import("hyperloglog/hyperloglog.zig");
     _ = @import("hash.zig");
     _ = @import("float_order.zig");
     _ = @import("regression_phase3_test.zig");
