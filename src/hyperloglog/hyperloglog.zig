@@ -216,7 +216,15 @@ pub const HyperLogLog = struct {
         // Large-range correction near the HASH-SPACE ceiling (2^64, NOT 2^32).
         const two64: f64 = 18446744073709551616.0; // 2^64, exactly representable.
         if (e > (1.0 / 30.0) * two64) {
-            return -two64 * @log(1.0 - e / two64);
+            // Guard the log argument: for all reachable states E < 2^64 so
+            // (1 - E/2^64) > 0. A fully-saturated deserialized state (every
+            // register at the per-p ceiling, constructible via fromBytes but
+            // not via add) can push raw E >= 2^64, making (1 - E/2^64) <= 0 and
+            // @log(<= 0) = NaN. Skip the log correction there and return the raw
+            // (large, finite) E so estimate() stays finite as the spec mandates.
+            if (e < two64) {
+                return -two64 * @log(1.0 - e / two64);
+            }
         }
 
         return e;
@@ -627,18 +635,25 @@ test "alphaM matches pinned constants" {
 }
 
 test "estimate large range correction is finite" {
-    // All registers NEAR the per-p max via fromBytes so raw E exceeds
-    // (1/30)*2^64 while staying below 2^64; assert estimate() is finite.
+    // Drive a high-register state via fromBytes so raw E exceeds (1/30)*2^64;
+    // assert estimate() is finite. ceiling-1 lands E in the large-range band
+    // but below 2^64 (the log correction fires). ceiling (fully saturated,
+    // every register at the per-p max — an add-unreachable state constructible
+    // via fromBytes) reaches/exceeds 2^64; the log-argument guard skips the
+    // correction and returns the raw (large, finite) E. Without the guard,
+    // @log(1 - E/2^64) = @log(<= 0) = NaN.
     const p: u8 = 4;
-    const near_max = rhoCeiling(p) - 1;
-    var h = try HyperLogLog.withPrecision(testing.allocator, p);
-    defer h.deinit();
-    const bytes = try h.toBytes(testing.allocator);
-    defer testing.allocator.free(bytes);
-    for (bytes[5..]) |*b| b.* = near_max;
-    var loaded = try HyperLogLog.fromBytes(testing.allocator, bytes);
-    defer loaded.deinit();
-    try testing.expect(std.math.isFinite(loaded.estimate()));
+    const values = [_]u8{ rhoCeiling(p) - 1, rhoCeiling(p) };
+    for (values) |r| {
+        var h = try HyperLogLog.withPrecision(testing.allocator, p);
+        defer h.deinit();
+        const bytes = try h.toBytes(testing.allocator);
+        defer testing.allocator.free(bytes);
+        for (bytes[5..]) |*b| b.* = r;
+        var loaded = try HyperLogLog.fromBytes(testing.allocator, bytes);
+        defer loaded.deinit();
+        try testing.expect(std.math.isFinite(loaded.estimate()));
+    }
 }
 
 // ---- authoritative register_hex values for the scenarios ------------
