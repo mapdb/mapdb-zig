@@ -57,7 +57,9 @@ pub const CountMin = struct {
     /// `d == 0` is legal and degenerate (an empty matrix; `estimate` returns
     /// `maxInt(u64)`).
     pub fn withParams(allocator: Allocator, d: u32, w: u32) Allocator.Error!CountMin {
-        std.debug.assert(w != 0); // CountMin width w must be non-zero
+        // Required-input trap: always-on (`std.debug.assert` is compiled out in
+        // ReleaseFast/ReleaseSmall, turning a `w == 0` divide-by-zero into UB).
+        if (w == 0) @panic("CountMin width w must be non-zero");
         const len: usize = @as(usize, d) * @as(usize, w);
         const matrix = try allocator.alloc(u64, len);
         @memset(matrix, 0);
@@ -82,11 +84,15 @@ pub const CountMin = struct {
     /// Requires `0 < epsilon < 1` and `0 < delta < 1`; values `<= 0`, `>= 1`,
     /// `NaN`, or `±Infinity` are invalid and trap.
     pub fn optimal(allocator: Allocator, epsilon: f64, delta: f64) Allocator.Error!CountMin {
-        std.debug.assert(epsilon > 0.0 and epsilon < 1.0); // 0 < epsilon < 1
-        std.debug.assert(delta > 0.0 and delta < 1.0); // 0 < delta < 1
+        // Required-input traps: always-on (`std.debug.assert` is compiled out
+        // in ReleaseFast/ReleaseSmall, turning a non-positive epsilon/delta into
+        // a non-finite `(d, w)` and UB at the float->int cast / withParams).
+        if (!(epsilon > 0.0 and epsilon < 1.0)) @panic("CountMin.optimal requires 0 < epsilon < 1");
+        if (!(delta > 0.0 and delta < 1.0)) @panic("CountMin.optimal requires 0 < delta < 1");
         const w_f = @ceil(std.math.e / epsilon);
         const d_f = @ceil(@log(1.0 / delta));
-        std.debug.assert(std.math.isFinite(w_f) and std.math.isFinite(d_f) and w_f >= 1.0 and d_f >= 1.0);
+        if (!(std.math.isFinite(w_f) and std.math.isFinite(d_f) and w_f >= 1.0 and d_f >= 1.0))
+            @panic("CountMin.optimal produced a non-finite (d, w)");
         return withParams(allocator, @intFromFloat(d_f), @intFromFloat(w_f));
     }
 

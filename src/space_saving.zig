@@ -56,7 +56,10 @@ pub const SpaceSaving = struct {
     /// `m == 0` is invalid (a zero-capacity summary can monitor nothing; every
     /// `add` would have to evict from an empty set) and traps.
     pub fn withCapacity(allocator: Allocator, m: u32) SpaceSaving {
-        std.debug.assert(m != 0); // SpaceSaving capacity m must be non-zero
+        // Required-input trap: always-on (`std.debug.assert` is compiled out in
+        // ReleaseFast/ReleaseSmall, leaving a 0-capacity summary that would
+        // evict from an empty set / underflow). Mirrors CMS `w == 0`.
+        if (m == 0) @panic("SpaceSaving capacity m must be non-zero");
         return .{
             .cap = m,
             .monitored = .{},
