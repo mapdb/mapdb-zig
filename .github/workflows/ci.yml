@@ -22,8 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # setup-zig@v1 requests the legacy tarball name (zig-linux-x86_64-*),
+      # which now 404s on every mirror — Zig 0.15.x renamed releases to
+      # zig-x86_64-linux-*. v2 knows the new naming and the current mirror
+      # index, so it resolves 0.15.2 correctly.
       - name: Setup Zig
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
