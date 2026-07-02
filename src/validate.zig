@@ -39,6 +39,7 @@ const bounded_lru = @import("bounded_lru/bounded_lru.zig");
 const I32I32BoundedLruMap = bounded_lru.I32I32BoundedLruMap;
 const EvictionCause = bounded_lru.EvictionCause;
 const CountMin = @import("count_min.zig").CountMin;
+const FenwickTree = @import("fenwick.zig").FenwickTree;
 const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 const SSEntry = @import("space_saving.zig").Entry;
 
@@ -1491,6 +1492,12 @@ pub fn main() !void {
     }
     if (std.mem.eql(u8, collection_type, "SpaceSaving")) {
         try runSpaceSaving(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "FenwickTree")) {
+        try runFenwick(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
         if (any_fail) std.process.exit(1);
         return;
