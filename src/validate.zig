@@ -43,6 +43,7 @@ const EvictionCause = bounded_lru.EvictionCause;
 const CountMin = @import("count_min.zig").CountMin;
 const FenwickTree = @import("fenwick.zig").FenwickTree;
 const HyperLogLog = @import("hyperloglog/hyperloglog.zig").HyperLogLog;
+const RoaringU32 = @import("roaring.zig").RoaringU32;
 const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 const SSEntry = @import("space_saving.zig").Entry;
 
@@ -1523,6 +1524,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "RoaringU32")) {
+        try runRoaring(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2044,6 +2051,284 @@ fn evalSortedSetAssertion(
     } else {
         try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
     }
+}
+
+// ── RoaringU32 runner (spec/features/roaring-u32.md) ─────────────────────────
+//
+// Sparse compressed u32 set. Values are i32 in the JSON suite, reinterpreted to
+// u32 via @bitCast (NOT sign-extended) before split. Iteration / min / max /
+// serialized chunk order are UNSIGNED u32 ascending; to_sorted_array is the
+// explicit-order key emitted in unsigned order but rendered as signed i32. The
+// byte oracle is serialized_hex (+ the four set-algebra hex keys); container_types
+// / chunk_count / to_sorted_array localize a failure. Direct translation of the
+// Rust runner's run_roaring (mapdb-rust/src/bin/validate.rs).
+//
+// Ops: add / remove / clear / add_range / remove_range / deserialize. A reversed
+// range (from_u32 > to_u32 after reinterpret) -> SKIP the whole scenario. A
+// `deserialize` op must be the ONLY op; mixing it with other ops, or a
+// syntactically bad / non-canonical hex image, is malformed -> SKIP. Unknown ops
+// SKIP (forward-compat). `null` return from build => the caller SKIPs.
+
+/// Parse a `0x`-prefixed hex byte string for a `deserialize` op into a
+/// caller-owned byte slice. `null` for syntactically malformed hex (missing
+/// `0x`, odd digit count, bad digit) — a malformed scenario the caller SKIPs.
+fn parseRoaringHex(v: std.json.Value, allocator: Allocator) !?[]u8 {
+    const s = switch (v) {
+        .string => |str| str,
+        else => return null,
+    };
+    const body = if (std.mem.startsWith(u8, s, "0x") or std.mem.startsWith(u8, s, "0X")) s[2..] else return null;
+    if (body.len % 2 != 0) return null;
+    const out = try allocator.alloc(u8, body.len / 2);
+    errdefer allocator.free(out);
+    for (0..out.len) |i| {
+        out[i] = std.fmt.parseInt(u8, body[2 * i .. 2 * i + 2], 16) catch {
+            allocator.free(out);
+            return null;
+        };
+    }
+    return out;
+}
+
+/// Build a `RoaringU32` from the scenario's operation list. Returns `null` if
+/// the scenario is malformed (reversed range, deserialize mixed with other ops,
+/// bad/non-canonical deserialize hex, unknown op) — the caller SKIPs.
+fn buildRoaring(operations: std.json.Array, allocator: Allocator) !?RoaringU32 {
+    // A single `deserialize` op builds the set from a literal hex image and must
+    // be the only op (authoring rule).
+    var has_deserialize = false;
+    for (operations.items) |op| {
+        if (std.mem.eql(u8, op.object.get("op").?.string, "deserialize")) has_deserialize = true;
+    }
+    if (has_deserialize) {
+        if (operations.items.len != 1) {
+            std.debug.print("skip: `deserialize` op must be the only op (malformed)\n", .{});
+            return null;
+        }
+        const hex_val = operations.items[0].object.get("bytes") orelse {
+            std.debug.print("skip: deserialize op needs `bytes` (malformed)\n", .{});
+            return null;
+        };
+        const bytes = (try parseRoaringHex(hex_val, allocator)) orelse {
+            std.debug.print("skip: malformed deserialize hex\n", .{});
+            return null;
+        };
+        defer allocator.free(bytes);
+        return RoaringU32.deserialize(allocator, bytes) catch {
+            std.debug.print("skip: deserialize failed (malformed image)\n", .{});
+            return null;
+        };
+    }
+
+    var set = RoaringU32.init(allocator);
+    errdefer set.deinit();
+    for (operations.items) |op_val| {
+        const op = op_val.object;
+        const op_name = op.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            const v: i32 = @intCast(op.get("value").?.integer);
+            _ = try set.add(@bitCast(v));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            const v: i32 = @intCast(op.get("value").?.integer);
+            _ = try set.remove(@bitCast(v));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        } else if (std.mem.eql(u8, op_name, "add_range") or std.mem.eql(u8, op_name, "remove_range")) {
+            const from_i: i32 = @intCast(op.get("from").?.integer);
+            const to_i: i32 = @intCast(op.get("to").?.integer);
+            const from: u32 = @bitCast(from_i);
+            const to: u32 = @bitCast(to_i);
+            // Reversed range (unsigned) is a malformed scenario -> SKIP.
+            if (from > to) {
+                std.debug.print("skip: reversed range from=0x{x:0>8} > to=0x{x:0>8} (malformed)\n", .{ from, to });
+                set.deinit();
+                return null;
+            }
+            const is_add = std.mem.eql(u8, op_name, "add_range");
+            // Inclusive [from, to]; `to` may be u32::MAX so iterate carefully.
+            var v = from;
+            while (true) {
+                if (is_add) _ = try set.add(v) else _ = try set.remove(v);
+                if (v == to) break;
+                v += 1;
+            }
+        } else {
+            std.debug.print("skip: unknown roaring op (forward-compat): {s}\n", .{op_name});
+            set.deinit();
+            return null;
+        }
+    }
+    return set;
+}
+
+/// Lower-case `0x`-prefixed hex string of a byte image (caller owns).
+fn roaringBytesToHex(bytes: []const u8, allocator: Allocator) ![]u8 {
+    var out = std.array_list.Managed(u8).init(allocator);
+    errdefer out.deinit();
+    try out.writer().writeAll("0x");
+    for (bytes) |b| try out.writer().print("{x:0>2}", .{b});
+    return out.toOwnedSlice();
+}
+
+/// Evaluate one RoaringU32 assertion into `writer`. Unknown keys / keys needing
+/// a missing `other` emit `UNKNOWN_ASSERTION:<key>` (skipped by the caller).
+fn evalRoaringAssertion(
+    key: []const u8,
+    set: *const RoaringU32,
+    other: ?*const RoaringU32,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.eql(u8, key, "cardinality")) {
+        try writer.print("{d}", .{set.cardinality()});
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writer.writeAll(if (set.isEmpty()) "true" else "false");
+    } else if (std.mem.eql(u8, key, "chunk_count")) {
+        try writer.print("{d}", .{set.chunkCount()});
+    } else if (std.mem.eql(u8, key, "serialized_len")) {
+        const bytes = try set.serialize(allocator);
+        defer allocator.free(bytes);
+        try writer.print("{d}", .{bytes.len});
+    } else if (std.mem.eql(u8, key, "serialized_hex")) {
+        const bytes = try set.serialize(allocator);
+        defer allocator.free(bytes);
+        const hex = try roaringBytesToHex(bytes, allocator);
+        defer allocator.free(hex);
+        try writer.writeAll(hex);
+    } else if (std.mem.eql(u8, key, "to_sorted_array")) {
+        // UNSIGNED u32 ascending order, emitted as i32 (explicit-order key).
+        const arr = try set.toSortedSlice(allocator);
+        defer allocator.free(arr);
+        try writer.writeAll("[");
+        for (arr, 0..) |v, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("{d}", .{@as(i32, @bitCast(v))});
+        }
+        try writer.writeAll("]");
+    } else if (std.mem.eql(u8, key, "min")) {
+        if (set.min()) |v| try writer.print("{d}", .{@as(i32, @bitCast(v))}) else try writer.writeAll("null");
+    } else if (std.mem.eql(u8, key, "max")) {
+        if (set.max()) |v| try writer.print("{d}", .{@as(i32, @bitCast(v))}) else try writer.writeAll("null");
+    } else if (std.mem.eql(u8, key, "container_types")) {
+        const types = try set.containerTypes(allocator);
+        defer allocator.free(types);
+        try writer.writeAll("[");
+        for (types, 0..) |t, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("\"{s}\"", .{t});
+        }
+        try writer.writeAll("]");
+    } else if (roaringSetAlgebraKey(key)) |kind| {
+        if (other == null) {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        }
+        var result = switch (kind.op) {
+            .@"union" => try set.@"union"(other.?),
+            .intersect => try set.intersect(other.?),
+            .and_not => try set.andNot(other.?),
+            .xor => try set.xor(other.?),
+        };
+        defer result.deinit();
+        if (kind.hex) {
+            const bytes = try result.serialize(allocator);
+            defer allocator.free(bytes);
+            const hex = try roaringBytesToHex(bytes, allocator);
+            defer allocator.free(hex);
+            try writer.writeAll(hex);
+        } else {
+            try writer.print("{d}", .{result.cardinality()});
+        }
+    } else if (std.mem.startsWith(u8, key, "contains_")) {
+        // Signed i32 suffix, reinterpreted to u32.
+        const v = std.fmt.parseInt(i32, key[9..], 10) catch {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        try writer.writeAll(if (set.contains(@bitCast(v))) "true" else "false");
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+const RoaringAlgebraOp = enum { @"union", intersect, and_not, xor };
+const RoaringAlgebraKey = struct { op: RoaringAlgebraOp, hex: bool };
+
+fn roaringSetAlgebraKey(key: []const u8) ?RoaringAlgebraKey {
+    const table = [_]struct { name: []const u8, op: RoaringAlgebraOp, hex: bool }{
+        .{ .name = "union_serialized_hex", .op = .@"union", .hex = true },
+        .{ .name = "intersect_serialized_hex", .op = .intersect, .hex = true },
+        .{ .name = "and_not_serialized_hex", .op = .and_not, .hex = true },
+        .{ .name = "xor_serialized_hex", .op = .xor, .hex = true },
+        .{ .name = "union_cardinality", .op = .@"union", .hex = false },
+        .{ .name = "intersect_cardinality", .op = .intersect, .hex = false },
+        .{ .name = "and_not_cardinality", .op = .and_not, .hex = false },
+        .{ .name = "xor_cardinality", .op = .xor, .hex = false },
+    };
+    for (table) |e| {
+        if (std.mem.eql(u8, key, e.name)) return .{ .op = e.op, .hex = e.hex };
+    }
+    return null;
+}
+
+fn runRoaring(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    var maybe_set = (try buildRoaring(operations, allocator)) orelse return; // malformed -> SKIP
+    defer maybe_set.deinit();
+
+    // The `other` collection (a second RoaringU32) drives the set-algebra keys.
+    var other: ?RoaringU32 = null;
+    defer if (other) |*o| o.deinit();
+    if (root.get("other")) |other_json| {
+        const other_ops = other_json.object.get("operations").?.array;
+        other = (try buildRoaring(other_ops, allocator)) orelse return; // malformed -> SKIP
+    }
+
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalRoaringAssertion(key, &maybe_set, if (other) |*o| o else null, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        // container_types is the lone string[] assertion; renderExpected's
+        // i32-array path can't handle string elements, so render it here.
+        if (std.mem.eql(u8, key, "container_types")) {
+            try renderRoaringStringArray(ebuf.writer(), expected);
+        } else {
+            try renderExpected(ebuf.writer(), expected, key, .none);
+        }
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+/// Render an expected JSON string[] (container_types) into the same quoted,
+/// comma-joined form the runner emits.
+fn renderRoaringStringArray(writer: anytype, v: std.json.Value) !void {
+    try writer.writeAll("[");
+    switch (v) {
+        .array => |arr| for (arr.items, 0..) |e, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("\"{s}\"", .{e.string});
+        },
+        else => {},
+    }
+    try writer.writeAll("]");
 }
 
 // ── HashPipeline runner (spec/features/hash-pipeline.md) ─────────────────────
