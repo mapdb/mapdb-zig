@@ -5,6 +5,7 @@
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
 pub const hash_table = @import("hash_table.zig");
+pub const hash = @import("hash.zig");
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
@@ -23,10 +24,12 @@ pub const deque = @import("deque/deque.zig");
 pub const hashmap = @import("hashmap/hashmap.zig");
 pub const hashset = @import("hashset/hashset.zig");
 pub const immutable = @import("immutable/immutable.zig");
+pub const immutable_sorted = @import("immutable_sorted/immutable_sorted.zig");
 pub const interval = @import("interval/interval.zig");
 pub const multimap = @import("multimap/multimap.zig");
 pub const parallel = @import("parallel/parallel.zig");
 pub const priority_queue = @import("priority_queue/priority_queue.zig");
+pub const range = @import("range.zig");
 pub const stack = @import("stack/stack.zig");
 pub const treemap = @import("treemap/treemap.zig");
 pub const treeset = @import("treeset/treeset.zig");
@@ -41,17 +44,27 @@ pub const I32TreeSet = @import("treeset/treeset.zig").I32TreeSet;
 pub const I32I64TreeMap = @import("treemap/treemap.zig").I32I64TreeMap;
 pub const I32I64Pair = @import("tuple/tuple.zig").I32I64Pair;
 pub const I32Interval = @import("interval/interval.zig").I32Interval;
+pub const Range = @import("range.zig").Range;
+pub const BoundType = @import("range.zig").BoundType;
+pub const I32Range = @import("range.zig").I32Range;
 pub const ImmutableI32ArrayList = @import("immutable/immutable.zig").ImmutableI32ArrayList;
 pub const ImmutableI32HashSet = @import("immutable/immutable.zig").ImmutableI32HashSet;
 pub const ImmutableI32HashBag = @import("immutable/immutable.zig").ImmutableI32HashBag;
 pub const ImmutableI32ArrayStack = @import("immutable/immutable.zig").ImmutableI32ArrayStack;
+pub const ImmutableSortedMap = @import("immutable_sorted/immutable_sorted.zig").ImmutableSortedMap;
+pub const ImmutableSortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableSortedSet;
+pub const ImmutableI32I32SortedMap = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32I32SortedMap;
+pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig").ImmutableI32SortedSet;
 
 comptime {
+    _ = @import("hash.zig");
     _ = @import("float_order.zig");
     _ = @import("pump.zig");
     _ = @import("pump_test.zig");
     _ = @import("regression_phase3_test.zig");
     _ = @import("object/object.zig");
+    _ = @import("object/treemap.zig");
+    _ = @import("object/treeset.zig");
     _ = @import("api/api.zig");
     _ = @import("arraylist/arraylist.zig");
     _ = @import("arraylist/array_list.zig");
@@ -70,12 +83,15 @@ comptime {
     _ = @import("hashset/hash_set.zig");
     _ = @import("immutable/immutable.zig");
     _ = @import("immutable/immutable_test.zig");
+    _ = @import("immutable_sorted/immutable_sorted.zig");
+    _ = @import("immutable_sorted/immutable_sorted_test.zig");
     _ = @import("interval/interval.zig");
     _ = @import("interval/interval_test.zig");
     _ = @import("multimap/multimap.zig");
     _ = @import("multimap/multimap_test.zig");
     _ = @import("parallel/parallel.zig");
     _ = @import("priority_queue/priority_queue.zig");
+    _ = @import("range.zig");
     _ = @import("stack/stack.zig");
     _ = @import("stack/array_stack.zig");
     _ = @import("treemap/treemap.zig");

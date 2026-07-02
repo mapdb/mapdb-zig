@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const agg = @import("treemap.zig");
+const Range = @import("../range.zig").Range;
 
 const TreeMap = agg.TreeMap;
 
@@ -301,4 +302,222 @@ test "TreeMap(char, i32) key: u21 natural order" {
     try std.testing.expectEqual(@as(u21, 'a'), keys[0]);
     try std.testing.expectEqual(@as(u21, 'm'), keys[1]);
     try std.testing.expectEqual(@as(u21, 'z'), keys[2]);
+}
+
+// ---------------------------------------------------------------------------
+// NavigableMap surface (mirrors mapdb-rust/src/object/treemap.rs tests).
+// ---------------------------------------------------------------------------
+
+const I32Map = TreeMap(i32, i32);
+const I32Range = Range(i32);
+
+fn mapOf(allocator: std.mem.Allocator, keys: []const i32) !I32Map {
+    var m = I32Map.init(allocator);
+    for (keys) |k| _ = try m.put(k, k *% 10);
+    return m;
+}
+
+test "TreeMap nav: floor/ceiling/lower/higher strictness + entry forms" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 20), m.floorKey(25));
+    try std.testing.expectEqual(@as(?i32, 30), m.ceilingKey(25));
+    try std.testing.expectEqual(@as(?i32, 10), m.floorKey(10)); // inclusive
+    try std.testing.expectEqual(@as(?i32, null), m.lowerKey(10)); // strict
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(30)); // strict
+    try std.testing.expectEqual(@as(?i32, 10), m.ceilingKey(5));
+    try std.testing.expectEqual(@as(?i32, 20), m.lowerKey(25));
+    try std.testing.expectEqual(@as(?i32, 30), m.higherKey(25));
+    // entry forms carry value = key*10.
+    const fe = m.floorEntry(25).?;
+    try std.testing.expectEqual(@as(i32, 20), fe.key);
+    try std.testing.expectEqual(@as(i32, 200), fe.value);
+    const ce = m.ceilingEntry(25).?;
+    try std.testing.expectEqual(@as(i32, 30), ce.key);
+    try std.testing.expectEqual(@as(i32, 300), ce.value);
+    try std.testing.expectEqual(@as(i32, 10), m.firstKey().?);
+    try std.testing.expectEqual(@as(i32, 30), m.lastKey().?);
+    try std.testing.expectEqual(@as(i32, 100), m.firstEntry().?.value);
+    try std.testing.expectEqual(@as(i32, 300), m.lastEntry().?.value);
+}
+
+test "TreeMap nav: empty map returns absence for every nav query" {
+    var m = try mapOf(std.testing.allocator, &.{});
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, null), m.floorKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.ceilingKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.lowerKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.firstKey());
+    try std.testing.expectEqual(@as(?i32, null), m.lastKey());
+    try std.testing.expect(m.firstEntry() == null);
+    try std.testing.expect(m.floorEntry(5) == null);
+}
+
+test "TreeMap nav: signed i32 MIN/MAX + descending keys" {
+    var m = try mapOf(std.testing.allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), m.floorKey(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, null), m.lowerKey(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(?i32, 0), m.higherKey(-1));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), m.ceilingKey(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, null), m.higherKey(std.math.maxInt(i32)));
+    const desc = try m.descendingKeys(std.testing.allocator);
+    defer std.testing.allocator.free(desc);
+    try std.testing.expectEqualSlices(i32, &.{ std.math.maxInt(i32), 1, 0, -1, std.math.minInt(i32) }, desc);
+}
+
+test "TreeMap poll: first/last then empty (does not trap)" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30 });
+    defer m.deinit();
+    const f = m.pollFirstEntry().?;
+    try std.testing.expectEqual(@as(i32, 10), f.key);
+    try std.testing.expectEqual(@as(i32, 100), f.value);
+    const l = m.pollLastEntry().?;
+    try std.testing.expectEqual(@as(i32, 30), l.key);
+    try std.testing.expectEqual(@as(usize, 1), m.len());
+    try std.testing.expectEqual(@as(i32, 20), m.pollFirstEntry().?.key);
+    try std.testing.expect(m.pollFirstEntry() == null);
+    try std.testing.expect(m.pollLastEntry() == null);
+}
+
+test "TreeMap poll: single element then empty" {
+    var m = try mapOf(std.testing.allocator, &.{});
+    defer m.deinit();
+    _ = try m.put(7, 700);
+    const e = m.pollFirstEntry().?;
+    try std.testing.expectEqual(@as(i32, 7), e.key);
+    try std.testing.expectEqual(@as(i32, 700), e.value);
+    try std.testing.expect(m.pollFirstEntry() == null);
+    try std.testing.expect(m.isEmpty());
+}
+
+test "TreeMap range: closed_open + descending + entries" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 });
+    defer m.deinit();
+    const rk = try m.rangeKeysIn(I32Range.closedOpen(30, 70), std.testing.allocator);
+    defer std.testing.allocator.free(rk);
+    try std.testing.expectEqualSlices(i32, &.{ 30, 40, 50, 60 }, rk);
+    const rkd = try m.descendingRangeKeys(I32Range.closedOpen(30, 70), std.testing.allocator);
+    defer std.testing.allocator.free(rkd);
+    try std.testing.expectEqualSlices(i32, &.{ 60, 50, 40, 30 }, rkd);
+    const re = try m.rangeEntriesIn(I32Range.closedOpen(30, 50), std.testing.allocator);
+    defer std.testing.allocator.free(re);
+    try std.testing.expectEqual(@as(usize, 2), re.len);
+    try std.testing.expectEqual(@as(i32, 30), re[0].key);
+    try std.testing.expectEqual(@as(i32, 300), re[0].value);
+    try std.testing.expectEqual(@as(i32, 40), re[1].key);
+}
+
+test "TreeMap range: open(1,2) over i32 matches nothing (not cut-empty)" {
+    var m = try mapOf(std.testing.allocator, &.{ 1, 2 });
+    defer m.deinit();
+    const rk = try m.rangeKeysIn(I32Range.open(1, 2), std.testing.allocator);
+    defer std.testing.allocator.free(rk);
+    try std.testing.expectEqual(@as(usize, 0), rk.len);
+    try std.testing.expectEqual(@as(usize, 0), m.removeRange(I32Range.open(1, 2)));
+    try std.testing.expectEqual(@as(usize, 2), m.len());
+}
+
+test "TreeMap removeRange: count + no-op repeat" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 4), m.removeRange(I32Range.closedOpen(30, 70)));
+    try std.testing.expectEqual(@as(usize, 0), m.removeRange(I32Range.closedOpen(30, 70)));
+    try std.testing.expectEqualSlices(i32, &.{ 10, 20, 70, 80, 90, 100 }, m.keysSlice());
+}
+
+test "TreeMap subMap: independent materialized snapshot" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    var snap = try m.subMap(I32Range.closed(20, 40), std.testing.allocator);
+    defer snap.deinit();
+    try std.testing.expectEqualSlices(i32, &.{ 20, 30, 40 }, snap.keysSlice());
+    // Mutate snapshot — original unchanged.
+    _ = try snap.put(99, 990);
+    _ = snap.remove(20);
+    try std.testing.expect(m.containsKey(20));
+    try std.testing.expect(!m.containsKey(99));
+    // Mutate original — snapshot unchanged.
+    _ = m.remove(30);
+    try std.testing.expect(snap.containsKey(30));
+}
+
+test "TreeMap descendingEntries: all entries descending" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30 });
+    defer m.deinit();
+    const de = try m.descendingEntries(std.testing.allocator);
+    defer std.testing.allocator.free(de);
+    try std.testing.expectEqual(@as(usize, 3), de.len);
+    try std.testing.expectEqual(@as(i32, 30), de[0].key);
+    try std.testing.expectEqual(@as(i32, 300), de[0].value);
+    try std.testing.expectEqual(@as(i32, 10), de[2].key);
+}
+
+// ---------------------------------------------------------------------------
+// Order statistics (rank / select).
+// ---------------------------------------------------------------------------
+
+test "TreeMap rank: present and absent keys" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), m.rank(10));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(30));
+    try std.testing.expectEqual(@as(usize, 4), m.rank(50));
+    try std.testing.expectEqual(@as(usize, 0), m.rank(5));
+    try std.testing.expectEqual(@as(usize, 2), m.rank(25));
+    try std.testing.expectEqual(@as(usize, 5), m.rank(55));
+}
+
+test "TreeMap selectKey/selectEntry and round-trip" {
+    var m = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer m.deinit();
+    try std.testing.expectEqual(@as(?i32, 10), m.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, 30), m.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, 50), m.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(5));
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(999));
+    try std.testing.expectEqual(@as(i32, 10), m.selectEntry(0).?.key);
+    try std.testing.expectEqual(@as(i32, 100), m.selectEntry(0).?.value);
+    try std.testing.expectEqual(@as(i32, 300), m.selectEntry(2).?.value);
+    try std.testing.expect(m.selectEntry(5) == null);
+    var i: usize = 0;
+    while (i < m.len()) : (i += 1) {
+        const k = m.selectKey(i).?;
+        try std.testing.expectEqual(i, m.rank(k));
+        try std.testing.expectEqual(@as(?i32, k), m.selectKey(m.rank(k)));
+    }
+    try std.testing.expectEqual(@as(?i32, null), m.selectKey(m.len()));
+}
+
+test "TreeMap rank/select: empty, single, signed extremes, after remove" {
+    var empty = I32Map.init(std.testing.allocator);
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.rank(5));
+    try std.testing.expectEqual(@as(?i32, null), empty.selectKey(0));
+
+    var single = try mapOf(std.testing.allocator, &.{7});
+    defer single.deinit();
+    try std.testing.expectEqual(@as(usize, 0), single.rank(6));
+    try std.testing.expectEqual(@as(usize, 0), single.rank(7));
+    try std.testing.expectEqual(@as(usize, 1), single.rank(8));
+    try std.testing.expectEqual(@as(?i32, 7), single.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, null), single.selectKey(1));
+
+    var ext = try mapOf(std.testing.allocator, &.{ std.math.minInt(i32), -1, 0, 1, std.math.maxInt(i32) });
+    defer ext.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ext.rank(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(usize, 2), ext.rank(0));
+    try std.testing.expectEqual(@as(usize, 4), ext.rank(std.math.maxInt(i32)));
+    try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), ext.selectKey(0));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), ext.selectKey(4));
+    try std.testing.expectEqual(@as(?i32, null), ext.selectKey(5));
+
+    var rem = try mapOf(std.testing.allocator, &.{ 10, 20, 30, 40, 50 });
+    defer rem.deinit();
+    _ = rem.remove(30);
+    try std.testing.expectEqual(@as(usize, 2), rem.rank(40));
+    try std.testing.expectEqual(@as(usize, 2), rem.rank(35));
+    try std.testing.expectEqual(@as(?i32, 40), rem.selectKey(2));
+    try std.testing.expectEqual(@as(?i32, null), rem.selectKey(4));
 }

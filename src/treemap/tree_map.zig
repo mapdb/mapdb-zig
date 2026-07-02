@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const float_order = @import("../float_order.zig");
 const pump = @import("../pump.zig");
 const DupPolicy = pump.DupPolicy;
+const Range = @import("../range.zig").Range;
 
 /// Total-ordering comparator for tree-map keys of type `K`.
 ///
@@ -261,7 +262,12 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        /// Functional FILTER convenience: a new map of the entries matching
+        /// `predicate`. Named `selectWhere` (not `select`) because the bare
+        /// `select` name is reserved for the order-statistic select on the
+        /// sorted set/tree surface (see `selectKey`/`selectEntry`); see
+        /// `spec/features/rank-select.md`.
+        pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             for (self.keys.items, self.vals.items) |k, val| {
                 if (predicate(ctx, k, val)) _ = try result.put(k, val);
@@ -341,6 +347,245 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             }
             if (lo >= hi) return self.keys.items[0..0];
             return self.keys.items[lo..hi];
+        }
+
+        // ---- NavigableMap surface ----
+        //
+        // Point navigation, poll, Range-based slice/descending iteration and
+        // removeRange. Mirrors the codex-approved Rust reference
+        // (mapdb-rust/src/object/treemap.rs) and the spec
+        // (spec/features/navigable-map.md). Strictness: floor `<= k`,
+        // ceiling `>= k`, lower `< k` (strict), higher `> k` (strict). Range
+        // membership is EXACTLY `range.contains(key)` — `open(1, 2)` over i32
+        // matches NOTHING yet is a valid, non-cut-empty range; emptiness is
+        // never inferred from the cuts.
+        //
+        // An `Entry` is the same `{ key, value }` shape `min`/`max` return.
+        pub const Entry = struct { key: K, value: V };
+
+        /// Greatest key `<= k` and its value, or null.
+        pub fn floorEntry(self: *const Self, k: K) ?Entry {
+            const r = self.findIndex(k);
+            if (r.found) return .{ .key = self.keys.items[r.index], .value = self.vals.items[r.index] };
+            if (r.index > 0) return .{ .key = self.keys.items[r.index - 1], .value = self.vals.items[r.index - 1] };
+            return null;
+        }
+
+        /// Greatest key `<= k`, or null.
+        pub fn floorKey(self: *const Self, k: K) ?K {
+            const e = self.floorEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Least key `>= k` and its value, or null.
+        pub fn ceilingEntry(self: *const Self, k: K) ?Entry {
+            const r = self.findIndex(k);
+            if (r.index < self.keys.items.len) return .{ .key = self.keys.items[r.index], .value = self.vals.items[r.index] };
+            return null;
+        }
+
+        /// Least key `>= k`, or null.
+        pub fn ceilingKey(self: *const Self, k: K) ?K {
+            const e = self.ceilingEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Greatest key `< k` (strict) and its value, or null.
+        pub fn lowerEntry(self: *const Self, k: K) ?Entry {
+            const r = self.findIndex(k);
+            // findIndex returns the insertion point; whether or not `k` is
+            // present, everything strictly below it lives at `r.index - 1`.
+            if (r.index > 0) return .{ .key = self.keys.items[r.index - 1], .value = self.vals.items[r.index - 1] };
+            return null;
+        }
+
+        /// Greatest key `< k` (strict), or null.
+        pub fn lowerKey(self: *const Self, k: K) ?K {
+            const e = self.lowerEntry(k) orelse return null;
+            return e.key;
+        }
+
+        /// Least key `> k` (strict) and its value, or null.
+        pub fn higherEntry(self: *const Self, k: K) ?Entry {
+            const r = self.findIndex(k);
+            // The first key strictly above `k` is at the insertion point when
+            // `k` is absent, or one past it when `k` is present.
+            const idx = if (r.found) r.index + 1 else r.index;
+            if (idx < self.keys.items.len) return .{ .key = self.keys.items[idx], .value = self.vals.items[idx] };
+            return null;
+        }
+
+        /// Least key `> k` (strict), or null.
+        pub fn higherKey(self: *const Self, k: K) ?K {
+            const e = self.higherEntry(k) orelse return null;
+            return e.key;
+        }
+
+        // ---- Order statistics (rank / select) ----
+        //
+        // The keys/values are held in lock-step SORTED ArrayLists, so the
+        // order-statistic forms are direct index arithmetic over the backing
+        // slices — `rank` is the binary-search lower bound, `select` is an index
+        // into the sorted slice. Observable results match the comparator-bearing
+        // object-tree variant. See `spec/features/rank-select.md`.
+
+        /// Returns the number of keys strictly less than `key` under the map's
+        /// key ordering — the 0-based lower-bound index the key occupies (if
+        /// present) or would occupy (if absent). Defined for present and absent
+        /// keys alike; result in `0..=len()`. Pure query.
+        pub fn rank(self: *const Self, key: K) usize {
+            return self.findIndex(key).index;
+        }
+
+        /// Returns the `i`-th smallest key (0-based), or null if `i >= len()`.
+        /// `i == len()` (and any larger index, including on an empty map) is
+        /// absence, not a trap. Round-trips with `rank`.
+        pub fn selectKey(self: *const Self, i: usize) ?K {
+            if (i >= self.keys.items.len) return null;
+            return self.keys.items[i];
+        }
+
+        /// Returns the `i`-th smallest `{ key, value }` entry (0-based), or null
+        /// if `i >= len()`. Same index domain as `selectKey`.
+        pub fn selectEntry(self: *const Self, i: usize) ?Entry {
+            if (i >= self.keys.items.len) return null;
+            return .{ .key = self.keys.items[i], .value = self.vals.items[i] };
+        }
+
+        /// Minimum entry, or null. Alias for `min` completing the surface.
+        pub fn firstEntry(self: *const Self) ?Entry {
+            const m = self.min() orelse return null;
+            return .{ .key = m.key, .value = m.value };
+        }
+
+        /// Minimum key, or null.
+        pub fn firstKey(self: *const Self) ?K {
+            const m = self.min() orelse return null;
+            return m.key;
+        }
+
+        /// Maximum entry, or null. Alias for `max`.
+        pub fn lastEntry(self: *const Self) ?Entry {
+            const m = self.max() orelse return null;
+            return .{ .key = m.key, .value = m.value };
+        }
+
+        /// Maximum key, or null.
+        pub fn lastKey(self: *const Self) ?K {
+            const m = self.max() orelse return null;
+            return m.key;
+        }
+
+        /// Removes and returns the minimum entry, or null if empty. Does not
+        /// trap on an empty map.
+        pub fn pollFirstEntry(self: *Self) ?Entry {
+            if (self.keys.items.len == 0) return null;
+            const e = Entry{ .key = self.keys.items[0], .value = self.vals.items[0] };
+            _ = self.keys.orderedRemove(0);
+            _ = self.vals.orderedRemove(0);
+            return e;
+        }
+
+        /// Removes and returns the maximum entry, or null if empty. Does not
+        /// trap on an empty map.
+        pub fn pollLastEntry(self: *Self) ?Entry {
+            const n = self.keys.items.len;
+            if (n == 0) return null;
+            const e = Entry{ .key = self.keys.items[n - 1], .value = self.vals.items[n - 1] };
+            _ = self.keys.pop();
+            _ = self.vals.pop();
+            return e;
+        }
+
+        /// Keys whose key ∈ `range`, ascending. Caller owns the returned slice
+        /// (independent snapshot; not invalidated by later mutation).
+        pub fn rangeKeysIn(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
+            var out = std.ArrayListUnmanaged(K){};
+            errdefer out.deinit(allocator);
+            for (self.keys.items) |k| {
+                if (range.contains(k)) try out.append(allocator, k);
+            }
+            return out.toOwnedSlice(allocator);
+        }
+
+        /// `{ key, value }` entries whose key ∈ `range`, ascending. Caller owns
+        /// the returned slice.
+        pub fn rangeEntriesIn(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
+            var out = std.ArrayListUnmanaged(Entry){};
+            errdefer out.deinit(allocator);
+            for (self.keys.items, self.vals.items) |k, v| {
+                if (range.contains(k)) try out.append(allocator, .{ .key = k, .value = v });
+            }
+            return out.toOwnedSlice(allocator);
+        }
+
+        /// Keys whose key ∈ `range`, descending. Caller owns the slice.
+        pub fn descendingRangeKeys(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
+            const asc = try self.rangeKeysIn(range, allocator);
+            std.mem.reverse(K, asc);
+            return asc;
+        }
+
+        /// `{ key, value }` entries whose key ∈ `range`, descending. Caller owns.
+        pub fn descendingRangeEntries(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
+            const asc = try self.rangeEntriesIn(range, allocator);
+            std.mem.reverse(Entry, asc);
+            return asc;
+        }
+
+        /// All keys, descending. Caller owns the slice.
+        pub fn descendingKeys(self: *const Self, allocator: Allocator) Allocator.Error![]K {
+            const out = try allocator.alloc(K, self.keys.items.len);
+            for (self.keys.items, 0..) |k, i| out[self.keys.items.len - 1 - i] = k;
+            return out;
+        }
+
+        /// All `{ key, value }` entries, descending. Caller owns the slice.
+        pub fn descendingEntries(self: *const Self, allocator: Allocator) Allocator.Error![]Entry {
+            const n = self.keys.items.len;
+            const out = try allocator.alloc(Entry, n);
+            for (self.keys.items, self.vals.items, 0..) |k, v, i| out[n - 1 - i] = .{ .key = k, .value = v };
+            return out;
+        }
+
+        /// A new INDEPENDENT map of the entries whose key ∈ `range`
+        /// (materialized snapshot — not a live view). Mutating the snapshot
+        /// never affects the original and vice versa. The snapshot uses the
+        /// same fixed key ordering as the source (this generic tree is always
+        /// natural / float-total order; comparator-keyed ordering is preserved
+        /// by the object-tree variant). The caller owns the returned map and
+        /// must `deinit` it with the same allocator.
+        pub fn subMap(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error!Self {
+            var out = init(allocator);
+            errdefer out.deinit();
+            for (self.keys.items, self.vals.items) |k, v| {
+                if (range.contains(k)) _ = try out.put(k, v);
+            }
+            return out;
+        }
+
+        /// Removes every entry whose key ∈ `range`; returns the count removed.
+        /// A range that matches nothing is a no-op returning 0.
+        pub fn removeRange(self: *Self, range: Range(K)) usize {
+            // Collect surviving entries, then swap in place. Keys are sorted, so
+            // matches form a contiguous run, but `range.contains` is the only
+            // membership rule we are allowed to use.
+            var write: usize = 0;
+            var removed: usize = 0;
+            const ks = self.keys.items;
+            const vs = self.vals.items;
+            for (ks, vs) |k, v| {
+                if (range.contains(k)) {
+                    removed += 1;
+                } else {
+                    ks[write] = k;
+                    vs[write] = v;
+                    write += 1;
+                }
+            }
+            self.keys.shrinkRetainingCapacity(write);
+            self.vals.shrinkRetainingCapacity(write);
+            return removed;
         }
 
         // ---- Formatting ----
