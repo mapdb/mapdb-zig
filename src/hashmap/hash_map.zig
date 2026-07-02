@@ -201,7 +201,8 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// the open-addressing table to fit every element at the load factor in
         /// one allocation (`cap = nextPow2(floor(4n/3)+1)`), then inserting via
         /// the normal probe. No mid-load rehash; the resulting slot layout is
-        /// byte-identical to the same pairs inserted one-by-one. O(n).
+        /// byte-identical to a put-loop into a table pre-sized to the same
+        /// capacity. O(n).
         ///
         /// Input order is irrelevant (hash). On a duplicate key:
         /// `policy == .err` → `error.DuplicateKey`; `policy == .ignore` → keep

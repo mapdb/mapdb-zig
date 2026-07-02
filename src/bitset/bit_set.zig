@@ -38,13 +38,14 @@ pub const BitSet = struct {
     /// duplicates harmless). Sizes the word array once to `max(indices)+1` bits,
     /// then ORs each bit in — O(n + maxIndex/64) with a single allocation. On
     /// allocator failure nothing leaks.
-    pub fn fromIndices(allocator: Allocator, indices: []const usize) Allocator.Error!BitSet {
+    pub fn fromIndices(allocator: Allocator, indices: []const usize) (Allocator.Error || error{Overflow})!BitSet {
         var max_bit: usize = 0;
         var any = false;
         for (indices) |idx| {
             any = true;
             if (idx > max_bit) max_bit = idx;
         }
+        if (any and max_bit == std.math.maxInt(usize)) return error.Overflow;
         var b = if (any) try BitSet.withBitLength(allocator, max_bit + 1) else BitSet.init(allocator);
         errdefer b.deinit();
         for (indices) |idx| {

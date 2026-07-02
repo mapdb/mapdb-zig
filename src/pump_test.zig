@@ -351,6 +351,31 @@ test "TreeBag.fromSortedCounts: parallel (value,count); NotSorted; overflow" {
 // Hash family — bulkLoad / bulkLoadExact, zero rehash, equivalence, dups
 // ===========================================================================
 
+fn expectHashMapSlotsEqual(
+    pumped: *const HashMap(i32, i64),
+    incremental: *const HashMap(i32, i64),
+) !void {
+    try testing.expectEqual(pumped.inner.capacity, incremental.inner.capacity);
+    for (pumped.inner.entries, incremental.inner.entries) |a, b| {
+        try testing.expectEqual(a.occupied, b.occupied);
+        if (a.occupied) {
+            try testing.expectEqual(a.key, b.key);
+            try testing.expectEqual(a.value, b.value);
+        }
+    }
+}
+
+fn expectHashSetSlotsEqual(
+    pumped: *const HashSet(i32),
+    incremental: *const HashSet(i32),
+) !void {
+    try testing.expectEqual(pumped.inner.capacity, incremental.inner.capacity);
+    for (pumped.inner.entries, incremental.inner.entries) |a, b| {
+        try testing.expectEqual(a.occupied, b.occupied);
+        if (a.occupied) try testing.expectEqual(a.key, b.key);
+    }
+}
+
 test "HashMap.bulkLoad: equals incremental put-loop" {
     const a = testing.allocator;
     const keys = [_]i32{ 5, 2, 9, 1, 7 };
@@ -395,6 +420,31 @@ test "HashMap.bulkLoadExact: zero rehash at n = 3*2^k" {
         try testing.expect(m.len() * 4 < cap_after * 3);
         for (0..n) |i| try testing.expectEqual(@as(?i64, @intCast(i)), m.get(@intCast(i)));
     }
+}
+
+test "HashMap.bulkLoadExact: collision-heavy layout matches pre-sized put-loop" {
+    const a = testing.allocator;
+    const keys = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
+    const vals = [_]i64{ 0, 160, 320, 480, 640, 800, 960, 1120, 10, 170, 330, 490 };
+    var pumped = try HashMap(i32, i64).bulkLoadExact(a, &keys, &vals, keys.len, .err);
+    defer pumped.deinit();
+
+    var incremental = try HashMap(i32, i64).init(a);
+    defer incremental.deinit();
+    try incremental.ensureTotalCapacity(keys.len);
+    for (keys, vals) |k, v| _ = try incremental.put(k, v);
+
+    try expectHashMapSlotsEqual(&pumped, &incremental);
+}
+
+test "HashMap.bulkLoadExact: one table allocation at exact zero-rehash size" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    const keys = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
+    const vals = [_]i64{ 0, 160, 320, 480, 640, 800, 960, 1120, 10, 170, 330, 490 };
+    var m = try HashMap(i32, i64).bulkLoadExact(failing.allocator(), &keys, &vals, keys.len, .err);
+    defer m.deinit();
+    try testing.expectEqual(@as(usize, 32), m.inner.capacity);
+    for (keys, vals) |k, v| try testing.expectEqual(@as(?i64, v), m.get(k));
 }
 
 test "HashMap.bulkLoadExact: source length, not inserted cardinality, enforces n" {
@@ -469,6 +519,29 @@ test "HashSet.bulkLoad / bulkLoadExact: equivalence + zero rehash" {
     try testing.expectError(error.TooManyElements, HashSet(i32).bulkLoadExact(a, &[_]i32{ 1, 1, 1 }, 2, .ignore));
 }
 
+test "HashSet.bulkLoadExact: collision-heavy layout matches pre-sized add-loop" {
+    const a = testing.allocator;
+    const vals = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
+    var pumped = try HashSet(i32).bulkLoadExact(a, &vals, vals.len, .err);
+    defer pumped.deinit();
+
+    var incremental = try HashSet(i32).init(a);
+    defer incremental.deinit();
+    try incremental.ensureTotalCapacity(vals.len);
+    for (vals) |v| _ = try incremental.add(v);
+
+    try expectHashSetSlotsEqual(&pumped, &incremental);
+}
+
+test "HashSet.bulkLoadExact: one table allocation at exact zero-rehash size" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    const vals = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
+    var s = try HashSet(i32).bulkLoadExact(failing.allocator(), &vals, vals.len, .err);
+    defer s.deinit();
+    try testing.expectEqual(@as(usize, 32), s.inner.capacity);
+    for (vals) |v| try testing.expect(s.contains(v));
+}
+
 test "HashBag.bulkLoad: flat values count; equals incremental" {
     const a = testing.allocator;
     const vals = [_]i32{ 1, 2, 1, 3, 1, 2 };
@@ -490,6 +563,12 @@ test "HashBag.bulkLoadCounts: parallel + overflow guard" {
     try testing.expectEqual(@as(usize, 9), b.totalSize());
     const big = std.math.maxInt(usize);
     try testing.expectError(error.CountOverflow, HashBag(i32).bulkLoadCounts(a, &[_]i32{ 1, 2 }, &[_]usize{ big, 1 }));
+}
+
+test "HashBag.bulkLoad: no leak on allocator failure" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    const r = HashBag(i32).bulkLoad(failing.allocator(), &[_]i32{ 1, 2, 3, 1 });
+    try testing.expectError(error.OutOfMemory, r);
 }
 
 test "HashBiMap.bulkLoad: bijection + two-sided conflict + no leak" {
@@ -586,6 +665,20 @@ test "SetMultimap.fromSortedKeyValues: validates value order and dedupes adjacen
     try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 2, 1 }, &[_]i32{ 10, 20, 30 }));
 }
 
+test "Multimap pump paths: no leak on allocator failure" {
+    var list_failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    try testing.expectError(
+        error.OutOfMemory,
+        ListMultimap(i32, i32).fromSortedKeyValues(list_failing.allocator(), &[_]i32{ 1, 1, 2, 2 }, &[_]i32{ 10, 11, 20, 21 }),
+    );
+
+    var set_failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    try testing.expectError(
+        error.OutOfMemory,
+        SetMultimap(i32, i32).fromSortedKeyValues(set_failing.allocator(), &[_]i32{ 1, 1, 2, 2 }, &[_]i32{ 10, 11, 20, 21 }),
+    );
+}
+
 // ===========================================================================
 // BitSet.fromIndices
 // ===========================================================================
@@ -612,6 +705,11 @@ test "BitSet.fromIndices: empty" {
     defer b.deinit();
     try testing.expectEqual(@as(usize, 0), b.cardinality());
     try testing.expectEqual(@as(usize, 0), b.len());
+}
+
+test "BitSet.fromIndices: max index is overflow" {
+    const a = testing.allocator;
+    try testing.expectError(error.Overflow, BitSet.fromIndices(a, &[_]usize{std.math.maxInt(usize)}));
 }
 
 // ===========================================================================

@@ -70,6 +70,10 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
 
         const Self = @This();
 
+        fn checkedHashCapacity(n: usize) Allocator.Error!u32 {
+            return std.math.cast(u32, n) orelse error.OutOfMemory;
+        }
+
         /// Canonicalizes a `K` key into its backing-map key.
         fn mapKey(key: K) MK {
             return if (@typeInfo(K) == .float) @as(MK, @bitCast(key)) else key;
@@ -172,6 +176,8 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                     run = .{};
                 } else {
                     try gop.value_ptr.appendSlice(self.allocator, run.items);
+                    run.deinit(allocator);
+                    run = .{};
                 }
                 self.total_size += run_len;
                 i = j;
@@ -186,7 +192,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
             std.debug.assert(keys.len == vals.len);
             var self = Self.init(allocator);
             errdefer self.deinit();
-            try self.inner.ensureUnusedCapacity(self.allocator, @intCast(keys.len));
+            try self.inner.ensureUnusedCapacity(self.allocator, try checkedHashCapacity(keys.len));
             for (keys, vals) |k, v| try self.put(k, v);
             return self;
         }
@@ -286,12 +292,12 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         /// without rehashing. Per-key value lists grow independently.
         /// Returns `error.OutOfMemory` if the allocator fails.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            try self.inner.ensureUnusedCapacity(self.allocator, @intCast(additional));
+            try self.inner.ensureUnusedCapacity(self.allocator, try checkedHashCapacity(additional));
         }
 
         /// Ensures the backing map's total capacity is at least `new_capacity`.
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
-            try self.inner.ensureTotalCapacity(self.allocator, @intCast(new_capacity));
+            try self.inner.ensureTotalCapacity(self.allocator, try checkedHashCapacity(new_capacity));
         }
 
         // ---- Iteration ----
