@@ -35,6 +35,9 @@ const ImmutableI32I32SortedMap = immutable_sorted.ImmutableI32I32SortedMap;
 const ImmutableI32SortedSet = immutable_sorted.ImmutableI32SortedSet;
 const hash = @import("hash.zig");
 const Bloom = @import("bloom.zig").Bloom;
+const bounded_lru = @import("bounded_lru/bounded_lru.zig");
+const I32I32BoundedLruMap = bounded_lru.I32I32BoundedLruMap;
+const EvictionCause = bounded_lru.EvictionCause;
 
 const CollectionKind = enum {
     hash_map,
@@ -1467,6 +1470,12 @@ pub fn main() !void {
     }
     if (std.mem.eql(u8, collection_type, "Bloom")) {
         try runBloom(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "BoundedLruMap<i32, i32>")) {
+        try runBoundedLru(name, operations, root.get("assertions").?.object, root, allocator, stdout);
         try stdout.flush();
         if (any_fail) std.process.exit(1);
         return;
@@ -3014,5 +3023,327 @@ fn emitI64Multimap(
     if (!std.mem.eql(u8, computed, ebuf.items)) {
         try stdout.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
         any_fail = true;
+    }
+}
+
+// ── BoundedLruMap<i32, i32> runner ──────────────────────────────────────────
+//
+// The bounded LRU map (spec/features/bounded-lru.md). Routes through the
+// PRODUCTION BoundedLruMap(i32, i32) + arena/slot-index intrusive LRU list. A
+// recording eviction callback appends each (key, value, cause) triple to the
+// shared eviction LOG — the load-bearing oracle. Direct translation of the Rust
+// runner's run_bounded_lru (mapdb-rust/src/bin/validate.rs).
+//
+// Operations (applied in listed order): put / put_at (put with `now`) / get /
+// get_or_default / contains_key / remove / clear / expire_entries /
+// snapshot_keys / snapshot_values / snapshot_entries. The runner records each
+// op's result (put_results, get_results, get_or_default_results,
+// contains_results, remove_results, expired_counts) and each snapshot
+// (snapshot_keys_log, snapshot_values_log, snapshot_entries_log) for the
+// result-log assertions.
+//
+// Explicit-order keys (emitted in LRU / invocation order, NEVER re-sorted):
+// `lru_order_keys`, `lru_order_values`, `eviction_log`, and the inner arrays of
+// the snapshot logs. The `eviction_log` element shape is `[key, value, "cause"]`
+// with `cause` the lower-case string "size"/"expired", byte-identical to the
+// Rust runner. now/ttl parse as decimal strings -> u64 (NEVER via f64). Unknown
+// ops/keys SKIP (forward-compat).
+
+/// Parse a `now`/`ttl` logical tick: a decimal STRING parsed straight to u64
+/// (never via f64), reusing the i64-suite's decimal-string discipline; a bare
+/// JSON number is accepted for small ticks.
+fn parseTick(v: std.json.Value) u64 {
+    return switch (v) {
+        .string => |s| std.fmt.parseInt(u64, s, 10) catch @panic("invalid u64 decimal-string tick"),
+        .number_string => |s| std.fmt.parseInt(u64, s, 10) catch @panic("invalid u64 number_string tick"),
+        .integer => |i| @as(u64, @intCast(i)),
+        else => @panic("expected u64 tick (decimal string or number)"),
+    };
+}
+
+/// Recording eviction log (the oracle): each callback appends one triple.
+const LruEvictLog = struct {
+    const Triple = struct { key: i32, value: i32, cause: EvictionCause };
+    entries: std.ArrayListUnmanaged(Triple) = .{},
+    allocator: Allocator,
+
+    fn record(ctx: ?*anyopaque, key: i32, value: i32, cause: EvictionCause) void {
+        const self: *LruEvictLog = @ptrCast(@alignCast(ctx.?));
+        self.entries.append(self.allocator, .{ .key = key, .value = value, .cause = cause }) catch @panic("eviction-log OOM");
+    }
+
+    fn deinit(self: *LruEvictLog) void {
+        self.entries.deinit(self.allocator);
+    }
+};
+
+/// Per-op result logs accumulated in execution order.
+const LruResultLog = struct {
+    const Pair = struct { key: i32, value: i32 };
+    put_results: std.ArrayListUnmanaged(?i32) = .{},
+    get_results: std.ArrayListUnmanaged(?i32) = .{},
+    get_or_default_results: std.ArrayListUnmanaged(i32) = .{},
+    contains_results: std.ArrayListUnmanaged(bool) = .{},
+    remove_results: std.ArrayListUnmanaged(?i32) = .{},
+    expired_counts: std.ArrayListUnmanaged(i32) = .{},
+    // Each snapshot op records one inner LRU-order array.
+    snapshot_keys_log: std.ArrayListUnmanaged([]i32) = .{},
+    snapshot_values_log: std.ArrayListUnmanaged([]i32) = .{},
+    snapshot_entries_log: std.ArrayListUnmanaged([]Pair) = .{},
+
+    fn deinit(self: *LruResultLog, allocator: Allocator) void {
+        self.put_results.deinit(allocator);
+        self.get_results.deinit(allocator);
+        self.get_or_default_results.deinit(allocator);
+        self.contains_results.deinit(allocator);
+        self.remove_results.deinit(allocator);
+        self.expired_counts.deinit(allocator);
+        for (self.snapshot_keys_log.items) |inner| allocator.free(inner);
+        self.snapshot_keys_log.deinit(allocator);
+        for (self.snapshot_values_log.items) |inner| allocator.free(inner);
+        self.snapshot_values_log.deinit(allocator);
+        for (self.snapshot_entries_log.items) |inner| allocator.free(inner);
+        self.snapshot_entries_log.deinit(allocator);
+    }
+};
+
+// --- canonical computed-string renderers (compact, no spaces) ---------------
+
+fn lruWriteI32Array(w: anytype, items: []const i32) !void {
+    try w.writeAll("[");
+    for (items, 0..) |x, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{d}", .{x});
+    }
+    try w.writeAll("]");
+}
+
+fn lruWriteOptI32Array(w: anytype, items: []const ?i32) !void {
+    try w.writeAll("[");
+    for (items, 0..) |x, i| {
+        if (i > 0) try w.writeAll(",");
+        if (x) |n| try w.print("{d}", .{n}) else try w.writeAll("null");
+    }
+    try w.writeAll("]");
+}
+
+fn lruWriteBoolArray(w: anytype, items: []const bool) !void {
+    try w.writeAll("[");
+    for (items, 0..) |b, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.writeAll(if (b) "true" else "false");
+    }
+    try w.writeAll("]");
+}
+
+fn lruWriteI32ArrayOfArrays(w: anytype, items: []const []i32) !void {
+    try w.writeAll("[");
+    for (items, 0..) |inner, i| {
+        if (i > 0) try w.writeAll(",");
+        try lruWriteI32Array(w, inner);
+    }
+    try w.writeAll("]");
+}
+
+// Renders the bounded-LRU computed value for a known assertion `key` into `w`.
+// Returns false if the key is unknown (the caller SKIPs). Read-only: assertion-
+// time `get_<k>` is computed via the LRU-order entries snapshot (NOT map.get,
+// which WOULD refresh recency); `contains_<k>` is read-only by definition.
+fn lruEvalAssertion(
+    w: anytype,
+    key: []const u8,
+    map: *I32I32BoundedLruMap,
+    rlog: *const LruResultLog,
+    elog: *const LruEvictLog,
+    allocator: Allocator,
+) !bool {
+    if (std.mem.eql(u8, key, "size")) {
+        try w.print("{d}", .{map.size()});
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try w.writeAll(if (map.isEmpty()) "true" else "false");
+    } else if (std.mem.eql(u8, key, "lru_order_keys")) {
+        const ks = try map.keys(allocator);
+        defer allocator.free(ks);
+        try lruWriteI32Array(w, ks);
+    } else if (std.mem.eql(u8, key, "lru_order_values")) {
+        const vs = try map.values(allocator);
+        defer allocator.free(vs);
+        try lruWriteI32Array(w, vs);
+    } else if (std.mem.eql(u8, key, "eviction_log")) {
+        try w.writeAll("[");
+        for (elog.entries.items, 0..) |e, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("[{d},{d},\"{s}\"]", .{ e.key, e.value, e.cause.asStr() });
+        }
+        try w.writeAll("]");
+    } else if (std.mem.eql(u8, key, "put_results")) {
+        try lruWriteOptI32Array(w, rlog.put_results.items);
+    } else if (std.mem.eql(u8, key, "get_results")) {
+        try lruWriteOptI32Array(w, rlog.get_results.items);
+    } else if (std.mem.eql(u8, key, "get_or_default_results")) {
+        try lruWriteI32Array(w, rlog.get_or_default_results.items);
+    } else if (std.mem.eql(u8, key, "contains_results")) {
+        try lruWriteBoolArray(w, rlog.contains_results.items);
+    } else if (std.mem.eql(u8, key, "remove_results")) {
+        try lruWriteOptI32Array(w, rlog.remove_results.items);
+    } else if (std.mem.eql(u8, key, "expired_counts")) {
+        try lruWriteI32Array(w, rlog.expired_counts.items);
+    } else if (std.mem.eql(u8, key, "snapshot_keys_log")) {
+        try lruWriteI32ArrayOfArrays(w, rlog.snapshot_keys_log.items);
+    } else if (std.mem.eql(u8, key, "snapshot_values_log")) {
+        try lruWriteI32ArrayOfArrays(w, rlog.snapshot_values_log.items);
+    } else if (std.mem.eql(u8, key, "snapshot_entries_log")) {
+        try w.writeAll("[");
+        for (rlog.snapshot_entries_log.items, 0..) |inner, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.writeAll("[");
+            for (inner, 0..) |p, j| {
+                if (j > 0) try w.writeAll(",");
+                try w.print("[{d},{d}]", .{ p.key, p.value });
+            }
+            try w.writeAll("]");
+        }
+        try w.writeAll("]");
+    } else if (std.mem.startsWith(u8, key, "get_")) {
+        // Read-only: walk the LRU snapshot rather than map.get (no refresh).
+        const k = std.fmt.parseInt(i32, key[4..], 10) catch return false;
+        const es = try map.entries(allocator);
+        defer allocator.free(es);
+        var found: ?i32 = null;
+        for (es) |e| {
+            if (e.key == k) {
+                found = e.value;
+                break;
+            }
+        }
+        if (found) |v| try w.print("{d}", .{v}) else try w.writeAll("null");
+    } else if (std.mem.startsWith(u8, key, "contains_")) {
+        const k = std.fmt.parseInt(i32, key[9..], 10) catch return false;
+        try w.writeAll(if (map.containsKey(k)) "true" else "false");
+    } else {
+        return false; // unknown key -> skip
+    }
+    return true;
+}
+
+// Renders the EXPECTED JSON value into the same compact canonical form the
+// computed side produces, so the two strings compare byte-for-byte. Cause
+// strings inside eviction_log stay quoted; all numbers/bools/null are bare.
+fn lruRenderExpected(w: anytype, v: std.json.Value) !void {
+    switch (v) {
+        .null => try w.writeAll("null"),
+        .bool => |b| try w.writeAll(if (b) "true" else "false"),
+        .integer => |i| try w.print("{d}", .{i}),
+        .number_string => |s| try w.writeAll(s),
+        .string => |s| try w.print("\"{s}\"", .{s}),
+        .array => |arr| {
+            try w.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try w.writeAll(",");
+                try lruRenderExpected(w, e);
+            }
+            try w.writeAll("]");
+        },
+        else => @panic("unexpected bounded-LRU expected value shape"),
+    }
+}
+
+fn runBoundedLru(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    const max_size: usize = @intCast(root.get("max_size").?.integer);
+    // ttl: null/absent => pure max-size map; otherwise a u64 logical tick.
+    const ttl: ?u64 = if (root.get("ttl")) |t| switch (t) {
+        .null => null,
+        else => parseTick(t),
+    } else null;
+
+    var elog = LruEvictLog{ .allocator = allocator };
+    defer elog.deinit();
+
+    var map = I32I32BoundedLruMap.init(allocator, .{
+        .max_size = max_size,
+        .ttl = ttl,
+        .on_evict = LruEvictLog.record,
+        .on_evict_ctx = &elog,
+    });
+    defer map.deinit();
+
+    var rlog = LruResultLog{};
+    defer rlog.deinit(allocator);
+
+    for (operations.items) |op_val| {
+        const op = op_val.object;
+        const op_name = op.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            const v: i32 = @intCast(op.get("value").?.integer);
+            // Optional `now` makes this a put_at; absent/null => plain put
+            // (defined as put_at(k, v, 0) — no hidden clock).
+            const prev = if (op.get("now")) |n| switch (n) {
+                .null => try map.put(k, v),
+                else => try map.putAt(k, v, parseTick(n)),
+            } else try map.put(k, v);
+            try rlog.put_results.append(allocator, prev);
+        } else if (std.mem.eql(u8, op_name, "put_at")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            const v: i32 = @intCast(op.get("value").?.integer);
+            const now = parseTick(op.get("now").?);
+            try rlog.put_results.append(allocator, try map.putAt(k, v, now));
+        } else if (std.mem.eql(u8, op_name, "get")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            try rlog.get_results.append(allocator, map.get(k));
+        } else if (std.mem.eql(u8, op_name, "get_or_default")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            const d: i32 = @intCast(op.get("default").?.integer);
+            try rlog.get_or_default_results.append(allocator, map.getOrDefault(k, d));
+        } else if (std.mem.eql(u8, op_name, "contains_key")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            try rlog.contains_results.append(allocator, map.containsKey(k));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            const k: i32 = @intCast(op.get("key").?.integer);
+            try rlog.remove_results.append(allocator, map.remove(k));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            map.clear();
+        } else if (std.mem.eql(u8, op_name, "expire_entries")) {
+            const now = parseTick(op.get("now").?);
+            try rlog.expired_counts.append(allocator, @intCast(try map.expireEntries(now)));
+        } else if (std.mem.eql(u8, op_name, "snapshot_keys")) {
+            try rlog.snapshot_keys_log.append(allocator, try map.keys(allocator));
+        } else if (std.mem.eql(u8, op_name, "snapshot_values")) {
+            try rlog.snapshot_values_log.append(allocator, try map.values(allocator));
+        } else if (std.mem.eql(u8, op_name, "snapshot_entries")) {
+            const es = try map.entries(allocator);
+            defer allocator.free(es);
+            const pairs = try allocator.alloc(LruResultLog.Pair, es.len);
+            for (es, 0..) |e, i| pairs[i] = .{ .key = e.key, .value = e.value };
+            try rlog.snapshot_entries_log.append(allocator, pairs);
+        }
+        // Forward-compat: unknown ops are skipped silently.
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        const known = try lruEvalAssertion(cbuf.writer(), key, &map, &rlog, &elog, allocator);
+        if (!known) continue; // unknown assertion key -> skip (forward-compat)
+        const computed = cbuf.items;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try lruRenderExpected(ebuf.writer(), expected);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
     }
 }
