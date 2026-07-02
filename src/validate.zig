@@ -38,6 +38,9 @@ const Bloom = @import("bloom.zig").Bloom;
 const bounded_lru = @import("bounded_lru/bounded_lru.zig");
 const I32I32BoundedLruMap = bounded_lru.I32I32BoundedLruMap;
 const EvictionCause = bounded_lru.EvictionCause;
+const CountMin = @import("count_min.zig").CountMin;
+const SpaceSaving = @import("space_saving.zig").SpaceSaving;
+const SSEntry = @import("space_saving.zig").Entry;
 
 const CollectionKind = enum {
     hash_map,
@@ -1480,6 +1483,18 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "CountMin")) {
+        try runCountMin(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "SpaceSaving")) {
+        try runSpaceSaving(name, operations, root.get("assertions").?.object, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2383,6 +2398,285 @@ fn runBloom(
         var ebuf = std.array_list.Managed(u8).init(allocator);
         defer ebuf.deinit();
         try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+// ── CountMin / SpaceSaving runners (spec/features/count-min.md) ──────────────
+//
+// Two probabilistic-frequency kinds riding the hash pipeline. Routed through
+// the PRODUCTION src/count_min.zig / src/space_saving.zig — every assertion is
+// proved against the real saturating-counter / eviction code, not re-derived
+// here. Counters / counts / errors / total / estimate are u64 DECIMAL STRINGS
+// (the 2^64 range exceeds JSON-safe 2^53), parsed straight to u64 (never via
+// f64). `counters` is a row-major explicit-order array; `monitored_set` /
+// `top_k_<k>` are explicit-order arrays of [item,"count","error"] triples in
+// canonical order (count DESC, signed item ASC). Unknown ops/keys SKIP
+// (forward-compat).
+
+fn parseCountOpt(v: ?std.json.Value) ?u64 {
+    const val = v orelse return 1;
+    return switch (val) {
+        .null => 1,
+        .string => |s| std.fmt.parseInt(u64, s, 10) catch null,
+        .number_string => |s| std.fmt.parseInt(u64, s, 10) catch null,
+        .integer => |i| if (i >= 0) @as(u64, @intCast(i)) else null,
+        else => null,
+    };
+}
+
+fn signedSuffixKey(key: []const u8, prefix: []const u8) ?i32 {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    const digits = if (rest.len > 0 and rest[0] == '-') rest[1..] else rest;
+    if (digits.len == 0) return null;
+    for (digits) |b| {
+        if (b < '0' or b > '9') return null;
+    }
+    return std.fmt.parseInt(i32, rest, 10) catch null;
+}
+
+fn topKSuffixKey(key: []const u8) ?u32 {
+    if (!std.mem.startsWith(u8, key, "top_k_")) return null;
+    const rest = key["top_k_".len..];
+    if (rest.len == 0) return null;
+    for (rest) |b| {
+        if (b < '0' or b > '9') return null;
+    }
+    return std.fmt.parseInt(u32, rest, 10) catch null;
+}
+
+fn evalCountMin(cms: *const CountMin, key: []const u8, allocator: Allocator, writer: anytype) !void {
+    if (std.mem.eql(u8, key, "counters")) {
+        const cells = try cms.toCounters(allocator);
+        defer allocator.free(cells);
+        try writer.writeAll("[");
+        for (cells, 0..) |c, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("\"{d}\"", .{c});
+        }
+        try writer.writeAll("]");
+    } else if (std.mem.eql(u8, key, "total")) {
+        try writer.print("{d}", .{cms.total()});
+    } else if (std.mem.eql(u8, key, "depth")) {
+        try writer.print("{d}", .{cms.depth()});
+    } else if (std.mem.eql(u8, key, "width")) {
+        try writer.print("{d}", .{cms.width()});
+    } else if (signedSuffixKey(key, "estimate_")) |v| {
+        try writer.print("{d}", .{cms.estimate(v)});
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+fn renderExpectedCM(v: std.json.Value, writer: anytype) !void {
+    switch (v) {
+        .array => |arr| {
+            try writer.writeAll("[");
+            for (arr.items, 0..) |e, i| {
+                if (i > 0) try writer.writeAll(",");
+                switch (e) {
+                    .string => |s| try writer.print("\"{s}\"", .{s}),
+                    .number_string => |s| try writer.print("\"{s}\"", .{s}),
+                    .integer => |n| try writer.print("\"{d}\"", .{n}),
+                    else => try writer.writeAll("\"?\""),
+                }
+            }
+            try writer.writeAll("]");
+        },
+        .string => |s| try writer.writeAll(s),
+        .number_string => |s| try writer.writeAll(s),
+        .integer => |n| try writer.print("{d}", .{n}),
+        else => try writer.writeAll("?"),
+    }
+}
+
+fn runCountMin(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var wp_count: usize = 0;
+    for (operations.items) |op| {
+        if (std.mem.eql(u8, op.object.get("op").?.string, "with_params")) wp_count += 1;
+    }
+    if (operations.items.len == 0 or wp_count != 1 or
+        !std.mem.eql(u8, operations.items[0].object.get("op").?.string, "with_params"))
+    {
+        std.debug.print("skip: CountMin scenario needs exactly one leading `with_params` op (forward-compat)\n", .{});
+        return;
+    }
+    const ctor = operations.items[0].object;
+    const d: u32 = @intCast(ctor.get("d").?.integer);
+    const w: u32 = @intCast(ctor.get("w").?.integer);
+    var cms = try CountMin.withParams(allocator, d, w);
+    defer cms.deinit();
+
+    for (operations.items[1..]) |op| {
+        const op_obj = op.object;
+        const op_name = op_obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            const value: i32 = @intCast(op_obj.get("value").?.integer);
+            const count = parseCountOpt(op_obj.get("count")) orelse {
+                std.debug.print("skip: CountMin add `count` is not a 0..=u64::MAX integer\n", .{});
+                return;
+            };
+            cms.add(value, count);
+        } else {
+            std.debug.print("skip: unknown CountMin op (forward-compat): {s}\n", .{op_name});
+            return;
+        }
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalCountMin(&cms, key, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpectedCM(expected, ebuf.writer());
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+fn writeSSTriples(triples: []const SSEntry, writer: anytype) !void {
+    try writer.writeAll("[");
+    for (triples, 0..) |t, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writer.print("[{d},\"{d}\",\"{d}\"]", .{ t.item, t.count, t.err });
+    }
+    try writer.writeAll("]");
+}
+
+fn evalSpaceSaving(ss: *const SpaceSaving, key: []const u8, allocator: Allocator, writer: anytype) !void {
+    if (std.mem.eql(u8, key, "monitored_set")) {
+        const ms = try ss.monitoredSet(allocator);
+        defer allocator.free(ms);
+        try writeSSTriples(ms, writer);
+    } else if (std.mem.eql(u8, key, "size")) {
+        try writer.print("{d}", .{ss.size()});
+    } else if (std.mem.eql(u8, key, "capacity")) {
+        try writer.print("{d}", .{ss.capacity()});
+    } else if (topKSuffixKey(key)) |k| {
+        const tk = try ss.topK(allocator, k);
+        defer allocator.free(tk);
+        try writeSSTriples(tk, writer);
+    } else if (signedSuffixKey(key, "count_")) |v| {
+        try writer.print("{d}", .{ss.count(v)});
+    } else if (signedSuffixKey(key, "error_")) |v| {
+        try writer.print("{d}", .{ss.@"error"(v)});
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+fn renderSSField(v: std.json.Value, quoted: bool, writer: anytype) !void {
+    if (quoted) {
+        switch (v) {
+            .string => |s| try writer.print("\"{s}\"", .{s}),
+            .number_string => |s| try writer.print("\"{s}\"", .{s}),
+            .integer => |n| try writer.print("\"{d}\"", .{n}),
+            else => try writer.writeAll("\"?\""),
+        }
+    } else {
+        switch (v) {
+            .integer => |n| try writer.print("{d}", .{n}),
+            .number_string => |s| try writer.writeAll(s),
+            else => try writer.writeAll("?"),
+        }
+    }
+}
+
+fn renderExpectedSS(v: std.json.Value, writer: anytype) !void {
+    switch (v) {
+        .array => |arr| {
+            try writer.writeAll("[");
+            for (arr.items, 0..) |triple, i| {
+                if (i > 0) try writer.writeAll(",");
+                const t = triple.array;
+                try writer.writeAll("[");
+                try renderSSField(t.items[0], false, writer);
+                try writer.writeAll(",");
+                try renderSSField(t.items[1], true, writer);
+                try writer.writeAll(",");
+                try renderSSField(t.items[2], true, writer);
+                try writer.writeAll("]");
+            }
+            try writer.writeAll("]");
+        },
+        .string => |s| try writer.writeAll(s),
+        .number_string => |s| try writer.writeAll(s),
+        .integer => |n| try writer.print("{d}", .{n}),
+        else => try writer.writeAll("?"),
+    }
+}
+
+fn runSpaceSaving(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var wc_count: usize = 0;
+    for (operations.items) |op| {
+        if (std.mem.eql(u8, op.object.get("op").?.string, "with_capacity")) wc_count += 1;
+    }
+    if (operations.items.len == 0 or wc_count != 1 or
+        !std.mem.eql(u8, operations.items[0].object.get("op").?.string, "with_capacity"))
+    {
+        std.debug.print("skip: SpaceSaving scenario needs exactly one leading `with_capacity` op (forward-compat)\n", .{});
+        return;
+    }
+    const m: u32 = @intCast(operations.items[0].object.get("m").?.integer);
+    var ss = SpaceSaving.withCapacity(allocator, m);
+    defer ss.deinit();
+
+    for (operations.items[1..]) |op| {
+        const op_obj = op.object;
+        const op_name = op_obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            const value: i32 = @intCast(op_obj.get("value").?.integer);
+            const count = parseCountOpt(op_obj.get("count")) orelse {
+                std.debug.print("skip: SpaceSaving add `count` is not a 0..=u64::MAX integer\n", .{});
+                return;
+            };
+            try ss.add(value, count);
+        } else {
+            std.debug.print("skip: unknown SpaceSaving op (forward-compat): {s}\n", .{op_name});
+            return;
+        }
+    }
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalSpaceSaving(&ss, key, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpectedSS(expected, ebuf.writer());
         if (!std.mem.eql(u8, computed, ebuf.items)) {
             try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
             any_fail = true;

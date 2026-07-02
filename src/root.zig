@@ -8,6 +8,8 @@ pub const hash_table = @import("hash_table.zig");
 pub const hash = @import("hash.zig");
 pub const bloom = @import("bloom.zig");
 pub const Bloom = @import("bloom.zig").Bloom;
+pub const count_min = @import("count_min.zig");
+pub const space_saving = @import("space_saving.zig");
 pub const float_order = @import("float_order.zig");
 pub const object = @import("object/object.zig");
 
@@ -50,6 +52,8 @@ pub const I32Interval = @import("interval/interval.zig").I32Interval;
 pub const BoundedLruMap = @import("bounded_lru/bounded_lru.zig").BoundedLruMap;
 pub const I32I32BoundedLruMap = @import("bounded_lru/bounded_lru.zig").I32I32BoundedLruMap;
 pub const EvictionCause = @import("bounded_lru/bounded_lru.zig").EvictionCause;
+pub const CountMin = @import("count_min.zig").CountMin;
+pub const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 pub const Range = @import("range.zig").Range;
 pub const BoundType = @import("range.zig").BoundType;
 pub const I32Range = @import("range.zig").I32Range;
@@ -65,6 +69,8 @@ pub const ImmutableI32SortedSet = @import("immutable_sorted/immutable_sorted.zig
 comptime {
     _ = @import("hash.zig");
     _ = @import("bloom.zig");
+    _ = @import("count_min.zig");
+    _ = @import("space_saving.zig");
     _ = @import("float_order.zig");
     _ = @import("pump.zig");
     _ = @import("pump_test.zig");

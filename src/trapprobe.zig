@@ -19,7 +19,9 @@
 const std = @import("std");
 
 const Bloom = @import("bloom.zig").Bloom;
+const CountMin = @import("count_min.zig").CountMin;
 const hash = @import("hash.zig");
+const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 
 const cases = [_][]const u8{
     "bloom_m0", // Bloom.withParams(0, _): m_bits must be >= 1
@@ -32,6 +34,10 @@ const cases = [_][]const u8{
     "positions_out_short", // hash.positions(.., out) with out.len < k
     "hll_p_low", // hash.hllSplit(.., p < 4)
     "hll_p_high", // hash.hllSplit(.., p > 18)
+    "cms_w0", // CountMin.withParams(_, 0): width w must be non-zero
+    "cms_eps", // CountMin.optimal(epsilon = 1.0, _): 0 < epsilon < 1
+    "cms_delta", // CountMin.optimal(_, delta = 1.0): 0 < delta < 1
+    "ss_m0", // SpaceSaving.withCapacity(0): capacity m must be non-zero
 };
 
 pub fn main() !void {
@@ -164,6 +170,36 @@ fn fireTrap(name: []const u8, allocator: std.mem.Allocator) !void {
         // p == 19 violates 4 <= p <= 18.
         const s = hash.hllSplit("x", 19);
         std.mem.doNotOptimizeAway(s);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "cms_w0")) {
+        var cms = try CountMin.withParams(allocator, 1, 0);
+        defer cms.deinit();
+        std.mem.doNotOptimizeAway(cms);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "cms_eps")) {
+        // epsilon == 1.0 violates 0 < epsilon < 1.
+        var cms = try CountMin.optimal(allocator, 1.0, 0.5);
+        defer cms.deinit();
+        std.mem.doNotOptimizeAway(cms);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "cms_delta")) {
+        // delta == 1.0 violates 0 < delta < 1.
+        var cms = try CountMin.optimal(allocator, 0.5, 1.0);
+        defer cms.deinit();
+        std.mem.doNotOptimizeAway(cms);
+        return;
+    }
+
+    if (std.mem.eql(u8, name, "ss_m0")) {
+        var ss = SpaceSaving.withCapacity(allocator, 0);
+        defer ss.deinit();
+        std.mem.doNotOptimizeAway(ss);
         return;
     }
 
