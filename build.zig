@@ -70,7 +70,6 @@ pub fn build(b: *std.Build) void {
     const run_trapprobe = b.addRunArtifact(trapprobe_exe);
     const trapprobe_step = b.step("trapprobe", "Run the out-of-process required-input trap probe");
     trapprobe_step.dependOn(&run_trapprobe.step);
-
     // Unit tests
     const lib_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{

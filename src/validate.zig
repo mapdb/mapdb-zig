@@ -40,6 +40,7 @@ const I32I32BoundedLruMap = bounded_lru.I32I32BoundedLruMap;
 const EvictionCause = bounded_lru.EvictionCause;
 const CountMin = @import("count_min.zig").CountMin;
 const FenwickTree = @import("fenwick.zig").FenwickTree;
+const HyperLogLog = @import("hyperloglog/hyperloglog.zig").HyperLogLog;
 const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 const SSEntry = @import("space_saving.zig").Entry;
 
@@ -1502,6 +1503,12 @@ pub fn main() !void {
         if (any_fail) std.process.exit(1);
         return;
     }
+    if (std.mem.eql(u8, collection_type, "HyperLogLog")) {
+        try runHyperLogLog(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
 
     const kind = parseCollectionKind(collection_type) orelse {
         // Forward-compat (README "unknown collection kinds skip"): a runner that
@@ -2398,6 +2405,179 @@ fn runBloom(
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalBloomKey(&b, other_ptr, key, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
+}
+
+// ── HyperLogLog runner ──────────────────────────────────────────────────────
+//
+// A stored cardinality sketch (spec/features/hyperloglog.md). The cross-language
+// oracle is the INTEGER register array (via `register_hex` / `nonzero_registers`
+// / `max_register` / `register_at_N`) — NEVER the float `estimate`
+// (float-quarantine Rule Q1; there is deliberately NO `estimate` assertion key).
+// Exactly one builder op, first: either a `with_precision(p)` (then zero or more
+// `add`/`merge`) OR a single `from_bytes`. Zero/two builders or an `add` before
+// the builder => malformed => SKIP. A `merge` consumes the scenario's `other`
+// HyperLogLog. Unknown ops/keys/kinds SKIP (forward-compat). Mirrors the Rust
+// runner's build_hll / run_hyperloglog / eval_hll_assertion.
+
+/// Build a HyperLogLog from an op list (used for the primary and the `other`
+/// block). Returns `null` (=> caller SKIPs) when the op list is malformed for
+/// the harness: not starting with exactly one builder, an `add`/`merge` before
+/// the builder, an out-of-range `with_precision`, or a bad `from_bytes`. On
+/// success the returned sketch is heap-owned (caller deinits).
+// Safe JSON union accessors: return null on a tag mismatch instead of trapping,
+// so any malformed scenario SHAPE makes buildHll SKIP (matching the Rust
+// runner's `as_str()?` / `as_array()?` / `as_u64()?` tolerance) rather than
+// panicking the runner.
+fn jsonObject(v: std.json.Value) ?std.json.ObjectMap {
+    return switch (v) {
+        .object => |o| o,
+        else => null,
+    };
+}
+fn jsonStr(v: std.json.Value) ?[]const u8 {
+    return switch (v) {
+        .string => |s| s,
+        else => null,
+    };
+}
+fn jsonArray(v: std.json.Value) ?std.json.Array {
+    return switch (v) {
+        .array => |a| a,
+        else => null,
+    };
+}
+fn jsonInt(v: std.json.Value) ?i64 {
+    return switch (v) {
+        .integer => |i| i,
+        else => null,
+    };
+}
+
+fn buildHll(
+    operations: std.json.Array,
+    other: ?std.json.Value,
+    allocator: Allocator,
+) !?HyperLogLog {
+    if (operations.items.len == 0) return null;
+    const first = jsonObject(operations.items[0]) orelse return null;
+    const first_op = if (first.get("op")) |o| (jsonStr(o) orelse return null) else "";
+
+    var hll: HyperLogLog = undefined;
+    if (std.mem.eql(u8, first_op, "with_precision")) {
+        const p_raw = jsonInt(first.get("p") orelse return null) orelse return null;
+        if (p_raw < 0 or p_raw > 255) return null;
+        const p: u8 = @intCast(p_raw);
+        // Out-of-range p is a construction error -> SKIP.
+        hll = HyperLogLog.withPrecision(allocator, p) catch return null;
+    } else if (std.mem.eql(u8, first_op, "from_bytes")) {
+        // `from_bytes` is the SOLE op when present (full state replacement).
+        if (operations.items.len != 1) return null;
+        const bytes_val = first.get("bytes") orelse return null;
+        if (jsonStr(bytes_val) == null) return null;
+        const bytes = try parseHexBytes(bytes_val, allocator);
+        defer allocator.free(bytes);
+        hll = HyperLogLog.fromBytes(allocator, bytes) catch return null;
+    } else {
+        return null;
+    }
+    // `errdefer` only fires on error returns; the malformed-scenario paths
+    // below `return null`, so guard the heap-owned sketch with a defer/flag so
+    // a SKIP never leaks. Cleared just before the successful `return hll`.
+    var keep = false;
+    defer if (!keep) hll.deinit();
+
+    for (operations.items[1..]) |op| {
+        const op_obj = jsonObject(op) orelse return null;
+        const op_name = if (op_obj.get("op")) |o| (jsonStr(o) orelse return null) else "";
+        if (std.mem.eql(u8, op_name, "add")) {
+            const v_raw = jsonInt(op_obj.get("value") orelse return null) orelse return null;
+            const v: i32 = std.math.cast(i32, v_raw) orelse return null;
+            hll.add(v);
+        } else if (std.mem.eql(u8, op_name, "merge")) {
+            // Merge the scenario's `other` HyperLogLog (its own op list).
+            const other_spec = other orelse return null;
+            const other_obj = jsonObject(other_spec) orelse return null;
+            const other_ops = jsonArray(other_obj.get("operations") orelse return null) orelse return null;
+            var other_hll = (try buildHll(other_ops, null, allocator)) orelse return null;
+            defer other_hll.deinit();
+            hll.merge(&other_hll) catch return null;
+        } else {
+            // Unknown op (forward-compat) -> SKIP.
+            return null;
+        }
+    }
+    keep = true;
+    return hll;
+}
+
+/// Compute one HLL assertion into `writer`. Unrecognised keys render the
+/// `UNKNOWN_ASSERTION:` sentinel (skipped by the caller).
+fn evalHllAssertion(
+    hll: *const HyperLogLog,
+    key: []const u8,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.eql(u8, key, "register_hex")) {
+        // PRIMARY integer oracle: full serialized form (HLL1 + p + register
+        // bytes) as a lower-case, 0x-prefixed hex string.
+        const bytes = try hll.toBytes(allocator);
+        defer allocator.free(bytes);
+        try writer.writeAll("0x");
+        for (bytes) |b| try writer.print("{x:0>2}", .{b});
+    } else if (std.mem.eql(u8, key, "nonzero_registers")) {
+        try writer.print("{d}", .{hll.nonzeroRegisters()});
+    } else if (std.mem.eql(u8, key, "max_register")) {
+        try writer.print("{d}", .{hll.maxRegister()});
+    } else if (std.mem.startsWith(u8, key, "register_at_")) {
+        const n = std.fmt.parseInt(usize, key["register_at_".len..], 10) catch {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+            return;
+        };
+        if (n < hll.registerCount()) {
+            try writer.print("{d}", .{hll.registers()[n]});
+        } else {
+            try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+    } else {
+        // NOTE: there is deliberately NO `estimate` key (float-quarantine Q1).
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+fn runHyperLogLog(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    root: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    var hll = (try buildHll(operations, root.get("other"), allocator)) orelse {
+        std.debug.print("skip: malformed HyperLogLog scenario (forward-compat)\n", .{});
+        return;
+    };
+    defer hll.deinit();
+
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment")) continue;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalHllAssertion(&hll, key, allocator, cbuf.writer());
         const computed = cbuf.items;
         if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
 
