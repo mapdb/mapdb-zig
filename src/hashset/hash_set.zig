@@ -15,6 +15,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashSet = @import("../hash_table.zig").OpenHashSet;
+const pump = @import("../pump.zig");
+const DupPolicy = pump.DupPolicy;
 
 /// Hash set of unique `T` values.
 ///
@@ -43,6 +45,52 @@ pub fn HashSet(comptime T: type) type {
             var set = try init(allocator);
             for (values) |val| _ = try set.add(val);
             return set;
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this set.
+        pub const BulkError = (error{ DuplicateKey, TooManyElements } || Allocator.Error);
+
+        /// Bulk-loads a fresh `HashSet` from a value slice, pre-sizing the
+        /// open-addressing table to fit every element at the load factor in one
+        /// allocation (`cap = nextPow2(floor(4n/3)+1)`), then inserting via the
+        /// normal probe. No mid-load rehash; the resulting slot layout is
+        /// byte-identical to the same values added one-by-one. O(n).
+        ///
+        /// Input order is irrelevant (hash). On a duplicate value:
+        /// `policy == .err` → `error.DuplicateKey`; `policy == .ignore` → keep
+        /// the first occurrence, skip the rest. On any error nothing leaks.
+        pub fn bulkLoad(allocator: Allocator, values: []const T, policy: DupPolicy) BulkError!Self {
+            var self = Self{
+                .inner = try OpenHashSet(T).initForElements(allocator, values.len),
+                .allocator = allocator,
+            };
+            errdefer self.deinit();
+            try self.bulkInsert(values, policy);
+            return self;
+        }
+
+        /// Like `bulkLoad`, but `n` is an exact upper bound on the consumed
+        /// source count and the table is sized for exactly `n` with a
+        /// guaranteed zero mid-load rehash. Returns `error.TooManyElements` if
+        /// the source exceeds `n`, even if extras would be ignored duplicates.
+        pub fn bulkLoadExact(allocator: Allocator, values: []const T, n: usize, policy: DupPolicy) BulkError!Self {
+            if (values.len > n) return error.TooManyElements;
+            var self = Self{
+                .inner = try OpenHashSet(T).initForElements(allocator, n),
+                .allocator = allocator,
+            };
+            errdefer self.deinit();
+            try self.bulkInsert(values, policy);
+            return self;
+        }
+
+        fn bulkInsert(self: *Self, values: []const T, policy: DupPolicy) BulkError!void {
+            for (values) |val| {
+                const added = try self.inner.add(val);
+                if (!added and policy == .err) return error.DuplicateKey;
+            }
         }
 
         // ---- Core Operations ----

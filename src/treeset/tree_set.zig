@@ -16,6 +16,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const float_order = @import("../float_order.zig");
+const pump = @import("../pump.zig");
+const DupPolicy = pump.DupPolicy;
 
 /// Total-ordering comparator for elements of type `T`.
 fn keyOrder(comptime T: type, a: T, b: T) std.math.Order {
@@ -76,6 +78,106 @@ pub fn TreeSet(comptime T: type) type {
                 _ = try set.add(val);
             }
             return set;
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this set.
+        pub const BulkError = (error{ NotSorted, DuplicateKey } || Allocator.Error);
+
+        /// Streaming builder for a fresh `TreeSet` from ascending input.
+        ///
+        /// **Complexity carve-out (per the spec):** `TreeSet` is backed by
+        /// `std.Treap`, a randomized BST with no canonical sorted bottom-up
+        /// build that does not reach into std internals. So each `put` still
+        /// pays an O(log n) treap insertion (with random rotation) — the pump is
+        /// **O(n log n)**, NOT O(n). What it adds over the normal path is the
+        /// up-front order validation and a single allocator warm-up
+        /// (`ensureUnusedCapacity`). The result is behaviourally identical to the
+        /// same values added one-by-one: only the in-order traversal is
+        /// observable, and a different-but-valid treap shape changes nothing the
+        /// API can see.
+        ///
+        /// Lifecycle mirrors `TreeMap.Sink`: `init` → `put`* → `create`. After
+        /// any error the Sink is poisoned and the partial set freed; `create` is
+        /// once-only. Call `deinit` if dropping a live Sink without `create`.
+        pub const Sink = struct {
+            set: Self,
+            last_value: ?T = null,
+            policy: DupPolicy,
+            poisoned: bool = false,
+            done: bool = false,
+
+            pub const Error = (BulkError || error{PumpPoisoned});
+
+            pub fn init(allocator: Allocator, policy: DupPolicy) Sink {
+                return .{ .set = Self.init(allocator), .policy = policy };
+            }
+
+            pub fn deinit(self: *Sink) void {
+                self.set.deinit();
+            }
+
+            fn poison(self: *Sink) void {
+                self.poisoned = true;
+                self.set.deinit();
+                self.set = Self.init(self.set.allocator);
+            }
+
+            pub fn put(self: *Sink, value: T) Error!void {
+                if (self.poisoned or self.done) return error.PumpPoisoned;
+                if (self.last_value) |prev| {
+                    switch (orderFn(prev, value)) {
+                        .lt => {},
+                        .eq => {
+                            if (self.policy == .err) {
+                                self.poison();
+                                return error.DuplicateKey;
+                            }
+                            return; // .ignore
+                        },
+                        .gt => {
+                            self.poison();
+                            return error.NotSorted;
+                        },
+                    }
+                }
+                _ = self.set.add(value) catch |e| {
+                    self.poison();
+                    return e;
+                };
+                self.last_value = value;
+            }
+
+            pub fn putAll(self: *Sink, values: []const T) Error!void {
+                for (values) |v| try self.put(v);
+            }
+
+            pub fn create(self: *Sink) Error!Self {
+                if (self.poisoned or self.done) return error.PumpPoisoned;
+                self.done = true;
+                const out = self.set;
+                self.set = Self.init(self.set.allocator);
+                return out;
+            }
+        };
+
+        /// Bulk-loads a fresh `TreeSet` from presorted (strictly ascending)
+        /// values, validating order with the set's own `keyOrder`. See `Sink`
+        /// for the O(n log n) complexity carve-out (treap-backed). A descending
+        /// step is `error.NotSorted`; an equal step is `error.DuplicateKey`
+        /// (`.err`) or skipped (`.ignore`). On any error nothing leaks.
+        pub fn fromSorted(allocator: Allocator, values: []const T, policy: DupPolicy) BulkError!Self {
+            var sink = Sink.init(allocator, policy);
+            sink.set.ensureUnusedCapacity(values.len) catch |e| {
+                sink.deinit();
+                return e;
+            };
+            sink.putAll(values) catch |e| switch (e) {
+                error.PumpPoisoned => unreachable,
+                else => |narrow| return narrow,
+            };
+            return sink.create() catch unreachable;
         }
 
         /// Adds a value. Returns true if it was not already present.

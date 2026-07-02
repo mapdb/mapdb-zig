@@ -32,6 +32,27 @@ pub const BitSet = struct {
         return b;
     }
 
+    // ---- Data pump (bulk import) ----
+
+    /// Bulk-loads a fresh `BitSet` from a slice of bit indices (any order,
+    /// duplicates harmless). Sizes the word array once to `max(indices)+1` bits,
+    /// then ORs each bit in — O(n + maxIndex/64) with a single allocation. On
+    /// allocator failure nothing leaks.
+    pub fn fromIndices(allocator: Allocator, indices: []const usize) Allocator.Error!BitSet {
+        var max_bit: usize = 0;
+        var any = false;
+        for (indices) |idx| {
+            any = true;
+            if (idx > max_bit) max_bit = idx;
+        }
+        var b = if (any) try BitSet.withBitLength(allocator, max_bit + 1) else BitSet.init(allocator);
+        errdefer b.deinit();
+        for (indices) |idx| {
+            b.words.items[wordIndex(idx)] |= wordMask(idx);
+        }
+        return b;
+    }
+
     inline fn wordIndex(bit: usize) usize {
         return bit / BITS_PER_WORD;
     }

@@ -18,6 +18,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const float_order = @import("../float_order.zig");
+const pump = @import("../pump.zig");
 
 /// Total-ordering comparator for elements of type `T`.
 fn keyOrder(comptime T: type, a: T, b: T) std.math.Order {
@@ -84,6 +85,64 @@ pub fn TreeBag(comptime T: type) type {
             destroySubtree(node.children[0], allocator);
             destroySubtree(node.children[1], allocator);
             allocator.destroy(bagNodeFromTreapNode(node));
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this bag. Bags count
+        /// duplicates rather than rejecting them, so there is no `DuplicateKey`;
+        /// `CountOverflow` guards count accumulation, `NotSorted` guards the
+        /// ascending-input contract.
+        pub const BulkError = (error{ NotSorted, CountOverflow } || Allocator.Error);
+
+        /// Bulk-loads a fresh `TreeBag` from a presorted (ascending, with equal
+        /// runs allowed) flat value slice. A run of equal consecutive values
+        /// becomes one entry with `count = run length`; a strictly-decreasing
+        /// step is `error.NotSorted`. Count accumulation is overflow-checked.
+        ///
+        /// **Complexity carve-out (per the spec):** treap-backed, so each
+        /// distinct value still pays an O(log d) treap insertion → O(n + d log d)
+        /// where d is the distinct count, NOT O(n). Behaviourally identical to
+        /// the same values added one-by-one. On any error nothing leaks.
+        pub fn fromSorted(allocator: Allocator, values: []const T) BulkError!Self {
+            var self = init(allocator);
+            errdefer self.deinit();
+            // One allocator warm-up sized for the worst case (all distinct).
+            try self.ensureUnusedCapacity(values.len);
+            var i: usize = 0;
+            while (i < values.len) {
+                const v = values[i];
+                var run: usize = 1;
+                var j = i + 1;
+                while (j < values.len and orderFn(values[j], v) == .eq) : (j += 1) {
+                    if (run == std.math.maxInt(usize)) return error.CountOverflow;
+                    run += 1;
+                }
+                // Boundary between runs must be strictly ascending.
+                if (j < values.len and orderFn(v, values[j]) != .lt) return error.NotSorted;
+                if (self.total_size > std.math.maxInt(usize) - run) return error.CountOverflow;
+                try self.addOccurrences(v, run);
+                i = j;
+            }
+            return self;
+        }
+
+        /// Bulk-loads a fresh `TreeBag` from presorted parallel (value, count)
+        /// slices (values strictly ascending). A descending/equal value step is
+        /// `error.NotSorted`; count accumulation is overflow-checked. Same
+        /// O(n + d log d) carve-out as `fromSorted`. On any error nothing leaks.
+        pub fn fromSortedCounts(allocator: Allocator, values: []const T, counts: []const usize) BulkError!Self {
+            std.debug.assert(values.len == counts.len);
+            var self = init(allocator);
+            errdefer self.deinit();
+            try self.ensureUnusedCapacity(values.len);
+            for (values, counts, 0..) |v, c, idx| {
+                if (idx > 0 and orderFn(values[idx - 1], v) != .lt) return error.NotSorted;
+                if (c == 0) continue;
+                if (self.total_size > std.math.maxInt(usize) - c) return error.CountOverflow;
+                try self.addOccurrences(v, c);
+            }
+            return self;
         }
 
         fn addOccurrences(self: *Self, value: T, occ: usize) Allocator.Error!void {

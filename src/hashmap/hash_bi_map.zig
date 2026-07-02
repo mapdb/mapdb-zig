@@ -7,6 +7,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
+const pump = @import("../pump.zig");
+const DupPolicy = pump.DupPolicy;
 
 /// Bit-pattern equality for any value type. For floats this compares raw bits
 /// (so `+0`/`-0` differ and bit-identical NaNs match), matching the original
@@ -48,6 +50,50 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         pub fn deinit(self: *Self) void {
             self.forward.deinit();
             self.reverse.deinit();
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of every pump entry point on this bimap. A BiMap
+        /// must stay a bijection, so BOTH a duplicate key and a duplicate value
+        /// are errors.
+        pub const BulkError = (error{ DuplicateKey, DuplicateValue } || Allocator.Error);
+
+        /// Bulk-loads a fresh `HashBiMap` from parallel key/value slices,
+        /// pre-sizing both internal tables in one allocation each, then inserting
+        /// the bijection. O(n). Input order is irrelevant (hash).
+        ///
+        /// Conflict handling, since a bimap must remain a bijection:
+        ///   * a duplicate KEY → `error.DuplicateKey`;
+        ///   * a duplicate VALUE → `error.DuplicateValue`.
+        /// The duplicate policy is accepted for API symmetry but intentionally
+        /// ignored: BiMap duplicate keys/values are always errors, even for an
+        /// identical `(key, value)` replay. On any error nothing leaks and no
+        /// table is left half-updated.
+        pub fn bulkLoad(
+            allocator: Allocator,
+            keys: []const K,
+            vals: []const V,
+            policy: DupPolicy,
+        ) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = try init(allocator);
+            errdefer self.deinit();
+            try self.forward.ensureCapacity(keys.len);
+            try self.reverse.ensureCapacity(keys.len);
+            _ = policy;
+            for (keys, vals) |k, v| {
+                const dup_key = self.forward.containsKey(k);
+                const dup_val = self.reverse.containsKey(v);
+                if (dup_key or dup_val) {
+                    // Report the key conflict first to mirror put-loop order.
+                    return if (dup_key) error.DuplicateKey else error.DuplicateValue;
+                }
+                // Both sides are free — insert into both, keeping them in lock-step.
+                _ = try self.forward.put(k, v);
+                _ = try self.reverse.put(v, k);
+            }
+            return self;
         }
 
         // ---- Core Operations ----

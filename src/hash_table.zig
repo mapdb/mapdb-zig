@@ -71,7 +71,19 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
-            const cap = nextPow2(@max(requested, DEFAULT_CAPACITY));
+            return initAtLeast(alloc, nextPow2(@max(requested, DEFAULT_CAPACITY)));
+        }
+
+        /// Pre-size for exactly `n` elements with a guaranteed zero mid-load
+        /// rehash: `cap = nextPow2(floor(4n/3)+1)` (the required-capacity
+        /// formula `ensureCapacity` uses, computed overflow-safely). Used by the
+        /// hash data pump so `bulkLoad`/`bulkLoadExact` start at the zero-rehash
+        /// size rather than at `nextPow2(max(n,16))`.
+        pub fn initForElements(alloc: Allocator, n: usize) Allocator.Error!Self {
+            return initAtLeast(alloc, nextPow2(@max(requiredCapacity(n), DEFAULT_CAPACITY)));
+        }
+
+        fn initAtLeast(alloc: Allocator, cap: usize) Allocator.Error!Self {
             const entries = try alloc.alloc(Entry, cap);
             for (entries) |*e| {
                 e.* = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
@@ -154,8 +166,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             // Keep load factor strictly below 0.75. needsResize() resizes when
             // (size+1)*4 >= capacity*3, so an insert reaching `needed` entries
             // stays in place iff capacity*3 > needed*4, i.e. capacity > needed*4/3.
-            // (needed*4)/3 + 1 is an integer strictly greater than needed*4/3.
-            const required = (needed * 4) / 3 + 1;
+            // requiredCapacity() == floor(4*needed/3)+1, computed overflow-safely.
+            const required = requiredCapacity(needed);
             if (required <= self.capacity) return;
             const new_cap = nextPow2(@max(required, DEFAULT_CAPACITY));
             try self.growTo(new_cap);
@@ -327,7 +339,17 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
-            const cap = nextPow2(@max(requested, DEFAULT_CAPACITY));
+            return initAtLeast(alloc, nextPow2(@max(requested, DEFAULT_CAPACITY)));
+        }
+
+        /// Pre-size for exactly `n` elements with a guaranteed zero mid-load
+        /// rehash: `cap = nextPow2(floor(4n/3)+1)` (see the companion method on
+        /// `OpenHashMap`). Used by the hash set data pump.
+        pub fn initForElements(alloc: Allocator, n: usize) Allocator.Error!Self {
+            return initAtLeast(alloc, nextPow2(@max(requiredCapacity(n), DEFAULT_CAPACITY)));
+        }
+
+        fn initAtLeast(alloc: Allocator, cap: usize) Allocator.Error!Self {
             const entries = try alloc.alloc(Entry, cap);
             for (entries) |*e| {
                 e.* = .{ .key = defaultVal(K), .occupied = false };
@@ -395,7 +417,7 @@ pub fn OpenHashSet(comptime K: type) type {
         /// method on `OpenHashMap` for the motivation.
         pub fn ensureCapacity(self: *Self, additional: usize) Allocator.Error!void {
             const needed = self.size + additional;
-            const required = (needed * 4) / 3 + 1;
+            const required = requiredCapacity(needed);
             if (required <= self.capacity) return;
             const new_cap = nextPow2(@max(required, DEFAULT_CAPACITY));
             try self.growTo(new_cap);
@@ -493,8 +515,19 @@ pub fn OpenHashSet(comptime K: type) type {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The smallest table capacity that keeps `n` live entries strictly below the
+/// 0.75 load factor: `floor(4*n/3) + 1` (== `ceil((4n+1)/3)`), the same bound
+/// `ensureCapacity` enforces. Computed in a wide/checked way so `4*n` never
+/// wraps: on overflow it saturates to `maxInt(usize)` so the subsequent
+/// allocation fails cleanly instead of silently under-sizing.
+fn requiredCapacity(n: usize) usize {
+    const wide = std.math.mul(usize, n, 4) catch return std.math.maxInt(usize);
+    return wide / 3 + 1;
+}
+
 fn nextPow2(n: usize) usize {
     if (n == 0) return 1;
+    if (n > (std.math.maxInt(usize) >> 1) + 1) return std.math.maxInt(usize);
     var v = n - 1;
     v |= v >> 1;
     v |= v >> 2;

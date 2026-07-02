@@ -6,6 +6,23 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const float_order = @import("../float_order.zig");
+const pump = @import("../pump.zig");
+
+/// Total-ordering comparator over `K` for the sorted-key pump path. Uses the
+/// IEEE-754 total order for floats (matching the tree collections), `false <
+/// true` for bool, and natural integer order otherwise.
+fn keyOrder(comptime K: type, a: K, b: K) std.math.Order {
+    return switch (@typeInfo(K)) {
+        .float => switch (K) {
+            f32 => float_order.totalCmpF32(a, b),
+            f64 => float_order.totalCmpF64(a, b),
+            else => @compileError("unsupported float key type: " ++ @typeName(K)),
+        },
+        .bool => if (a == b) std.math.Order.eq else if (!a and b) std.math.Order.lt else std.math.Order.gt,
+        else => std.math.order(a, b),
+    };
+}
 
 /// The type actually stored as the backing `AutoHashMap` key. Float keys are
 /// canonicalized to their unsigned bit pattern: Zig's `AutoHashMap` rejects
@@ -24,6 +41,18 @@ fn valueEql(comptime V: type, a: V, b: V) bool {
         return @as(Bits, @bitCast(a)) == @as(Bits, @bitCast(b));
     }
     return a == b;
+}
+
+fn valueOrder(comptime V: type, a: V, b: V) std.math.Order {
+    return switch (@typeInfo(V)) {
+        .float => switch (V) {
+            f32 => float_order.totalCmpF32(a, b),
+            f64 => float_order.totalCmpF64(a, b),
+            else => @compileError("unsupported float value type: " ++ @typeName(V)),
+        },
+        .bool => if (a == b) std.math.Order.eq else if (!a and b) std.math.Order.lt else std.math.Order.gt,
+        else => std.math.order(a, b),
+    };
 }
 
 /// List multimap from `K` keys to `V` values.
@@ -67,6 +96,89 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
                 entry.value_ptr.deinit(self.allocator);
             }
             self.inner.deinit(self.allocator);
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of the sorted-key pump.
+        pub const BulkError = (error{NotSorted} || Allocator.Error);
+
+        /// Bulk-loads a fresh `ListMultimap` from input grouped by key: parallel
+        /// `keys`/`vals` slices where all entries for a key are contiguous and
+        /// keys appear in strictly ascending order across runs. Validates key
+        /// monotonicity with the multimap's `keyOrder`; value order WITHIN each
+        /// key run is preserved. Each key's value list is built once (one
+        /// reserve + bulk append) rather than re-found per value. O(n).
+        ///
+        /// A non-contiguous or out-of-order key boundary is `error.NotSorted`.
+        /// On any error nothing leaks.
+        pub fn fromSortedKeys(allocator: Allocator, keys: []const K, vals: []const V) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = Self.init(allocator);
+            errdefer self.deinit();
+            var i: usize = 0;
+            while (i < keys.len) {
+                const k = keys[i];
+                var j = i + 1;
+                while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {}
+                // Key boundary must be strictly ascending.
+                if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
+                const map_key = mapKey(k);
+                const gop = try self.inner.getOrPut(self.allocator, map_key);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = std.ArrayListUnmanaged(V){};
+                }
+                try gop.value_ptr.ensureUnusedCapacity(self.allocator, j - i);
+                for (vals[i..j]) |v| gop.value_ptr.appendAssumeCapacity(v);
+                self.total_size += j - i;
+                i = j;
+            }
+            return self;
+        }
+
+        /// Bulk-loads a fresh `ListMultimap` from input sorted by key and then
+        /// by value within each key run. List values are preserved exactly; the
+        /// value order validation exists to expose the stricter multimap source
+        /// contract shared with set-valued multimaps.
+        pub fn fromSortedKeyValues(allocator: Allocator, keys: []const K, vals: []const V) BulkError!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = Self.init(allocator);
+            errdefer self.deinit();
+            var i: usize = 0;
+            while (i < keys.len) {
+                const k = keys[i];
+                var j = i;
+                var run = std.ArrayListUnmanaged(V){};
+                errdefer run.deinit(allocator);
+                while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {
+                    if (j > i and valueOrder(V, vals[j - 1], vals[j]) == .gt) return error.NotSorted;
+                    try run.append(allocator, vals[j]);
+                }
+                if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
+                const map_key = mapKey(k);
+                const gop = try self.inner.getOrPut(self.allocator, map_key);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = run;
+                    run = .{};
+                } else {
+                    try gop.value_ptr.appendSlice(self.allocator, run.items);
+                }
+                self.total_size += j - i;
+                i = j;
+            }
+            return self;
+        }
+
+        /// Bulk-loads a fresh `ListMultimap` from parallel `keys`/`vals` slices
+        /// in ANY order, accumulating values per key via the backing hash map
+        /// (no sortedness claim). O(n) amortized. On any error nothing leaks.
+        pub fn bulkLoad(allocator: Allocator, keys: []const K, vals: []const V) Allocator.Error!Self {
+            std.debug.assert(keys.len == vals.len);
+            var self = Self.init(allocator);
+            errdefer self.deinit();
+            try self.inner.ensureUnusedCapacity(self.allocator, @intCast(keys.len));
+            for (keys, vals) |k, v| try self.put(k, v);
+            return self;
         }
 
         // ---- Core Operations ----

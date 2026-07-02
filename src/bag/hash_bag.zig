@@ -15,6 +15,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenHashMap = @import("../hash_table.zig").OpenHashMap;
+const pump = @import("../pump.zig");
 
 /// Bag (multiset) of `T` values with occurrence counting.
 ///
@@ -48,6 +49,45 @@ pub fn HashBag(comptime T: type) type {
                 try bag.add(val);
             }
             return bag;
+        }
+
+        // ---- Data pump (bulk import) ----
+
+        /// Effective error set of the bag pump. `CountOverflow` is raised if a
+        /// run's occurrence count would overflow the count type.
+        pub const BulkError = (error{CountOverflow} || Allocator.Error);
+
+        /// Bulk-loads a fresh `HashBag` from a flat value slice. Duplicates are
+        /// EXPECTED in a bag — each repeated value increments its occurrence
+        /// count (so the `DupPolicy` does not apply here). The count map is
+        /// pre-sized for up to `values.len` distinct values (an upper bound) in
+        /// one allocation. O(n). On any error nothing leaks.
+        pub fn bulkLoad(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var self = try init(allocator);
+            errdefer self.deinit();
+            try self.ensureUnusedCapacity(values.len);
+            for (values) |val| try self.add(val);
+            return self;
+        }
+
+        /// Bulk-loads a fresh `HashBag` from parallel (value, count) slices —
+        /// e.g. the compressed runs of a sorted source. Counts for repeated
+        /// values accumulate with an overflow check (`error.CountOverflow`).
+        /// O(distinct). On any error nothing leaks.
+        pub fn bulkLoadCounts(allocator: Allocator, values: []const T, counts: []const usize) BulkError!Self {
+            std.debug.assert(values.len == counts.len);
+            var self = try init(allocator);
+            errdefer self.deinit();
+            try self.ensureUnusedCapacity(values.len);
+            for (values, counts) |val, c| {
+                if (c == 0) continue;
+                // Guard the size accumulator and any existing per-value count.
+                const existing = self.occurrencesOf(val);
+                if (existing > std.math.maxInt(usize) - c) return error.CountOverflow;
+                if (self.size > std.math.maxInt(usize) - c) return error.CountOverflow;
+                try self.addOccurrences(val, c);
+            }
+            return self;
         }
 
         /// Add one occurrence of the value.
@@ -133,10 +173,18 @@ pub fn HashBag(comptime T: type) type {
             return self.size;
         }
 
-        /// Add multiple occurrences of a value.
+        /// Add multiple occurrences of a value. O(1) — folds the whole run into
+        /// the count in one step (a per-occurrence loop would make a bulk count
+        /// of `n` take O(n), and `n == maxInt` hang). The caller is responsible
+        /// for guarding `size`/count overflow before calling (see `bulkLoadCounts`).
         pub fn addOccurrences(self: *Self, value: T, n: usize) Allocator.Error!void {
-            var i: usize = 0;
-            while (i < n) : (i += 1) try self.add(value);
+            if (n == 0) return;
+            if (self.counts.getPtr(value)) |count_ptr| {
+                count_ptr.* += n;
+            } else {
+                _ = try self.counts.put(value, n);
+            }
+            self.size += n;
         }
 
         /// Remove up to n occurrences. Returns number actually removed.
