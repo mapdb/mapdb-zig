@@ -49,8 +49,15 @@ pub const reverseComparator = @import("strategy.zig").reverseComparator;
 pub const reversed = @import("strategy.zig").reversed;
 pub const comparatorByField = @import("strategy.zig").comparatorByField;
 pub const thenComparing = @import("strategy.zig").thenComparing;
+// Comptime comparator contexts (Step 2): FnPtrContext backs the dynamic
+// TreeMap/TreeSet aliases; ComparatorContext bakes any comptime comparator into
+// a zero-sized, inlinable context for the *Context map/set variants.
+pub const FnPtrContext = @import("strategy.zig").FnPtrContext;
+pub const ComparatorContext = @import("strategy.zig").ComparatorContext;
 pub const TreeMap = @import("treemap.zig").TreeMap;
+pub const TreeMapContext = @import("treemap.zig").TreeMapContext;
 pub const TreeSet = @import("treeset.zig").TreeSet;
+pub const TreeSetContext = @import("treeset.zig").TreeSetContext;
 pub const HashSetWithStrategy = @import("strategy_hashset.zig").HashSetWithStrategy;
 pub const HashMapWithStrategy = @import("strategy_hashmap.zig").HashMapWithStrategy;
 

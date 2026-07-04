@@ -59,6 +59,48 @@ pub fn Comparator(comptime T: type) type {
     return *const fn (T, T) std.math.Order;
 }
 
+// ── Comparator contexts (comptime, stdlib-style) ─────────────────────────
+//
+// `TreeMapContext(K, V, Context)` / `TreeSetContext(T, Context)` take a comptime
+// *comparator context* — a type exposing `fn cmp(self, a, b) std.math.Order` —
+// instead of storing a runtime `Comparator` fn pointer, mirroring
+// `std.HashMapUnmanaged`'s `Context` parameter. A stateless context is
+// zero-sized, so its `cmp` devirtualizes and inlines (no indirect call in the
+// hot loop); a stateful context still works because the instance is stored as a
+// value. `TreeMap(K,V)` / `TreeSet(T)` stay as the dynamic fn-pointer aliases
+// (`Context = FnPtrContext`), so existing callers are unchanged.
+
+/// Dynamic comparator context: stores a runtime `Comparator(T)` fn pointer.
+/// Backs the `TreeMap`/`TreeSet` aliases — same indirect-call behavior as
+/// before contexts existed, but through the uniform `cmp(self, …)` surface.
+pub fn FnPtrContext(comptime T: type) type {
+    return struct {
+        cmp_fn: Comparator(T),
+        pub inline fn cmp(self: @This(), a: T, b: T) std.math.Order {
+            return self.cmp_fn(a, b);
+        }
+    };
+}
+
+/// Stateless (zero-sized) comparator context wrapping a **comptime-known**
+/// comparator function. Bridges every existing comparator/builder
+/// (`naturalComparator`, `reverseComparator`, `reversed`, `comparatorByField`,
+/// `thenComparing`) into the context world with zero new boilerplate:
+///
+///     const Ctx = ComparatorContext(i32, naturalComparator(i32));
+///     var m = TreeMapContext(i32, V, Ctx).init(allocator, Ctx{});
+///
+/// Because `cmp_fn` is comptime and the context carries no fields, `cmp`
+/// compiles to a direct (inlinable) call — no runtime indirection. Pass a
+/// typed `Ctx{}` value (not a bare `.{}`) so it resolves through `init`.
+pub fn ComparatorContext(comptime T: type, comptime cmp_fn: Comparator(T)) type {
+    return struct {
+        pub inline fn cmp(_: @This(), a: T, b: T) std.math.Order {
+            return cmp_fn(a, b);
+        }
+    };
+}
+
 /// Comparator using `std.math.order` (ascending for integers/floats,
 /// lexicographic for strings via a future `std.mem.order` wrapper).
 ///

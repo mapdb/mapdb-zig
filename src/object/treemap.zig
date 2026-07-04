@@ -33,7 +33,21 @@ const Range = @import("../range.zig").Range;
 ///     _ = m.put(1, "one");
 ///     _ = m.put(2, "two");
 ///     // Iteration order: 1→"one", 2→"two", 3→"three".
+/// Dynamic (fn-pointer) sorted map — the backward-compatible alias. Identical
+/// surface and behavior to before comptime contexts existed: `init` takes a
+/// `Comparator(K)` fn pointer, every comparison is one indirect call. For a
+/// zero-indirection comparator baked into the type, use `TreeMapContext` with a
+/// `ComparatorContext` (see `strategy.zig`).
 pub fn TreeMap(comptime K: type, comptime V: type) type {
+    return TreeMapContext(K, V, strategy.FnPtrContext(K));
+}
+
+/// Sorted map backed by a red-black tree over a comptime comparator `Context`
+/// (a type exposing `fn cmp(self, K, K) std.math.Order`), stdlib-style. A
+/// stateless context is zero-sized so its `cmp` inlines with no indirect call;
+/// a stateful context is stored by value. `TreeMap(K,V)` is the dynamic
+/// fn-pointer specialisation of this type.
+pub fn TreeMapContext(comptime K: type, comptime V: type, comptime Context: type) type {
     return struct {
         const Self = @This();
         const Cmp = strategy.Comparator(K);
@@ -69,16 +83,37 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         root: ?*Node,
         size: usize,
-        cmp: Cmp,
+        ctx: Context,
         allocator: Allocator,
 
-        pub fn init(allocator: Allocator, cmp: Cmp) Self {
+        /// Construct over a comparator context value. For the dynamic `TreeMap`
+        /// alias (`Context == FnPtrContext(K)`) a bare `Comparator(K)` fn
+        /// pointer is accepted directly and wrapped, so existing callers are
+        /// unchanged; a stateless context is passed as a typed `Ctx{}` value.
+        pub fn init(allocator: Allocator, ctx_or_cmp: anytype) Self {
             return .{
                 .root = null,
                 .size = 0,
-                .cmp = cmp,
+                .ctx = toContext(ctx_or_cmp),
                 .allocator = allocator,
             };
+        }
+
+        /// Normalise the `init` argument to `Context`. For the dynamic alias a
+        /// bare `Comparator(K)` fn pointer wraps into the `FnPtrContext`;
+        /// otherwise `x` must already be a typed `Context` value (`Ctx{}` for a
+        /// stateless context, `Ctx{ .field = … }` for a stateful one) — a bare
+        /// anonymous `.{}` does not resolve through `anytype`. The wrap branch is
+        /// comptime-pruned unless `Context` is the fn-pointer context.
+        inline fn toContext(x: anytype) Context {
+            const X = @TypeOf(x);
+            if (comptime X == Context) {
+                return x; // already a typed Context value (incl. comparator())
+            } else if (comptime Context == strategy.FnPtrContext(K) and X == Cmp) {
+                return .{ .cmp_fn = x }; // dynamic alias: wrap the bare fn pointer
+            } else {
+                return x; // best-effort coercion of an anonymous literal
+            }
         }
 
         pub fn deinit(self: *Self) void {
@@ -105,7 +140,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             }
             var current = self.root.?;
             while (true) {
-                const ord = self.cmp(key, current.key);
+                const ord = self.ctx.cmp(key, current.key);
                 switch (ord) {
                     .lt => {
                         if (current.left) |left| {
@@ -208,10 +243,29 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .key = n.key, .value = n.value };
         }
 
-        /// Returns a copy of this map's comparator. Used to preserve ordering
-        /// semantics when building a materialized snapshot (`subMap`).
+        /// Returns this map's comparator function pointer. Available only on the
+        /// dynamic `TreeMap` alias (`Context == FnPtrContext(K)`); for a
+        /// comptime-context map the comparator lives in the type, so use
+        /// `context()` for reconstruction instead. Kept callable
+        /// (`Comparator(K)`) so pre-context callers of `map.comparator()(a, b)`
+        /// are unchanged.
         pub fn comparator(self: *const Self) Cmp {
-            return self.cmp;
+            if (comptime Context != strategy.FnPtrContext(K)) {
+                @compileError("comparator() returns a Comparator(" ++ @typeName(K) ++
+                    ") fn pointer only for the dynamic TreeMap alias; a " ++
+                    @typeName(Context) ++ " map bakes ordering into the type — use context()");
+            }
+            return self.ctx.cmp_fn;
+        }
+
+        /// Returns a copy of this map's comparator **context** value. Preserves
+        /// ordering when building a materialized snapshot (`subMap`); round-trips
+        /// through `init`, which accepts a `Context` value. Works for every
+        /// context (dynamic or comptime), unlike `comparator()`. (Named
+        /// `comparatorContext` rather than `context` to avoid clashing with the
+        /// `context` callback parameter the functional methods take.)
+        pub fn comparatorContext(self: *const Self) Context {
+            return self.ctx;
         }
 
         // ---- NavigableMap surface ----
@@ -237,7 +291,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             var current = self.root;
             var best: ?*Node = null;
             while (current) |n| {
-                const ord = self.cmp(k, n.key);
+                const ord = self.ctx.cmp(k, n.key);
                 const take = switch (bound) {
                     .floor => ord != .lt, // n.key <= k
                     .lower => ord == .gt, // n.key <  k
@@ -325,7 +379,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             var r: usize = 0;
             var current = self.root;
             while (current) |n| {
-                switch (self.cmp(key, n.key)) {
+                switch (self.ctx.cmp(key, n.key)) {
                     // key < n.key: n and its right subtree are >= key; descend
                     // left without counting.
                     .lt => current = n.left,
@@ -507,7 +561,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         /// maps keep their ordering semantics in the slice. Caller owns the
         /// returned map and must `deinit` it.
         pub fn subMap(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error!Self {
-            var out = init(allocator, self.cmp);
+            var out = init(allocator, self.ctx);
             errdefer out.deinit();
             var it = self.iterator();
             while (it.next()) |e| {
@@ -668,7 +722,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         fn findNode(self: *const Self, key: K) ?*Node {
             var current = self.root;
             while (current) |n| {
-                switch (self.cmp(key, n.key)) {
+                switch (self.ctx.cmp(key, n.key)) {
                     .lt => current = n.left,
                     .gt => current = n.right,
                     .eq => return n,
@@ -1342,4 +1396,126 @@ test "object.TreeMap subtree-size invariant over randomized insert/remove" {
         try std.testing.expectEqual(@as(?i32, k), m.selectKey(i));
     }
     try std.testing.expectEqual(@as(?i32, null), m.selectKey(sorted.items.len));
+}
+
+// ── Step 2: comptime comparator context tests ───────────────────────────────
+
+test "TreeMapContext: stateless ComparatorContext matches the dynamic alias" {
+    const a = std.testing.allocator;
+    // Stateless, zero-sized context wrapping the same comptime comparator the
+    // fn-pointer alias would call — must produce identical ordering/results.
+    const Ctx = strategy.ComparatorContext(i32, strategy.naturalComparator(i32));
+    var m = TreeMapContext(i32, []const u8, Ctx).init(a, Ctx{});
+    defer m.deinit();
+    _ = try m.put(3, "three");
+    _ = try m.put(1, "one");
+    _ = try m.put(2, "two");
+    try std.testing.expectEqual(@as(?[]const u8, "one"), m.get(1));
+    try std.testing.expectEqual(@as(usize, 3), m.len());
+    try std.testing.expectEqualStrings("one", m.min().?.value);
+    try std.testing.expectEqualStrings("three", m.max().?.value);
+    // In-order iteration ascends by key.
+    const ks = try m.keysToSlice(a);
+    defer a.free(ks);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 2, 3 }, ks);
+}
+
+test "TreeMapContext: the stateless context is zero-sized (no fn-pointer field)" {
+    const Ctx = strategy.ComparatorContext(i32, strategy.naturalComparator(i32));
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(Ctx));
+    // The comptime-context map is strictly smaller than the fn-pointer alias by
+    // (at least) the stored comparator pointer — the point of Step 2.
+    const CtxMap = TreeMapContext(i32, i64, Ctx);
+    const PtrMap = TreeMap(i32, i64); // == TreeMapContext(.., FnPtrContext(i32))
+    try std.testing.expect(@sizeOf(CtxMap) < @sizeOf(PtrMap));
+}
+
+test "TreeMapContext: custom stateful context (descending via stored flag)" {
+    const a = std.testing.allocator;
+    // A stateful context: a runtime flag flips the order. Proves non-zero-sized
+    // contexts are stored and used by value.
+    const FlipCtx = struct {
+        descending: bool,
+        pub fn cmp(self: @This(), x: i32, y: i32) std.math.Order {
+            const base = std.math.order(x, y);
+            return if (self.descending) switch (base) {
+                .lt => .gt,
+                .gt => .lt,
+                .eq => .eq,
+            } else base;
+        }
+    };
+    var m = TreeMapContext(i32, void, FlipCtx).init(a, FlipCtx{ .descending = true });
+    defer m.deinit();
+    for ([_]i32{ 5, 1, 3, 2, 4 }) |k| _ = try m.put(k, {});
+    // Descending: min() is the largest key.
+    try std.testing.expectEqual(@as(i32, 5), m.min().?.key);
+    try std.testing.expectEqual(@as(i32, 1), m.max().?.key);
+}
+
+test "TreeMap dynamic alias: fn pointer init, callable comparator(), context() round-trip" {
+    const a = std.testing.allocator;
+    var m = TreeMap(i32, i64).init(a, strategy.reverseComparator(i32));
+    defer m.deinit();
+    for ([_]i32{ 1, 2, 3 }) |k| _ = try m.put(k, @as(i64, k));
+    try std.testing.expectEqual(@as(i32, 3), m.min().?.key); // reverse order
+    // comparator() stays a CALLABLE fn pointer on the dynamic alias (no break
+    // for pre-context callers of `map.comparator()(a, b)`).
+    const cmp = m.comparator();
+    try std.testing.expectEqual(std.math.Order.gt, cmp(1, 2)); // reversed
+    // context() round-trips into init and preserves ordering (how subMap works).
+    var m2 = TreeMap(i32, i64).init(a, m.comparatorContext());
+    defer m2.deinit();
+    for ([_]i32{ 10, 20, 30 }) |k| _ = try m2.put(k, @as(i64, k));
+    try std.testing.expectEqual(@as(i32, 30), m2.min().?.key);
+}
+
+test "TreeMapContext: composed comparator (thenComparing) as a stateless context" {
+    const a = std.testing.allocator;
+    const P = struct { age: i32, id: i32 };
+    const getAge = struct {
+        fn f(p: P) i32 {
+            return p.age;
+        }
+    }.f;
+    const getId = struct {
+        fn f(p: P) i32 {
+            return p.id;
+        }
+    }.f;
+    // age asc, then id asc — composed at comptime, wrapped into a zero-sized ctx.
+    const byAge = comptime strategy.comparatorByField(P, i32, &getAge, strategy.naturalComparator(i32));
+    const byId = comptime strategy.comparatorByField(P, i32, &getId, strategy.naturalComparator(i32));
+    const Ctx = strategy.ComparatorContext(P, comptime strategy.thenComparing(P, byAge, byId));
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(Ctx));
+    var m = TreeMapContext(P, void, Ctx).init(a, Ctx{});
+    defer m.deinit();
+    for ([_]P{ .{ .age = 30, .id = 2 }, .{ .age = 30, .id = 1 }, .{ .age = 20, .id = 9 } }) |p| {
+        _ = try m.put(p, {});
+    }
+    // In-order keys: (20,9), (30,1), (30,2) — age then id.
+    const ks = try m.keysToSlice(a);
+    defer a.free(ks);
+    try std.testing.expectEqual(@as(usize, 3), ks.len);
+    try std.testing.expect(ks[0].age == 20 and ks[0].id == 9);
+    try std.testing.expect(ks[1].age == 30 and ks[1].id == 1);
+    try std.testing.expect(ks[2].age == 30 and ks[2].id == 2);
+}
+
+test "TreeMapContext: subMap preserves a non-FnPtr (reverse) context ordering" {
+    const a = std.testing.allocator;
+    const Ctx = strategy.ComparatorContext(i32, strategy.reverseComparator(i32));
+    const M = TreeMapContext(i32, i64, Ctx);
+    var m = M.init(a, Ctx{});
+    defer m.deinit();
+    for ([_]i32{ 10, 20, 30, 40, 50 }) |k| _ = try m.put(k, @as(i64, k));
+    try std.testing.expectEqual(@as(i32, 50), m.min().?.key); // reverse: 50 first
+    // subMap materialises a snapshot; it must keep the reverse ordering (its
+    // reconstruction uses the stored context, not a fn pointer).
+    var sub = try m.subMap(Range(i32).closed(20, 40), a);
+    defer sub.deinit();
+    try std.testing.expectEqual(@as(usize, 3), sub.len()); // 20,30,40
+    try std.testing.expectEqual(@as(i32, 40), sub.min().?.key); // reverse order kept
+    try std.testing.expectEqual(@as(i32, 20), sub.max().?.key);
+    try std.testing.expect(@TypeOf(sub) == M); // same context type preserved
 }

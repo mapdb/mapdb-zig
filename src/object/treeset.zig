@@ -30,15 +30,30 @@ const Range = @import("../range.zig").Range;
 ///     _ = s.add("apple");
 ///     _ = s.add("cherry");
 ///     // Iteration order: "apple", "banana", "cherry".
+/// Dynamic (fn-pointer) sorted set — the backward-compatible alias over
+/// `TreeSetContext(T, FnPtrContext(T))`. `init` takes a `Comparator(T)` fn
+/// pointer as before. For a zero-indirection comparator baked into the type,
+/// use `TreeSetContext` with a `ComparatorContext` (see `strategy.zig`).
 pub fn TreeSet(comptime T: type) type {
+    return TreeSetContext(T, strategy.FnPtrContext(T));
+}
+
+/// Sorted set over a comptime comparator `Context`, backed by
+/// `TreeMapContext(T, void, Context)`. A stateless context inlines its `cmp`;
+/// `TreeSet(T)` is the dynamic fn-pointer specialisation.
+pub fn TreeSetContext(comptime T: type, comptime Context: type) type {
     return struct {
         const Self = @This();
-        const Map = treemap_mod.TreeMap(T, void);
+        const Map = treemap_mod.TreeMapContext(T, void, Context);
 
         inner: Map,
 
-        pub fn init(allocator: Allocator, comparator: strategy.Comparator(T)) Self {
-            return .{ .inner = Map.init(allocator, comparator) };
+        /// Construct over a comparator context value, or — for the `TreeSet`
+        /// alias — a bare `Comparator(T)` fn pointer (wrapped automatically).
+        /// A stateless context is passed as a typed `Ctx{}` value. Delegates normalisation to
+        /// the backing map's `init`.
+        pub fn init(allocator: Allocator, ctx_or_cmp: anytype) Self {
+            return .{ .inner = Map.init(allocator, ctx_or_cmp) };
         }
 
         pub fn deinit(self: *Self) void {
@@ -181,7 +196,9 @@ pub fn TreeSet(comptime T: type) type {
         /// reverse/custom/float-total-order ordering is retained. Caller owns
         /// the returned set and must `deinit` it.
         pub fn subSet(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error!Self {
-            var out = Self.init(allocator, self.inner.comparator());
+            // Reconstruct with the same comparator *context* (works for both the
+            // dynamic alias and comptime-context sets, unlike `comparator()`).
+            var out = Self.init(allocator, self.inner.comparatorContext());
             errdefer out.deinit();
             var it = self.iterator();
             while (it.next()) |x| {
@@ -452,4 +469,30 @@ test "object.TreeSet rank/select: empty and single" {
     try std.testing.expectEqual(@as(usize, 1), single.rank(8));
     try std.testing.expectEqual(@as(?i32, 7), single.select(0));
     try std.testing.expectEqual(@as(?i32, null), single.select(1));
+}
+
+// ── Step 2: comptime comparator context tests ───────────────────────────────
+
+test "TreeSetContext: stateless context matches dynamic alias; zero-sized" {
+    const a = std.testing.allocator;
+    const Ctx = strat.ComparatorContext(i32, strat.naturalComparator(i32));
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(Ctx));
+    var s = TreeSetContext(i32, Ctx).init(a, Ctx{});
+    defer s.deinit();
+    for ([_]i32{ 5, 1, 4, 2, 3 }) |v| _ = try s.add(v);
+    try std.testing.expectEqual(@as(usize, 5), s.len());
+    try std.testing.expect(s.contains(3) and !s.contains(9));
+    try std.testing.expectEqual(@as(?i32, 1), s.first());
+    try std.testing.expectEqual(@as(?i32, 5), s.last());
+    // The comptime-context set is smaller than the fn-pointer alias.
+    try std.testing.expect(@sizeOf(TreeSetContext(i32, Ctx)) < @sizeOf(TreeSet(i32)));
+}
+
+test "TreeSet dynamic alias still takes a bare fn pointer (reverse order)" {
+    const a = std.testing.allocator;
+    var s = TreeSet(i32).init(a, strat.reverseComparator(i32));
+    defer s.deinit();
+    for ([_]i32{ 1, 2, 3 }) |v| _ = try s.add(v);
+    try std.testing.expectEqual(@as(?i32, 3), s.first()); // reverse: largest first
+    try std.testing.expectEqual(@as(?i32, 1), s.last());
 }
