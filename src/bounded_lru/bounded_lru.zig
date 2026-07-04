@@ -62,6 +62,19 @@ const NEVER: u64 = std.math.maxInt(u64);
 /// The map holds at most `max_size` entries; a new-key insert that would
 /// exceed it evicts the least-recently-used entry first (evict-before-insert),
 /// so the inserted key is never its own victim.
+///
+/// ## Value ownership (shallow)
+///
+/// Values are stored and returned by shallow copy. For a primitive `V` this is
+/// immaterial. For a resource-owning `V` (an owned `[]u8`, a handle):
+/// - `put`/`remove` and a size/`expired` eviction hand the value back to you
+///   (the callback copy is the *last* handle on eviction — treat it as the
+///   disposal hook), so those paths do not leak.
+/// - `clear` and `deinit` drop every resident value WITHOUT disposing it and
+///   WITHOUT firing the eviction callback (bulk manual teardown is not
+///   eviction). For an owning `V` that leaks every payload. Call `clearWith`
+///   (which hands each value to a drop callback first) before `clear`/`deinit`,
+///   or drain the map yourself.
 pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
     return struct {
         const Self = @This();
@@ -128,7 +141,9 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
             };
         }
 
-        /// Release all owned memory.
+        /// Release all owned memory. Does NOT dispose resident *values*: for an
+        /// owning `V`, drain first (`clearWith`) or those payloads leak (see the
+        /// type-level ownership note).
         pub fn deinit(self: *Self) void {
             self.index.deinit(self.allocator);
             self.arena.deinit(self.allocator);
@@ -294,6 +309,12 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         }
 
         /// Lookup. On a hit refreshes recency; on a miss does nothing.
+        ///
+        /// TTL is NOT enforced here: `get` never consults `expire_at`, so on a
+        /// TTL map it may return an entry whose logical expiry has already
+        /// passed (and refresh its recency). Expiry is applied only by an
+        /// explicit `expireEntries(now)` sweep. For read-time TTL semantics
+        /// (miss on an expired entry) use `getAt(key, now)`.
         pub fn get(self: *Self, key: K) ?V {
             if (self.index.get(key)) |idx| {
                 const v = self.arena.items[idx].value;
@@ -305,9 +326,39 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
 
         /// A `get` that returns `default` on a miss. A hit refreshes recency
         /// exactly like `get`; a miss does NOT refresh recency and does NOT
-        /// insert `default`.
+        /// insert `default`. Like `get`, does NOT enforce TTL — see `getAt` /
+        /// `getOrDefaultAt` for read-time expiry.
         pub fn getOrDefault(self: *Self, key: K, default: V) V {
             return self.get(key) orelse default;
+        }
+
+        /// Like `get`, but honors TTL at read time: an entry whose logical
+        /// expiry has passed (`expire_at <= now`, with the `NEVER` sentinel
+        /// never expiring) is treated as a MISS — not returned, recency not
+        /// refreshed. It is NOT removed here and the eviction callback does NOT
+        /// fire: removal + the `expired` callback happen only in
+        /// `expireEntries`, so its ordering contract is preserved (a later
+        /// `expireEntries(now')` with `now' >= expire_at` still collects it).
+        /// On a no-TTL map (or a `NEVER` entry) this is identical to `get`.
+        /// `now` is the caller's logical tick, exactly as in `putAt`.
+        pub fn getAt(self: *Self, key: K, now: u64) ?V {
+            if (self.index.get(key)) |idx| {
+                const node = self.arena.items[idx];
+                if (node.expire_at != NEVER and node.expire_at <= now) {
+                    // Logically expired: read-time miss (no refresh, no removal).
+                    return null;
+                }
+                self.touch(idx);
+                return node.value;
+            }
+            return null;
+        }
+
+        /// A `getAt` that returns `default` on a miss (absent OR read-time
+        /// expired). A hit refreshes recency; a miss does not refresh and does
+        /// not insert. The TTL-aware counterpart of `getOrDefault`.
+        pub fn getOrDefaultAt(self: *Self, key: K, default: V, now: u64) V {
+            return self.getAt(key, now) orelse default;
         }
 
         /// Membership test. Does NOT refresh recency and never evicts.
@@ -330,13 +381,35 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         }
 
         /// Remove all entries. Does NOT invoke the eviction callback for the
-        /// cleared entries (bulk manual removal is not eviction).
+        /// cleared entries (bulk manual removal is not eviction) and does NOT
+        /// dispose their values. For an owning `V` this leaks every payload —
+        /// use `clearWith` instead (see the type-level ownership note).
         pub fn clear(self: *Self) void {
             self.index.clearRetainingCapacity();
             self.arena.clearRetainingCapacity();
             self.free_head = NIL;
             self.head = NIL;
             self.tail = NIL;
+        }
+
+        /// Like `clear`, but first hands each still-resident `(key, value)` to
+        /// `dropFn` in LRU order (least-recently-used first) so an owning `V`
+        /// can be released before the entries are dropped. Use this instead of
+        /// `clear`/`deinit` when `V` owns memory. The eviction callback does NOT
+        /// fire (this is manual teardown, not eviction). `dropFn` MUST NOT
+        /// reenter the map.
+        pub fn clearWith(
+            self: *Self,
+            context: anytype,
+            comptime dropFn: fn (@TypeOf(context), K, V) void,
+        ) void {
+            var cur = self.head;
+            while (cur != NIL) {
+                const node = self.arena.items[cur];
+                dropFn(context, node.key, node.value);
+                cur = node.next;
+            }
+            self.clear();
         }
 
         /// Logical-time expiry pass: remove every entry with `expire_at <= now`
@@ -832,6 +905,89 @@ test "slot reuse after eviction: no dangling, arena bounded" {
     try expectValues(&m, a, &.{ 9970, 9980, 9990 });
     // Freed slots are reused: the arena never grows past capacity + a few.
     try testing.expect(m.arena.items.len <= 4);
+}
+
+test "getAt: read-time TTL miss on expired, hit refreshes, no removal" {
+    const a = testing.allocator;
+    var log = TestLog{ .allocator = a };
+    defer log.deinit();
+    var m = Map.init(a, .{ .max_size = 10, .ttl = 10, .on_evict = TestLog.record, .on_evict_ctx = &log });
+    defer m.deinit();
+    _ = try m.putAt(1, 10, 0); // expire_at 10
+    _ = try m.putAt(2, 20, 5); // expire_at 15
+
+    // Before expiry: getAt hits and returns the value.
+    try testing.expectEqual(@as(?i32, 10), m.getAt(1, 5));
+    // At/after expire_at (inclusive): read-time miss, no callback, still resident.
+    try testing.expectEqual(@as(?i32, null), m.getAt(1, 10));
+    try testing.expectEqual(@as(usize, 0), log.entries.items.len);
+    try testing.expect(m.containsKey(1)); // not removed by getAt
+    // A later expireEntries still collects it (sweep contract preserved).
+    try testing.expectEqual(@as(usize, 1), try m.expireEntries(10));
+    try log.expect(&.{.{ .key = 1, .value = 10, .cause = .expired }});
+
+    // getAt hit refreshes recency: with {2} only, put two more, 2 must survive
+    // over the older one once refreshed.
+    _ = try m.putAt(3, 30, 5); // {2,3}
+    _ = m.getAt(2, 6); // 2 -> MRU
+    try expectKeys(&m, a, &.{ 3, 2 });
+}
+
+test "getOrDefaultAt: default on expired and on absent" {
+    const a = testing.allocator;
+    var m = Map.init(a, .{ .max_size = 10, .ttl = 10 });
+    defer m.deinit();
+    _ = try m.putAt(1, 10, 0); // expire_at 10
+    try testing.expectEqual(@as(i32, 10), m.getOrDefaultAt(1, -1, 5)); // live
+    try testing.expectEqual(@as(i32, -1), m.getOrDefaultAt(1, -1, 10)); // expired -> default
+    try testing.expectEqual(@as(i32, -1), m.getOrDefaultAt(99, -1, 0)); // absent -> default
+}
+
+test "getAt on a no-ttl map behaves exactly like get" {
+    const a = testing.allocator;
+    var m = Map.init(a, .{ .max_size = 2 });
+    defer m.deinit();
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
+    // now is irrelevant without a TTL: never a read-time miss.
+    try testing.expectEqual(@as(?i32, 10), m.getAt(1, std.math.maxInt(u64))); // 1 -> MRU
+    _ = try m.put(3, 30); // evicts 2 (LRU)
+    try expectKeys(&m, a, &.{ 1, 3 });
+}
+
+test "clearWith: drops each value in LRU order, then empties" {
+    const a = testing.allocator;
+    var log = TestLog{ .allocator = a };
+    defer log.deinit();
+    var m = Map.init(a, .{ .max_size = 5, .on_evict = TestLog.record, .on_evict_ctx = &log });
+    defer m.deinit();
+    _ = try m.put(1, 10);
+    _ = try m.put(2, 20);
+    _ = try m.put(3, 30); // LRU order: 1, 2, 3
+
+    const Drain = struct {
+        seen: std.ArrayListUnmanaged(TestLog.Triple) = .{},
+        allocator: Allocator,
+        fn drop(self: *@This(), key: i32, value: i32) void {
+            self.seen.append(self.allocator, .{ .key = key, .value = value, .cause = .size }) catch unreachable;
+        }
+    };
+    var drain = Drain{ .allocator = a };
+    defer drain.seen.deinit(a);
+
+    m.clearWith(&drain, Drain.drop);
+
+    // dropFn saw every value in LRU order...
+    try testing.expectEqual(@as(usize, 3), drain.seen.items.len);
+    try testing.expectEqual(@as(i32, 1), drain.seen.items[0].key);
+    try testing.expectEqual(@as(i32, 2), drain.seen.items[1].key);
+    try testing.expectEqual(@as(i32, 3), drain.seen.items[2].key);
+    // ...the eviction callback did NOT fire (manual teardown)...
+    try testing.expectEqual(@as(usize, 0), log.entries.items.len);
+    // ...and the map is empty and reusable.
+    try testing.expect(m.isEmpty());
+    _ = try m.put(9, 90);
+    try expectKeys(&m, a, &.{9});
 }
 
 test "tie-free determinism over a pseudo-random sequence" {
