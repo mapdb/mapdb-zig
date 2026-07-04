@@ -78,31 +78,37 @@ pub fn RangeSet(comptime T: type) type {
             // Empty-range no-op (cut-empty), per the normative empty-range rule.
             if (range.isEmpty()) return;
 
-            // Merge `range` with every connected stored range, spanning all of
-            // them. Connectivity (overlap OR abutment) is the predicate.
-            var merged = range;
-            var out: std.ArrayListUnmanaged(Range) = .{};
-            errdefer out.deinit(self.allocator);
-            try out.ensureTotalCapacity(self.allocator, self.ranges.items.len + 1);
-            for (self.ranges.items) |r| {
-                if (r.isConnected(merged)) {
-                    merged = r.span(merged);
-                } else {
-                    out.appendAssumeCapacity(r);
-                }
-            }
-            // Insert `merged` at its ascending-by-lower-cut position.
-            var pos: usize = out.items.len;
-            for (out.items, 0..) |r, i| {
-                if (Cut.cmp(r.lower, merged.lower) == .gt) {
-                    pos = i;
-                    break;
-                }
-            }
-            out.insertAssumeCapacity(pos, merged);
+            // The stored ranges connected to `range` (overlap OR abutment) form
+            // a contiguous run `[lo, hi)`: the backing is sorted ascending by
+            // lower cut and pairwise non-connected, so both run bounds fall out
+            // of a binary search over the (ascending) cut columns. This replaces
+            // the previous full-list rebuild — O(n) scan plus one *fresh*
+            // backing allocation on every `add` — with an O(log n) locate and a
+            // single in-place splice (D13).
+            const stored = self.ranges.items;
+            const lo = runStart(stored, range, .connected);
+            const hi = runEnd(stored, range, .connected);
 
-            self.ranges.deinit(self.allocator);
-            self.ranges = out;
+            // Span the run (if any) with `range`; the endpoints carry the
+            // extremal cuts (`stored[lo]` the min lower, `stored[hi-1]` the max
+            // upper), so two `span`s suffice. This reads `stored` before the
+            // splice below invalidates the slice.
+            var merged = range;
+            if (lo < hi) {
+                merged = merged.span(stored[lo]);
+                merged = merged.span(stored[hi - 1]);
+            }
+
+            if (lo == hi) {
+                // No connected range: insert `merged` at its sorted position.
+                // ArrayList growth is amortized, so this is O(log n) *total*
+                // allocations across a run of inserts, not one per call.
+                try self.ranges.insert(self.allocator, lo, merged);
+            } else {
+                // Collapse the connected run into the single merged range. new
+                // length (1) <= removed length, so this never reallocates.
+                try self.ranges.replaceRange(self.allocator, lo, hi - lo, &.{merged});
+            }
         }
 
         /// [`add`](RangeSet.add) each range; the final normal form is
@@ -117,29 +123,85 @@ pub fn RangeSet(comptime T: type) type {
         /// leaves `[1, 4)` and `[7, 9]`), never `±1`.
         pub fn remove(self: *Self, range: Range) Allocator.Error!void {
             if (range.isEmpty()) return;
-            var out: std.ArrayListUnmanaged(Range) = .{};
-            errdefer out.deinit(self.allocator);
-            try out.ensureTotalCapacity(self.allocator, self.ranges.items.len + 1);
-            for (self.ranges.items) |r| {
-                // No cut-non-empty overlap -> keep `r` unchanged. Abutment
-                // alone (cut-empty intersection) does not split.
-                if (r.intersection(range)) |i| {
-                    if (!i.isEmpty()) {
-                        // Left fragment: r below the removed range's lower cut.
-                        if (Cut.cmp(r.lower, range.lower) == .lt) {
-                            out.appendAssumeCapacity(.{ .lower = r.lower, .upper = range.lower });
-                        }
-                        // Right fragment: r above the removed range's upper cut.
-                        if (Cut.cmp(range.upper, r.upper) == .lt) {
-                            out.appendAssumeCapacity(.{ .lower = range.upper, .upper = r.upper });
-                        }
-                        continue;
-                    }
-                }
-                out.appendAssumeCapacity(r);
+
+            // The stored ranges with a cut-**non-empty** intersection form a
+            // contiguous run `[lo, hi)`. Abutment (a cut-empty touch) does not
+            // split, so — unlike `add`'s connectivity bounds — these bounds use
+            // STRICT cut comparisons (`.overlapping`). Located by binary search,
+            // spliced in place, replacing the previous full-list rebuild (D13).
+            const stored = self.ranges.items;
+            const lo = runStart(stored, range, .overlapping);
+            const hi = runEnd(stored, range, .overlapping);
+            if (lo >= hi) return; // nothing overlaps -> no-op
+
+            // Only the first range in the run can leave a left fragment (the
+            // part below `range.lower`) and only the last a right fragment
+            // (above `range.upper`); every interior range is fully covered and
+            // drops out. So the whole run collapses to at most two fragments,
+            // read from `stored` before the splice invalidates the slice.
+            var frags: [2]Range = undefined;
+            var n: usize = 0;
+            if (Cut.cmp(stored[lo].lower, range.lower) == .lt) {
+                frags[n] = .{ .lower = stored[lo].lower, .upper = range.lower };
+                n += 1;
             }
-            self.ranges.deinit(self.allocator);
-            self.ranges = out;
+            if (Cut.cmp(range.upper, stored[hi - 1].upper) == .lt) {
+                frags[n] = .{ .lower = range.upper, .upper = stored[hi - 1].upper };
+                n += 1;
+            }
+            // The run shrinks except when a single range splits into two
+            // fragments (n==2, hi-lo==1), which needs one extra slot. Reserve it
+            // FIRST — the sole fallible step — so an OOM leaves the set unchanged
+            // (`frags` are value copies, unaffected if the reserve relocates the
+            // backing); then splice infallibly. `n - (hi - lo) <= 1` always.
+            try self.ranges.ensureUnusedCapacity(self.allocator, n -| (hi - lo));
+            self.ranges.replaceRangeAssumeCapacity(lo, hi - lo, frags[0..n]);
+        }
+
+        /// How the run bounds treat a cut-touch (abutment): `.connected` counts
+        /// it (used by `add`, whose merge predicate is connectivity), while
+        /// `.overlapping` excludes it (used by `remove`, which splits only on a
+        /// cut-non-empty intersection).
+        const RunKind = enum { connected, overlapping };
+
+        /// First index `i` whose stored range reaches `range`'s lower cut —
+        /// `range.lower <= stored[i].upper` for `.connected`, strict `<` for
+        /// `.overlapping`. `items.len` if none. A lower-bound binary search:
+        /// stored upper cuts ascend, so the predicate flips false→true once.
+        fn runStart(stored: []const Range, range: Range, comptime kind: RunKind) usize {
+            var lo: usize = 0;
+            var hi: usize = stored.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                const reaches = switch (Cut.cmp(range.lower, stored[mid].upper)) {
+                    .lt => true,
+                    .eq => kind == .connected, // touch counts only for add
+                    .gt => false,
+                };
+                if (reaches) hi = mid else lo = mid + 1;
+            }
+            return lo;
+        }
+
+        /// First index `i` starting beyond `range`'s upper cut —
+        /// `stored[i].lower > range.upper` for `.connected`, `>=` for
+        /// `.overlapping`. `items.len` if none. A lower-bound binary search:
+        /// stored lower cuts ascend, so the "beyond" predicate flips false→true
+        /// once. Together with `runStart` this brackets the affected run `[lo,
+        /// hi)`, and `lo <= hi` always (a stored range has `lower <= upper`).
+        fn runEnd(stored: []const Range, range: Range, comptime kind: RunKind) usize {
+            var lo: usize = 0;
+            var hi: usize = stored.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                const beyond = switch (Cut.cmp(stored[mid].lower, range.upper)) {
+                    .gt => true,
+                    .eq => kind == .overlapping, // touch ends the run only for remove
+                    .lt => false,
+                };
+                if (beyond) hi = mid else lo = mid + 1;
+            }
+            return lo;
         }
 
         /// Whether `value` falls in some stored range. This is the **only**
@@ -525,4 +587,144 @@ test "asRanges returns owned ascending slice" {
     try testing.expectEqual(@as(usize, 2), arr.len);
     try testing.expect(arr[0].eql(I32Range.closed(1, 2)));
     try testing.expect(arr[1].eql(I32Range.closed(5, 6)));
+}
+
+// ── Splice-path stress (D13: binary-search run + in-place splice) ────────────
+// The bulk of the suite above uses 1–2 stored ranges, so it never exercises the
+// multi-range run bounds. These add many disjoint ranges first, then hit the
+// merge/split logic across an interior run.
+
+test "add spanning range merges a whole interior run" {
+    var s = I32RangeSet.init(testing.allocator);
+    defer s.deinit();
+    // Ten disjoint islands [0,1], [10,11], … [90,91].
+    var k: i32 = 0;
+    while (k < 10) : (k += 1) try s.add(I32Range.closed(k * 10, k * 10 + 1));
+    try testing.expectEqual(@as(usize, 10), s.items().len);
+    // A range covering [15, 75] swallows islands 2..7 and abuts none of the
+    // survivors, collapsing the middle run to one range.
+    try s.add(I32Range.closed(15, 75));
+    try expectRanges(s, &.{
+        I32Range.closed(0, 1),
+        I32Range.closed(10, 11),
+        I32Range.closed(15, 75),
+        I32Range.closed(80, 81),
+        I32Range.closed(90, 91),
+    });
+}
+
+test "add at front, gap, and end lands in sorted position" {
+    var s = try rsFrom(testing.allocator, &.{ I32Range.closed(10, 12), I32Range.closed(20, 22) });
+    defer s.deinit();
+    try s.add(I32Range.closed(0, 1)); // front
+    try s.add(I32Range.closed(15, 16)); // interior gap
+    try s.add(I32Range.closed(30, 31)); // end
+    try expectRanges(s, &.{
+        I32Range.closed(0, 1),
+        I32Range.closed(10, 12),
+        I32Range.closed(15, 16),
+        I32Range.closed(20, 22),
+        I32Range.closed(30, 31),
+    });
+}
+
+test "remove spanning range clips ends and drops the interior run" {
+    var s = I32RangeSet.init(testing.allocator);
+    defer s.deinit();
+    var k: i32 = 0;
+    while (k < 6) : (k += 1) try s.add(I32Range.closedOpen(k * 10, k * 10 + 5)); // [0,5) [10,15) … [50,55)
+    try testing.expectEqual(@as(usize, 6), s.items().len);
+    // Remove [12, 43): clips [10,15)->[10,12), drops [20,25) & [30,35), clips
+    // [40,45)->[43,45); [0,5) and [50,55) untouched.
+    try s.remove(I32Range.closedOpen(12, 43));
+    try expectRanges(s, &.{
+        I32Range.closedOpen(0, 5),
+        I32Range.closedOpen(10, 12),
+        I32Range.closedOpen(43, 45),
+        I32Range.closedOpen(50, 55),
+    });
+}
+
+test "remove split is failure-atomic under OOM" {
+    // The only growth in the splice paths: remove splitting one range into two
+    // fragments. If the reserve OOMs, the set must be left UNCHANGED (project
+    // OOM-atomicity contract), not half-mutated to just the left fragment.
+    var s = try rsFrom(testing.allocator, &.{I32Range.closed(1, 9)});
+    defer s.deinit();
+    // Trim spare capacity to len so the split's +1 slot MUST allocate (else the
+    // reserve is a no-op and the failure path is never exercised).
+    s.ranges.shrinkAndFree(s.allocator, s.ranges.items.len);
+    // Fail the next allocation (the ensureUnusedCapacity for the split slot).
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    s.allocator = failing.allocator();
+    try testing.expectError(error.OutOfMemory, s.remove(I32Range.closedOpen(4, 7)));
+    s.allocator = testing.allocator; // restore for deinit
+    // Unchanged: still the single [1, 9].
+    try expectRanges(s, &.{I32Range.closed(1, 9)});
+}
+
+test "splice across unbounded sentinels (add bridge, remove producing unbounded frags)" {
+    // add: bridge two unbounded-ended islands into one all().
+    var s = try rsFrom(testing.allocator, &.{ I32Range.lessThan(0), I32Range.atLeast(10) });
+    defer s.deinit();
+    try s.add(I32Range.closedOpen(0, 10)); // fills the gap, abuts both ends
+    try expectRanges(s, &.{I32Range.all()});
+
+    // remove from all() straddling a finite window -> two unbounded fragments.
+    try s.remove(I32Range.closedOpen(3, 6));
+    try expectRanges(s, &.{ I32Range.lessThan(3), I32Range.atLeast(6) });
+
+    // remove an unbounded tail across a multi-range set: drops/clips the run
+    // whose lower cuts are >= the cut, leaving the bounded head untouched.
+    var s2 = try rsFrom(testing.allocator, &.{
+        I32Range.closed(0, 2),
+        I32Range.closed(10, 12),
+        I32Range.closed(20, 22),
+    });
+    defer s2.deinit();
+    try s2.remove(I32Range.atLeast(11)); // clips [10,12]->[10,11), drops [20,22]
+    try expectRanges(s2, &.{ I32Range.closed(0, 2), I32Range.closedOpen(10, 11) });
+}
+
+test "differential vs boolean model over a bounded domain (random add/remove)" {
+    // Strongest guard on the splice bounds: apply thousands of random
+    // closedOpen add/remove ops and cross-check contains() against a dense
+    // bool array, since closedOpen(lo,hi) over i32 covers exactly integers
+    // [lo,hi). Also re-verify the normal-form invariant after every op.
+    const N: i32 = 48;
+    var model = [_]bool{false} ** @as(usize, N);
+    var s = I32RangeSet.init(testing.allocator);
+    defer s.deinit();
+
+    var prng = std.Random.DefaultPrng.init(0xD13_D13);
+    const rnd = prng.random();
+    var iter: usize = 0;
+    while (iter < 3000) : (iter += 1) {
+        const lo = rnd.intRangeAtMost(i32, 0, N);
+        const len = rnd.intRangeAtMost(i32, 0, 8);
+        const hi = @min(lo + len, N);
+        const r = I32Range.closedOpen(lo, hi);
+        if (rnd.boolean()) {
+            try s.add(r);
+            var v = lo;
+            while (v < hi) : (v += 1) model[@intCast(v)] = true;
+        } else {
+            try s.remove(r);
+            var v = lo;
+            while (v < hi) : (v += 1) model[@intCast(v)] = false;
+        }
+        // contains() must match the dense model at every point.
+        var v: i32 = 0;
+        while (v < N) : (v += 1) {
+            try testing.expectEqual(model[@intCast(v)], s.contains(v));
+        }
+        // Normal form: strictly ascending lowers, pairwise non-connected, non-empty.
+        const items = s.items();
+        var i: usize = 1;
+        while (i < items.len) : (i += 1) {
+            try testing.expectEqual(std.math.Order.lt, I32Range.Cut.cmp(items[i - 1].lower, items[i].lower));
+            try testing.expect(!items[i - 1].isConnected(items[i]));
+        }
+        for (items) |rr| try testing.expect(!rr.isEmpty());
+    }
 }

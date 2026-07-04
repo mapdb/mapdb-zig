@@ -170,20 +170,28 @@ fn benchD9(base: std.mem.Allocator) !void {
     std.debug.print("  (~1 alloc/insert today → a node pool would batch these into O(log N) growth allocs)\n", .{});
 }
 
-// ---- D13: RangeSet mutation scaling ----------------------------------------
+// ---- D13: RangeSet mutation scaling (IMPLEMENTED — regression guard) --------
+//
+// D13 is done: `RangeSet.add`/`remove` now binary-search the affected run and
+// splice in place instead of rebuilding the whole backing list into a fresh
+// allocation every call. This bench flipped from a measure-first gate into a
+// regression guard — the pre-fix signature was `alloc_calls == N` with
+// super-linearly-rising ns/add (O(n) per add ⇒ O(n^2) addAll); post-fix it is
+// `alloc_calls ~= 1` (ArrayList growth relocates via `remap`, not fresh
+// `alloc`) with flat ns/add on the ascending-append workload.
 
 fn benchD13(base: std.mem.Allocator) !void {
-    std.debug.print("\n=== D13: RangeSet addAll of N disjoint ranges (expose O(n^2)) ===\n", .{});
+    std.debug.print("\n=== D13: RangeSet addAll scaling (post-splice regression guard) ===\n", .{});
     const Ns = [_]usize{ 1_000, 2_000, 4_000, 8_000 };
     var prev_per_op: f64 = 0;
     for (Ns) |N| {
+        // (a) Ascending disjoint ranges [3k, 3k+1]: each add's sorted position
+        // is the end, so the splice degenerates to an amortized-O(1) append.
         var counter = CountingAllocator{ .child = base };
         const alloc = counter.allocator();
         var rs = I32RangeSet.init(alloc);
         defer rs.deinit();
 
-        // Disjoint closed ranges [3k, 3k+1] so none coalesce: worst case for a
-        // flat-array RangeSet — each add scans + rebuilds all prior ranges.
         const start = nanos();
         var i: usize = 0;
         while (i < N) : (i += 1) {
@@ -193,15 +201,31 @@ fn benchD13(base: std.mem.Allocator) !void {
         const elapsed: u64 = @intCast(nanos() - start);
         const per_op = @as(f64, @floatFromInt(elapsed)) / @as(f64, @floatFromInt(N));
         const growth = if (prev_per_op == 0) 0.0 else per_op / prev_per_op;
+
+        // (b) Descending inserts hit the new worst case: every add lands at
+        // index 0 and shifts the whole array (O(n) memmove), but still with NO
+        // per-add allocation — the point of the rewrite. Kept in a separate set
+        // so its allocs don't muddy (a)'s counter.
+        var counter2 = CountingAllocator{ .child = base };
+        var rs2 = I32RangeSet.init(counter2.allocator());
+        defer rs2.deinit();
+        const start2 = nanos();
+        var j: usize = N;
+        while (j > 0) : (j -= 1) {
+            const lo: i32 = @intCast(j * 3);
+            try rs2.add(Range(i32).closed(lo, lo + 1));
+        }
+        const elapsed2: u64 = @intCast(nanos() - start2);
+        const per_op2 = @as(f64, @floatFromInt(elapsed2)) / @as(f64, @floatFromInt(N));
+
         std.debug.print(
-            "  N={d:>5}  {d:>8.3}ms total  {d:>7.1} ns/add  alloc_calls={d:>6}  (ns/add x{d:.2} vs prev N)\n",
-            .{ N, @as(f64, @floatFromInt(elapsed)) / 1e6, per_op, counter.alloc_calls, growth },
+            "  N={d:>5}  append: {d:>6.1} ns/add alloc={d:>3} remap={d:>3} (x{d:.2})   front-insert: {d:>7.1} ns/add alloc={d:>3}\n",
+            .{ N, per_op, counter.alloc_calls, counter.remap_calls, growth, per_op2, counter2.alloc_calls },
         );
         prev_per_op = per_op;
     }
-    std.debug.print("  primary signal: alloc_calls == N ⇒ one fresh backing allocation per add (rebuild-in-full).\n", .{});
-    std.debug.print("  ns/add rises super-linearly with N (O(n)/add ⇒ O(n^2) addAll); the exact x-ratio is\n", .{});
-    std.debug.print("  page_allocator/cache-noisy, so read it as \"clearly not constant\", not a precise 2.0.\n", .{});
+    std.debug.print("  post-fix signal: alloc_calls no longer scales with N (growth via remap); append ns/add is\n", .{});
+    std.debug.print("  ~flat vs the old super-linear rise. front-insert stays alloc-free but pays the O(n) shift.\n", .{});
 }
 
 pub fn main() !void {
