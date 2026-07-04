@@ -72,12 +72,14 @@ pub fn build(b: *std.Build) void {
     trapprobe_step.dependOn(&run_trapprobe.step);
     // Unit tests
     const test_filters = b.option([]const []const u8, "test-filter", "Only run tests whose name contains the given substring (repeatable)") orelse &.{};
+    const tsan = b.option(bool, "tsan", "Build the unit tests with ThreadSanitizer (for the concurrent collections)") orelse false;
     const lib_unit_tests = b.addTest(.{
         .filters = test_filters,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
+            .sanitize_thread = tsan,
         }),
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
