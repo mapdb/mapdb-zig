@@ -14,7 +14,10 @@ const Allocator = std.mem.Allocator;
 
 const DEFAULT_CAPACITY: usize = 16;
 
-fn hashKey(comptime K: type, key: K) u64 {
+/// 64-bit hash of a primitive key (int/float/bool). Public so concurrent
+/// wrappers (e.g. `ShardedHashMap`) can route by the well-mixed HIGH bits while
+/// the table itself consumes the LOW bits — one hash, decorrelated indices.
+pub fn hashKey(comptime K: type, key: K) u64 {
     const raw: u64 = switch (@typeInfo(K)) {
         // Width-correct and injective per type: reinterpret the key as its
         // same-width unsigned integer instead of funnelling every int through

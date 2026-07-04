@@ -11,8 +11,11 @@
 //! - `ShardedHashMap(K, V)` (L2): genuinely concurrent per-shard-locked map.
 
 pub const Synchronized = @import("synchronized.zig").Synchronized;
+pub const ShardedHashMap = @import("sharded_hash_map.zig").ShardedHashMap;
+pub const ComputeOp = @import("sharded_hash_map.zig").ComputeOp;
 
 test {
     @import("std").testing.refAllDeclsRecursive(@This());
     _ = @import("synchronized.zig");
+    _ = @import("sharded_hash_map.zig");
 }
