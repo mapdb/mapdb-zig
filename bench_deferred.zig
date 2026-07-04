@@ -28,12 +28,19 @@ const I32TreeSet = root.I32TreeSet;
 const I32RangeSet = root.I32RangeSet;
 const Range = root.Range;
 
-/// Allocator shim that counts alloc/free calls and tracks live+peak bytes,
-/// delegating to a child allocator. Enough to expose per-insert allocation
-/// behavior; not thread-safe (single-threaded bench).
+/// Allocator shim that counts allocator calls and tracks live+peak bytes,
+/// delegating to a child allocator. Not thread-safe (single-threaded bench).
+///
+/// `alloc_calls` counts only fresh `alloc` requests (new backing memory). Zig's
+/// `remap` can grow/relocate an existing allocation *without* an `alloc` call,
+/// so `remap_calls` is tracked separately — a bench over `ArrayList` in-place
+/// growth must read both. For the current D9/D13 paths `alloc_calls` is exact:
+/// `TreeSet.add` uses `allocator.create` directly, and each `RangeSet.add`
+/// builds a fresh empty list whose first capacity request falls to `alloc`.
 const CountingAllocator = struct {
     child: std.mem.Allocator,
     alloc_calls: usize = 0,
+    remap_calls: usize = 0,
     free_calls: usize = 0,
     live_bytes: usize = 0,
     peak_bytes: usize = 0,
@@ -74,6 +81,7 @@ const CountingAllocator = struct {
         const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
         const p = self.child.vtable.remap(self.child.ptr, memory, alignment, new_len, ret_addr);
         if (p != null) {
+            self.remap_calls += 1;
             self.live_bytes = self.live_bytes - memory.len + new_len;
             if (self.live_bytes > self.peak_bytes) self.peak_bytes = self.live_bytes;
         }
@@ -95,8 +103,11 @@ fn nanos() i128 {
 // ---- D3: hashmap table footprint (comptime) --------------------------------
 
 /// Bytes/slot of a hypothetical SoA layout: keys[] + values[] densely packed
-/// plus a 1-bit occupancy bitset (amortized to 1/8 byte per slot, rounded up
-/// per 64-slot word so the average is exactly 1 bit).
+/// plus a word-backed occupancy bitset. A u64-word bitset over `cap` slots costs
+/// `ceil(cap/64)*8` bytes, i.e. exactly 1 bit/slot (0.125 B) only once `cap >= 64`
+/// and a power of two; small tables pay more (0.5 B/slot at cap 16, 0.25 at 32).
+/// Reported at the asymptotic 1-bit/slot — the regime that matters for memory,
+/// since footprint pressure is at scale, not on 16-slot tables.
 fn soaBytesPerSlot(comptime K: type, comptime V: type) f64 {
     return @as(f64, @floatFromInt(@sizeOf(K) + @sizeOf(V))) + 1.0 / 8.0;
 }
@@ -116,7 +127,7 @@ fn reportFootprint(comptime name: []const u8, comptime K: type, comptime V: type
 fn benchD3() void {
     std.debug.print("\n=== D3: hashmap table footprint (current AoS vs proposed SoA) ===\n", .{});
     std.debug.print("  AoS = struct{{key, value, occupied: bool}} (occupancy interleaved, padded)\n", .{});
-    std.debug.print("  SoA = keys[] + values[] + 1-bit/slot occupancy bitset\n", .{});
+    std.debug.print("  SoA = keys[] + values[] + word-backed bitset (1 bit/slot for cap>=64)\n", .{});
     reportFootprint("i32/i32", i32, i32);
     reportFootprint("i64/i64", i64, i64);
     reportFootprint("i32/i64", i32, i64);
@@ -124,9 +135,10 @@ fn benchD3() void {
     reportFootprint("f64/f64", f64, f64);
     reportFootprint("i8/i8", i8, i8);
     reportFootprint("u21/i64", u21, i64); // char-keyed
-    // At a 0.75 load factor the table over-allocates 1/0.75 slots per live
-    // entry, so per-slot waste is multiplied by ~1.33 in live tables.
-    std.debug.print("  (multiply savings by ~1.33 for live tables at 0.75 load factor)\n", .{});
+    // Per-live-entry waste is higher: a table at its 0.75 load ceiling holds
+    // 1/0.75 ~= 1.33 slots per live entry, and is even emptier right after a
+    // grow — so the bytes/live-entry multiplier is >=1.33, workload-dependent.
+    std.debug.print("  (>=1.33x per live entry: table holds ~1.33+ slots/entry at/below 0.75 load)\n", .{});
 }
 
 // ---- D9: TreeSet per-insert allocation count -------------------------------
@@ -187,7 +199,9 @@ fn benchD13(base: std.mem.Allocator) !void {
         );
         prev_per_op = per_op;
     }
-    std.debug.print("  (ns/add ~doubling as N doubles ⇒ O(n) per add, O(n^2) for addAll; alloc/add ⇒ fresh backing each call)\n", .{});
+    std.debug.print("  primary signal: alloc_calls == N ⇒ one fresh backing allocation per add (rebuild-in-full).\n", .{});
+    std.debug.print("  ns/add rises super-linearly with N (O(n)/add ⇒ O(n^2) addAll); the exact x-ratio is\n", .{});
+    std.debug.print("  page_allocator/cache-noisy, so read it as \"clearly not constant\", not a precise 2.0.\n", .{});
 }
 
 pub fn main() !void {
