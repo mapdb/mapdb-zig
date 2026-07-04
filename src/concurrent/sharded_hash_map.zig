@@ -24,10 +24,21 @@
 //! - Nothing pointer-shaped escapes a lock. `get`/`remove`/`put` COPY `V` in or
 //!   out under the lock. Borrowed access is offered only *inside* a callback
 //!   that runs under the lock (`getWith`, `compute`).
+//! - That copy is SHALLOW. For a primitive `V` a copy-out value is a stable,
+//!   independent snapshot. For a resource-owning `V` (an owned `[]u8`, a handle)
+//!   the value returned by `get`/`putIfAbsent`/`entriesSnapshot` still ALIASES
+//!   the map's payload: a concurrent `remove`/`put` on that key moves the payload
+//!   out to *that* caller, who may free it — leaving your copy dangling. Copy-out
+//!   is not a stable owned snapshot for owning `V`; use immutable/refcounted
+//!   payloads or external lifetime coordination. `compute` returns the displaced
+//!   value as the authoritative move-out (see its doc).
 //! - Callbacks passed into accessors run under the shard lock: they must be
 //!   brief and MUST NOT reenter this map (the RwLock is non-recursive, so
 //!   touching the same shard self-deadlocks). This is documented UB, not
-//!   silently-fine-on-some-shard-counts.
+//!   silently-fine-on-some-shard-counts. The non-obvious reentrancy is the
+//!   ALLOCATOR: `put`/`compute(.put)` may grow a shard under its write lock, and
+//!   `entriesSnapshot` allocates under each shard's read lock — a custom
+//!   allocator whose alloc/free path reenters this map self-deadlocks.
 //! - The check-then-act family (`putIfAbsent`, `compute`) is REQUIRED, not
 //!   optional: with a copy-out API, user-side `if (m.get(k)==null) m.put(...)`
 //!   is a race; these do it atomically under one lock.
@@ -76,6 +87,15 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
 
             const core = @sizeOf(std.Thread.RwLock) + @sizeOf(Map);
             const pad_len = (CACHE_LINE - (core % CACHE_LINE)) % CACHE_LINE;
+
+            comptime {
+                // `pad_len` is computed from summed field sizes; with two fields
+                // laid out in descending-alignment order there is no inter-field
+                // gap, so the padded size is a cache-line multiple. Assert it so a
+                // future field/layout change that breaks per-shard isolation fails
+                // the build instead of silently reintroducing false sharing.
+                std.debug.assert(@sizeOf(Shard) % CACHE_LINE == 0);
+            }
         };
 
         pub const Entry = struct { key: K, value: V };
@@ -178,20 +198,29 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
         /// Atomically read the current value (a COPY, or null if absent) and
         /// apply the `ComputeOp` the callback returns (put/remove/keep). The
         /// callback runs under the shard's write lock and must not reenter.
+        ///
+        /// Returns the value this operation DISPLACED, moved out to the caller
+        /// (same move-out contract as `put`/`remove`): the old value on a `.put`
+        /// that replaced an existing entry, the removed value on `.remove`, and
+        /// null on `.keep`, on `.put` of a fresh key, or on `.remove` of an
+        /// absent key. For an owning `V` this is the handle you must free/reuse —
+        /// discarding it leaks. (The `?V` the callback receives is a *shallow
+        /// copy* that aliases the same payload; the returned value is the
+        /// authoritative move-out.)
         pub fn compute(
             self: *Self,
             key: K,
             context: anytype,
             comptime f: fn (@TypeOf(context), ?V) ComputeOp(V),
-        ) Allocator.Error!void {
+        ) Allocator.Error!?V {
             const s = self.shardFor(key);
             s.rwlock.lock();
             defer s.rwlock.unlock();
-            switch (f(context, s.map.get(key))) {
-                .put => |v| _ = try s.map.put(key, v),
-                .remove => _ = s.map.remove(key),
-                .keep => {},
-            }
+            return switch (f(context, s.map.get(key))) {
+                .put => |v| try s.map.put(key, v),
+                .remove => s.map.remove(key),
+                .keep => null,
+            };
         }
 
         /// Run `f` on a borrowed `*const V` under the read lock if `key` is
@@ -314,8 +343,8 @@ test "ShardedHashMap: compute put/remove/keep" {
     var m = try ShardedHashMap(i64, i64).initShardCount(testing.allocator, 4);
     defer m.deinit();
 
-    // absent -> put via compute
-    try m.compute(5, @as(i64, 100), struct {
+    // absent -> put via compute; fresh key displaces nothing -> null
+    try testing.expectEqual(@as(?i64, null), try m.compute(5, @as(i64, 100), struct {
         fn f(seed: i64, cur: ?i64) ComputeOp(i64) {
             try_expect_absent(cur);
             return .{ .put = seed };
@@ -323,32 +352,39 @@ test "ShardedHashMap: compute put/remove/keep" {
         fn try_expect_absent(cur: ?i64) void {
             std.debug.assert(cur == null);
         }
-    }.f);
+    }.f));
     try testing.expectEqual(@as(?i64, 100), m.get(5));
 
-    // present -> increment via compute
-    try m.compute(5, {}, struct {
+    // present -> increment via compute; returns the displaced old value
+    try testing.expectEqual(@as(?i64, 100), try m.compute(5, {}, struct {
         fn f(_: void, cur: ?i64) ComputeOp(i64) {
             return .{ .put = (cur orelse 0) + 1 };
         }
-    }.f);
+    }.f));
     try testing.expectEqual(@as(?i64, 101), m.get(5));
 
-    // present -> remove via compute
-    try m.compute(5, {}, struct {
+    // present -> remove via compute; returns the removed value (move-out)
+    try testing.expectEqual(@as(?i64, 101), try m.compute(5, {}, struct {
         fn f(_: void, _: ?i64) ComputeOp(i64) {
             return .remove;
         }
-    }.f);
+    }.f));
     try testing.expect(m.get(5) == null);
 
-    // keep -> no-op
+    // remove of an absent key -> null
+    try testing.expectEqual(@as(?i64, null), try m.compute(5, {}, struct {
+        fn f(_: void, _: ?i64) ComputeOp(i64) {
+            return .remove;
+        }
+    }.f));
+
+    // keep -> no-op, displaces nothing -> null
     _ = try m.put(6, 60);
-    try m.compute(6, {}, struct {
+    try testing.expectEqual(@as(?i64, null), try m.compute(6, {}, struct {
         fn f(_: void, _: ?i64) ComputeOp(i64) {
             return .keep;
         }
-    }.f);
+    }.f));
     try testing.expectEqual(@as(?i64, 60), m.get(6));
 }
 

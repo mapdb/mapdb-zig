@@ -62,6 +62,9 @@ pub fn Synchronized(comptime C: type) type {
         }
 
         /// Exclusive access guard. Release with `unlock` (typically via `defer`).
+        /// Do NOT copy a guard: each guard represents one lock acquisition, so a
+        /// copy that also unlocks releases the same acquisition twice (UB). Keep
+        /// it in one `var` and `defer g.unlock()`.
         pub const WriteGuard = struct {
             owner: *Self,
 
@@ -70,12 +73,18 @@ pub fn Synchronized(comptime C: type) type {
                 return &g.owner.inner;
             }
 
-            pub fn unlock(g: WriteGuard) void {
+            /// Release the write lock. Poisons the guard so a stray
+            /// `map()`/`unlock()` on the same var after release traps in safe
+            /// builds instead of silently touching an unlocked collection.
+            pub fn unlock(g: *WriteGuard) void {
                 g.owner.rwlock.unlock();
+                g.owner = undefined;
             }
         };
 
         /// Shared (read) access guard. Multiple readers may hold one at once.
+        /// Do NOT copy a guard (see `WriteGuard`): a copy that unlocks double-
+        /// releases the acquisition.
         pub const ReadGuard = struct {
             owner: *Self,
 
@@ -84,8 +93,10 @@ pub fn Synchronized(comptime C: type) type {
                 return &g.owner.inner;
             }
 
-            pub fn unlock(g: ReadGuard) void {
+            /// Release the read lock. Poisons the guard (see `WriteGuard.unlock`).
+            pub fn unlock(g: *ReadGuard) void {
                 g.owner.rwlock.unlockShared();
+                g.owner = undefined;
             }
         };
 
