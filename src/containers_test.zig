@@ -191,6 +191,20 @@ test "ArrayList: sum wraps two's-complement on i64 overflow (D4)" {
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), u.sum());
 }
 
+test "ArrayList: sum over wide unsigned compiles and folds low 64 bits (D4)" {
+    // ArrayList(u128) is a legal generic instantiation; sum() must compile and
+    // reduce wide-unsigned elements to their low 64 bits (two's-complement at
+    // the i64 accumulator) rather than @intCast-trapping.
+    var l = try arraylist.ArrayList(u128).of(testing.allocator, &[_]u128{ 1, 2, 3 });
+    defer l.deinit();
+    try testing.expectEqual(@as(i64, 6), l.sum());
+
+    // maxInt(u128) truncates to all-ones u64 => -1 as i64.
+    var w = try arraylist.ArrayList(u128).of(testing.allocator, &[_]u128{std.math.maxInt(u128)});
+    defer w.deinit();
+    try testing.expectEqual(@as(i64, -1), w.sum());
+}
+
 test "HashSet: parameterized add/contains/remove/set-ops" {
     inline for (type_axis) |T| {
         const s = samples(T);

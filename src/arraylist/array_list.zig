@@ -277,7 +277,12 @@ pub fn ArrayList(comptime T: type) type {
                     // never trap (the D1 cast trap, avoided here too).
                     const w: i64 = switch (@typeInfo(T)) {
                         .int => |info| if (info.signedness == .unsigned and info.bits >= 64)
-                            @bitCast(@as(u64, item))
+                            // 64-bit-and-wider unsigned: reduce to the low 64
+                            // bits (two's-complement wrap at the i64 accumulator
+                            // width) instead of @intCast-trapping. @truncate is
+                            // the identity for u64 and the low-64 fold for u128+,
+                            // so ArrayList(u128).sum() compiles and wraps.
+                            @bitCast(@as(u64, @truncate(item)))
                         else
                             @intCast(item),
                         else => @intCast(item),

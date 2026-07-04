@@ -223,15 +223,18 @@ fn callMap(transform: anytype, arg: anytype) blk: {
 /// `predicate` is invoked as `callPred(predicate, *const T) bool`.
 ///
 /// Thread-safety: worker threads do **no** allocation — only the calling
-/// thread allocates (the per-section count array and the single result
-/// buffer). So, unlike the rest of this module, `filter` places **no**
-/// thread-safety requirement on `allocator`: an `ArenaAllocator`,
-/// `FixedBufferAllocator`, or non-thread-safe GPA is safe here (F2). The work
-/// is two parallel passes: pass 1 counts matches per section, then pass 2
-/// writes each section's matches into its own disjoint sub-slice of the result.
-/// Because of the two passes, `predicate` is evaluated **twice per element**
-/// and must be a pure function of the element (no side effects, same answer
-/// both times).
+/// thread allocates (a per-element match mask, a per-section count array, and
+/// the single result buffer). So, unlike the rest of this module, `filter`
+/// places **no** thread-safety requirement on `allocator`: an `ArenaAllocator`,
+/// `FixedBufferAllocator`, or non-thread-safe GPA is safe here (F2).
+///
+/// The work is two parallel passes over disjoint sections. Pass 1 records each
+/// element's match into a boolean mask and counts per section; pass 2 copies
+/// the masked elements (it does NOT re-run `predicate`) into each section's own
+/// disjoint sub-slice of the exact-sized result. So `predicate` is evaluated
+/// **exactly once per element**, and an impure predicate can never desynchronize
+/// the count from the fill — the copy is driven by the mask, not a second
+/// evaluation, so there is no out-of-bounds write even in ReleaseFast.
 pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate: anytype, min_fork_size: usize, task_count: usize) ![]T {
     if (data.len == 0) return try allocator.alloc(T, 0);
 
@@ -246,16 +249,21 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
 
     const sections = nonEmptySectionCount(data.len, task_count);
 
-    // Pass 1 — count matches per section (no worker allocation).
+    // Pass 1 — mark matches into a per-element mask and count per section.
+    // Workers write disjoint mask ranges and their own count slot (no alloc).
+    const mask = try allocator.alloc(bool, data.len);
+    defer allocator.free(mask);
     const counts = try allocator.alloc(usize, sections);
     defer allocator.free(counts);
-    const Counter = struct {
-        fn run(in: []const T, pred: @TypeOf(predicate), out: *usize) void {
+    const Marker = struct {
+        fn run(in: []const T, pred: @TypeOf(predicate), out_mask: []bool, out_count: *usize) void {
             var c: usize = 0;
-            for (in) |*v| {
-                if (callPred(pred, v)) c += 1;
+            for (in, 0..) |*v, i| {
+                const hit = callPred(pred, v);
+                out_mask[i] = hit;
+                if (hit) c += 1;
             }
-            out.* = c;
+            out_count.* = c;
         }
     };
     {
@@ -265,15 +273,16 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
         while (i < sections) : (i += 1) {
             const b = sectionBounds(data.len, i, sections);
             const in = data[b.lo..b.hi];
+            const m = mask[b.lo..b.hi];
             if (i + 1 == sections) {
-                Counter.run(in, predicate, &counts[i]);
+                Marker.run(in, predicate, m, &counts[i]);
                 break;
             }
-            if (std.Thread.spawn(.{}, Counter.run, .{ in, predicate, &counts[i] })) |t| {
+            if (std.Thread.spawn(.{}, Marker.run, .{ in, predicate, m, &counts[i] })) |t| {
                 threads_buf[spawned] = t;
                 spawned += 1;
             } else |_| {
-                Counter.run(in, predicate, &counts[i]);
+                Marker.run(in, predicate, m, &counts[i]);
             }
         }
         var j: usize = 0;
@@ -286,12 +295,14 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
     const result = try allocator.alloc(T, total);
     errdefer allocator.free(result);
 
-    // Pass 2 — each section fills its disjoint sub-slice (no worker allocation).
+    // Pass 2 — copy masked elements per section into its disjoint sub-slice.
+    // Driven by the mask (no predicate re-eval), so the number of writes equals
+    // the pass-1 count for that section by construction.
     const Filler = struct {
-        fn run(in: []const T, pred: @TypeOf(predicate), out: []T) void {
+        fn run(in: []const T, in_mask: []const bool, out: []T) void {
             var k: usize = 0;
-            for (in) |*v| {
-                if (callPred(pred, v)) {
+            for (in, 0..) |*v, i| {
+                if (in_mask[i]) {
                     out[k] = v.*;
                     k += 1;
                 }
@@ -306,17 +317,18 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
         while (i < sections) : (i += 1) {
             const b = sectionBounds(data.len, i, sections);
             const in = data[b.lo..b.hi];
+            const m = mask[b.lo..b.hi];
             const out = result[off .. off + counts[i]];
             off += counts[i];
             if (i + 1 == sections) {
-                Filler.run(in, predicate, out);
+                Filler.run(in, m, out);
                 break;
             }
-            if (std.Thread.spawn(.{}, Filler.run, .{ in, predicate, out })) |t| {
+            if (std.Thread.spawn(.{}, Filler.run, .{ in, m, out })) |t| {
                 threads_buf[spawned] = t;
                 spawned += 1;
             } else |_| {
-                Filler.run(in, predicate, out);
+                Filler.run(in, m, out);
             }
         }
         var j: usize = 0;
@@ -542,6 +554,29 @@ test "parallel filter is safe with a non-thread-safe allocator (F2)" {
     const evens = try filter(i64, a, data, &isEven, 1, 8);
     try testing.expectEqual(@as(usize, n / 2), evens.len);
     for (evens, 0..) |v, i| try testing.expectEqual(@as(i64, @intCast(i)) * 2, v);
+}
+
+test "parallel filter is memory-safe with an impure predicate (mask-driven copy)" {
+    // The mask makes the predicate run exactly once; pass 2 copies by mask, not
+    // by re-evaluation. So even a predicate whose answer varies per call cannot
+    // desync count from fill (no OOB write, no uninitialized tail). We just
+    // require the call to complete and the result length to match the mask.
+    const allocator = testing.allocator;
+    const n: usize = 20_000;
+    const data = try allocator.alloc(i64, n);
+    defer allocator.free(data);
+    for (data, 0..) |*d, i| d.* = @intCast(i);
+
+    const Flip = struct {
+        var toggle: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+        fn f(_: *const i64) bool {
+            return toggle.fetchAdd(1, .seq_cst) % 3 == 0;
+        }
+    };
+    const out = try filter(i64, allocator, data, &Flip.f, 1, 8);
+    defer allocator.free(out);
+    // No crash / no OOB is the assertion; length is whatever the mask counted.
+    try testing.expect(out.len <= n);
 }
 
 test "parallel count matches sequential" {

@@ -88,14 +88,36 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_hashtrapprobe.step);
     test_step.dependOn(&run_trapprobe.step);
+
+    // Autodoc: `zig build docs` emits HTML docs from the library's doc-comments
+    // (the //! module docs + /// method docs) into zig-out/docs. This is a
+    // primary way Zig users evaluate a library and the doc-comment investment
+    // otherwise never renders.
+    const docs_obj = b.addObject(.{
+        .name = "mapdb_collections",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+    const docs_step = b.step("docs", "Emit library autodoc into zig-out/docs");
+    docs_step.dependOn(&install_docs.step);
+
+    // NOTE: a `bench` step is intentionally not wired yet — the in-tree
+    // `bench_*.zig` files reference a pre-existing removed API (`.config`
+    // field, ignored error unions) and no longer compile. They need porting
+    // to the current generic surface before a bench step can measure the
+    // Step 1/2 monomorphization work. Tracked in the fable-review status doc.
 }
 
-/// Add an executable in a way that works on both Zig 0.14 and 0.15.
-/// On 0.15, std.Build.ExecutableOptions no longer carries root_source_file /
-/// target / optimize — those must live on a Module passed via root_module.
-/// On 0.14, the old flat shape is still accepted. We detect the current
-/// API shape at comptime via @hasField; the un-selected branch is pruned
-/// and is never type-checked against the live ExecutableOptions definition.
+/// Add an executable (Zig 0.15+ module shape; build.zig.zon pins
+/// minimum_zig_version = 0.15.0).
 fn addExe(
     b: *std.Build,
     name: []const u8,
@@ -103,25 +125,12 @@ fn addExe(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
-    if (comptime @hasField(std.Build.ExecutableOptions, "root_module")) {
-        return b.addExecutable(.{
-            .name = name,
-            .root_module = b.createModule(.{
-                .root_source_file = src,
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-    } else {
-        // Zig 0.14 path. The @as cast is what makes the struct literal
-        // target the version-appropriate ExecutableOptions type; on 0.15
-        // this branch is comptime-dead so the missing fields below never
-        // reach semantic analysis.
-        return b.addExecutable(@as(std.Build.ExecutableOptions, .{
-            .name = name,
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
             .root_source_file = src,
             .target = target,
             .optimize = optimize,
-        }));
-    }
+        }),
+    });
 }
