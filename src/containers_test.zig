@@ -33,6 +33,7 @@ const bag = @import("bag/bag.zig");
 const multimap = @import("multimap/multimap.zig");
 const hashmap = @import("hashmap/hashmap.zig");
 const treemap = @import("treemap/treemap.zig");
+const object = @import("object/object.zig");
 
 // ---------------------------------------------------------------------------
 // Force-compile every method on every instantiation of every family.
@@ -655,7 +656,11 @@ test "HashBag.select/reject compile and filter, preserving counts (infallible-in
 // callback slip) stays invisible to `zig build test` unless *something* calls
 // the method at a concrete type. Several of these had zero call-sites in the
 // whole suite. This harness force-instantiates the predicate family across
-// every primitive collection so that class of break fails the build.
+// every primitive AND object collection so that class of break fails the build.
+//
+// Invoked by pointer (not by comptime type) so collections with differing
+// constructors — e.g. object TreeSet/TreeMap need a comparator — can be built
+// by the caller and still share one method-invoker.
 // ---------------------------------------------------------------------------
 
 fn fop_elemPred(_: void, _: i32) bool {
@@ -673,9 +678,8 @@ fn fop_kvFold(_: void, acc: i32, _: i32, v: i32) i32 {
     return acc +% v;
 }
 
-fn fopExerciseElem(comptime T: type) void {
-    var c = T.init(testing.allocator);
-    defer c.deinit();
+fn fopElem(c: anytype) void {
+    const T = @TypeOf(c.*);
     if (@hasDecl(T, "detect")) _ = c.detect({}, fop_elemPred);
     if (@hasDecl(T, "anySatisfy")) _ = c.anySatisfy({}, fop_elemPred);
     if (@hasDecl(T, "allSatisfy")) _ = c.allSatisfy({}, fop_elemPred);
@@ -684,9 +688,8 @@ fn fopExerciseElem(comptime T: type) void {
     if (@hasDecl(T, "injectInto")) _ = c.injectInto({}, 0, fop_elemFold);
 }
 
-fn fopExerciseKV(comptime T: type) void {
-    var c = T.init(testing.allocator);
-    defer c.deinit();
+fn fopKV(c: anytype) void {
+    const T = @TypeOf(c.*);
     if (@hasDecl(T, "detect")) _ = c.detect({}, fop_kvPred);
     if (@hasDecl(T, "anySatisfy")) _ = c.anySatisfy({}, fop_kvPred);
     if (@hasDecl(T, "allSatisfy")) _ = c.allSatisfy({}, fop_kvPred);
@@ -696,6 +699,7 @@ fn fopExerciseKV(comptime T: type) void {
 }
 
 test "functional-op predicate family instantiates on every primitive collection" {
+    const a = testing.allocator;
     inline for (.{
         arraylist.ArrayList(i32),
         hashset.HashSet(i32),
@@ -704,12 +708,97 @@ test "functional-op predicate family instantiates on every primitive collection"
         treeset.TreeSet(i32),
         bag.TreeBag(i32),
         bag.HashBag(i32),
-    }) |T| fopExerciseElem(T);
+    }) |T| {
+        var c = T.init(a);
+        defer c.deinit();
+        fopElem(&c);
+    }
 
     inline for (.{
         hashmap.HashMap(i32, i32),
         treemap.TreeMap(i32, i32),
         multimap.ListMultimap(i32, i32),
         multimap.SetMultimap(i32, i32),
-    }) |T| fopExerciseKV(T);
+    }) |T| {
+        var c = T.init(a);
+        defer c.deinit();
+        fopKV(&c);
+    }
+}
+
+test "functional-op predicate family instantiates on every object collection" {
+    const a = testing.allocator;
+
+    // Element object variants taking init(allocator).
+    inline for (.{
+        object.ArrayList(i32),
+        object.HashSet(i32),
+        object.LinkedHashSet(i32),
+    }) |T| {
+        var c = T.init(a);
+        defer c.deinit();
+        fopElem(&c);
+    }
+    // Object TreeSet needs a comparator.
+    var ots = object.TreeSet(i32).init(a, object.naturalComparator(i32));
+    defer ots.deinit();
+    fopElem(&ots);
+
+    // KV object variants taking init(allocator).
+    inline for (.{
+        object.HashMap(i32, i32),
+        object.LinkedHashMap(i32, i32),
+    }) |T| {
+        var c = T.init(a);
+        defer c.deinit();
+        fopKV(&c);
+    }
+    // Object TreeMap needs a comparator.
+    var otm = object.TreeMap(i32, i32).init(a, object.naturalComparator(i32));
+    defer otm.deinit();
+    fopKV(&otm);
+}
+
+// Object shapes not reachable through fopElem/fopKV: the filter-form
+// select/reject (object.ArrayList only — object.TreeSet.select is index access),
+// HashBag's forEachWithOccurrences, and the strategy-backed map/set forEach.
+// These are the object analogues of the original select/reject compile break, so
+// they are worth instantiating explicitly.
+fn fop_occ(_: void, _: i32, _: usize) void {}
+fn fop_hash(x: i32) u64 {
+    return @intCast(@as(u32, @bitCast(x)));
+}
+fn fop_eql(x: i32, y: i32) bool {
+    return x == y;
+}
+
+test "functional-op residual object shapes instantiate (select/reject, occurrences, strategy forEach)" {
+    const a = testing.allocator;
+
+    // object.ArrayList filter-form select/reject (allocating — the direct
+    // analogue of the HashSet/HashBag break this whole pass chased).
+    var oal = object.ArrayList(i32).init(a);
+    defer oal.deinit();
+    {
+        var r = try oal.select({}, fop_elemPred);
+        r.deinit();
+    }
+    {
+        var r = try oal.reject({}, fop_elemPred);
+        r.deinit();
+    }
+
+    // object.HashBag distinct occurrences callback shape.
+    var ohb = object.HashBag(i32).init(a);
+    defer ohb.deinit();
+    ohb.forEachWithOccurrences({}, fop_occ);
+
+    // Strategy-backed set/map forEach callback bodies.
+    const strat = object.HashingStrategy(i32){ .hashFn = &fop_hash, .eqlFn = &fop_eql };
+    var shs = object.HashSetWithStrategy(i32).init(a, strat);
+    defer shs.deinit();
+    shs.forEach({}, fop_elemConsume);
+    var shm = object.HashMapWithStrategy(i32, i32).init(a, strat);
+    defer shm.deinit();
+    shm.forEach({}, fop_kvConsume);
 }
