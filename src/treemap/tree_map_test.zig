@@ -161,25 +161,24 @@ test "TreeMap: parameterized functional ops, fluent API, eql" {
             try std.testing.expect(!a.eql(&b));
 
             // count predicate over b (matches everything).
-            var ctx: u8 = 0;
-            const total = b.count(&ctx, struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+            const total = b.count({}, struct {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f);
             try std.testing.expectEqual(@as(usize, 2), total);
-            try std.testing.expect(b.anySatisfy(&ctx, struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+            try std.testing.expect(b.anySatisfy({}, struct {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f));
-            try std.testing.expect(b.allSatisfy(&ctx, struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+            try std.testing.expect(b.allSatisfy({}, struct {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f));
-            try std.testing.expect(b.noneSatisfy(&ctx, struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+            try std.testing.expect(b.noneSatisfy({}, struct {
+                fn f(_: void, _: K, _: V) bool {
                     return false;
                 }
             }.f));

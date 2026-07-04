@@ -296,15 +296,15 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             self.size = 0;
         }
 
-        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
+        pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(ctx, self.entries[i].key);
+                if (self.entries[i].occupied) f(context, self.entries[i].key);
             }
         }
 
-        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
+        pub fn forEachValue(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), V) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(ctx, self.entries[i].value);
+                if (self.entries[i].occupied) f(context, self.entries[i].value);
             }
         }
 

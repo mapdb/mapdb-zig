@@ -223,16 +223,15 @@ test "ListMultimap(i32, i32): eql, select/reject, fluent withKeyValue" {
     try b.put(2, 3);
     try std.testing.expect(a.eql(&b));
 
-    var ctx: u8 = 0;
-    var sel = try a.select(&ctx, struct {
-        fn f(_: *anyopaque, _: i32, v: i32) bool {
+    var sel = try a.select({}, struct {
+        fn f(_: void, _: i32, v: i32) bool {
             return v > 1;
         }
     }.f);
     defer sel.deinit();
     try std.testing.expectEqual(@as(usize, 2), sel.size());
-    var rej = try a.reject(&ctx, struct {
-        fn f(_: *anyopaque, _: i32, v: i32) bool {
+    var rej = try a.reject({}, struct {
+        fn f(_: void, _: i32, v: i32) bool {
             return v > 1;
         }
     }.f);

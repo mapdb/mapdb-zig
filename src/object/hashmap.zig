@@ -149,26 +149,26 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return slice;
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return true;
+                if (predicate(context, entry.key_ptr.*, entry.value_ptr.*)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (!predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return false;
+                if (!predicate(context, entry.key_ptr.*, entry.value_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(ctx, entry.key_ptr.*, entry.value_ptr.*)) return false;
+                if (predicate(context, entry.key_ptr.*, entry.value_ptr.*)) return false;
             }
             return true;
         }
@@ -241,22 +241,20 @@ test "HashMap anySatisfy allSatisfy noneSatisfy" {
     _ = try map.put(2, 4);
 
     const valEven = struct {
-        fn f(_: *anyopaque, _: i32, v: i32) bool {
+        fn f(_: void, _: i32, v: i32) bool {
             return @rem(v, 2) == 0;
         }
     }.f;
     const valNeg = struct {
-        fn f(_: *anyopaque, _: i32, v: i32) bool {
+        fn f(_: void, _: i32, v: i32) bool {
             return v < 0;
         }
     }.f;
 
-    var dummy: u8 = 0;
-    const ctx: *anyopaque = &dummy;
 
-    try std.testing.expect(map.allSatisfy(ctx, &valEven));
-    try std.testing.expect(map.anySatisfy(ctx, &valEven));
-    try std.testing.expect(map.noneSatisfy(ctx, &valNeg));
+    try std.testing.expect(map.allSatisfy({}, valEven));
+    try std.testing.expect(map.anySatisfy({}, valEven));
+    try std.testing.expect(map.noneSatisfy({}, valNeg));
 }
 
 test "HashMap clear" {

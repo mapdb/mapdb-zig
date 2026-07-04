@@ -126,30 +126,29 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
             _ = try m.put(ks[0], vs[0]);
             if (distinct_keys == 2) _ = try m.put(ks[1], vs[1]);
             const keep_all = struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f;
             const drop_all = struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f;
-            var ctx: u8 = 0;
-            var sel = try m.select(&ctx, keep_all);
+            var sel = try m.select({}, keep_all);
             defer sel.deinit();
             try std.testing.expectEqual(@as(usize, distinct_keys), sel.len());
-            var rej = try m.reject(&ctx, drop_all);
+            var rej = try m.reject({}, drop_all);
             defer rej.deinit();
             try std.testing.expectEqual(@as(usize, 0), rej.len());
 
             // count via iteration helper
             const counter = struct {
-                fn f(_: *anyopaque, _: K, _: V) bool {
+                fn f(_: void, _: K, _: V) bool {
                     return true;
                 }
             }.f;
-            try std.testing.expectEqual(distinct_keys, m.count(&ctx, counter));
+            try std.testing.expectEqual(distinct_keys, m.count({}, counter));
 
             m.clear();
             try std.testing.expect(m.isEmpty());

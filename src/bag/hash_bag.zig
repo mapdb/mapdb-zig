@@ -245,11 +245,11 @@ pub fn HashBag(comptime T: type) type {
             return .{ .entries = self.counts.entries };
         }
 
-        /// Calls f(ctx, value, count) for each distinct value.
-        pub fn forEachWithOccurrences(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T, usize) void) void {
+        /// Calls f(context, value, count) for each distinct value.
+        pub fn forEachWithOccurrences(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T, usize) void) void {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    f(ctx, self.counts.entries[i].key, self.counts.entries[i].value);
+                    f(context, self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
         }
@@ -257,54 +257,54 @@ pub fn HashBag(comptime T: type) type {
         // ---- Functional Operations ----
 
         /// Returns a new bag with only elements satisfying the predicate (preserving counts).
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (predicate(ctx, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                    if (predicate(context, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
             return result;
         }
 
         /// Returns a new bag with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (!predicate(ctx, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                    if (!predicate(context, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
                 }
             }
             return result;
         }
 
         /// Returns the first distinct value satisfying the predicate, or null.
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (predicate(ctx, self.counts.entries[i].key)) return self.counts.entries[i].key;
+                    if (predicate(context, self.counts.entries[i].key)) return self.counts.entries[i].key;
                 }
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
-            return self.detect(ctx, predicate) != null;
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
+            return self.detect(context, predicate) != null;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
-                    if (!predicate(ctx, self.counts.entries[i].key)) return false;
+                    if (!predicate(context, self.counts.entries[i].key)) return false;
                 }
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
-            return self.detect(ctx, predicate) == null;
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
+            return self.detect(context, predicate) == null;
         }
 
         // ---- Conversion ----

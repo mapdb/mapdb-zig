@@ -374,7 +374,7 @@ test "TreeBag: f32 -0.0 / +0.0 distinct, NaN bit-equal in eql" {
 // missing `errdefer` shows up there as a leak, failing the test.
 // ---------------------------------------------------------------------------
 
-fn f34_alwaysTrue(_: *anyopaque, _: i32) bool {
+fn f34_alwaysTrue(_: void, _: i32) bool {
     return true;
 }
 
@@ -414,7 +414,6 @@ test "F3 OOM: TreeSet.of no partial-result leak" {
 // allocator so the result allocation can fail. Low fail_index values fail while
 // building the source (skipped); higher ones fail mid-`select`.
 test "F3 OOM: ArrayList.select no partial-result leak" {
-    var ctx: u8 = 0;
     var idx: usize = 0;
     while (idx < 128) : (idx += 1) {
         var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
@@ -431,7 +430,7 @@ test "F3 OOM: ArrayList.select no partial-result leak" {
             src.deinit();
             continue;
         }
-        if (src.select(@ptrCast(&ctx), f34_alwaysTrue)) |res| {
+        if (src.select({}, f34_alwaysTrue)) |res| {
             var r = res;
             r.deinit();
             src.deinit();

@@ -188,62 +188,62 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Returns a new list with only elements satisfying the predicate.
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (self.items.items) |item| {
-                if (predicate(ctx, item)) try result.push(item);
+                if (predicate(context, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns a new list with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (self.items.items) |item| {
-                if (!predicate(ctx, item)) try result.push(item);
+                if (!predicate(context, item)) try result.push(item);
             }
             return result;
         }
 
         /// Returns the first element satisfying the predicate, or null.
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             for (self.items.items) |item| {
-                if (predicate(ctx, item)) return item;
+                if (predicate(context, item)) return item;
             }
             return null;
         }
 
         /// Returns true if any element satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(ctx, item)) return true;
+                if (predicate(context, item)) return true;
             }
             return false;
         }
 
         /// Returns true if all elements satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.items.items) |item| {
-                if (!predicate(ctx, item)) return false;
+                if (!predicate(context, item)) return false;
             }
             return true;
         }
 
         /// Returns true if no element satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.items.items) |item| {
-                if (predicate(ctx, item)) return false;
+                if (predicate(context, item)) return false;
             }
             return true;
         }
 
         /// Returns the count of elements satisfying the predicate.
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             for (self.items.items) |item| {
-                if (predicate(ctx, item)) c += 1;
+                if (predicate(context, item)) c += 1;
             }
             return c;
         }
@@ -390,17 +390,17 @@ pub fn ArrayList(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
-        /// Calls f(ctx, index, value) for each element.
-        pub fn forEachWithIndex(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, usize, T) void) void {
-            for (self.items.items, 0..) |item, i| f(ctx, i, item);
+        /// Calls f(context, index, value) for each element.
+        pub fn forEachWithIndex(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), usize, T) void) void {
+            for (self.items.items, 0..) |item, i| f(context, i, item);
         }
 
         // ---- Advanced Operations ----
 
         /// Fold/reduce over all elements.
-        pub fn injectInto(self: *const Self, ctx: *anyopaque, initial: T, f: *const fn (ctx: *anyopaque, T, T) T) T {
+        pub fn injectInto(self: *const Self, context: anytype, initial: T, comptime f: fn (@TypeOf(context), T, T) T) T {
             var acc = initial;
-            for (self.items.items) |item| acc = f(ctx, acc, item);
+            for (self.items.items) |item| acc = f(context, acc, item);
             return acc;
         }
 

@@ -323,83 +323,83 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.inner.entries };
         }
 
-        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
-            self.inner.forEachKey(ctx, f);
+        pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
+            self.inner.forEachKey(context, f);
         }
 
-        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
-            self.inner.forEachValue(ctx, f);
+        pub fn forEachValue(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), V) void) void {
+            self.inner.forEachValue(context, f);
         }
 
         // ---- Functional Operations ----
 
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
+                    if (predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
                         _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
                 }
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (!predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
+                    if (!predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
                         _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
                 }
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) ?struct { key: K, value: V } {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) ?struct { key: K, value: V } {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
-                    if (predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
+                    if (predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
                         return .{ .key = self.inner.entries[i].key, .value = self.inner.entries[i].value };
                 }
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return true;
+                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and !predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.entries[i].occupied and !predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value)) c += 1;
+                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) c += 1;
             }
             return c;
         }
 
-        pub fn injectInto(self: *const Self, ctx: *anyopaque, initial: V, f: *const fn (ctx: *anyopaque, V, K, V) V) V {
+        pub fn injectInto(self: *const Self, context: anytype, initial: V, comptime f: fn (@TypeOf(context), V, K, V) V) V {
             var acc = initial;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) acc = f(ctx, acc, self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.entries[i].occupied) acc = f(context, acc, self.inner.entries[i].key, self.inner.entries[i].value);
             }
             return acc;
         }

@@ -347,77 +347,77 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         // ---- Functional Operations ----
 
         /// Returns a new multimap containing only pairs that satisfy the predicate.
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(ctx, key, v)) try result.put(key, v);
+                    if (predicate(context, key, v)) try result.put(key, v);
                 }
             }
             return result;
         }
 
         /// Returns a new multimap containing only pairs that do not satisfy the predicate.
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (!predicate(ctx, key, v)) try result.put(key, v);
+                    if (!predicate(context, key, v)) try result.put(key, v);
                 }
             }
             return result;
         }
 
         /// Returns true if any key-value pair satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(ctx, key, v)) return true;
+                    if (predicate(context, key, v)) return true;
                 }
             }
             return false;
         }
 
         /// Returns true if all key-value pairs satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (!predicate(ctx, key, v)) return false;
+                    if (!predicate(context, key, v)) return false;
                 }
             }
             return true;
         }
 
         /// Returns true if no key-value pair satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(ctx, key, v)) return false;
+                    if (predicate(context, key, v)) return false;
                 }
             }
             return true;
         }
 
         /// Returns the number of key-value pairs that satisfy the predicate.
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
             var c: usize = 0;
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
                 for (entry.value_ptr.items) |v| {
-                    if (predicate(ctx, key, v)) c += 1;
+                    if (predicate(context, key, v)) c += 1;
                 }
             }
             return c;

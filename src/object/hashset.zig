@@ -76,35 +76,35 @@ pub fn HashSet(comptime T: type) type {
             return .{ .inner = self.inner.iterator() };
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(ctx, entry.key_ptr.*)) return true;
+                if (predicate(context, entry.key_ptr.*)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (!predicate(ctx, entry.key_ptr.*)) return false;
+                if (!predicate(context, entry.key_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(ctx, entry.key_ptr.*)) return false;
+                if (predicate(context, entry.key_ptr.*)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                if (predicate(ctx, entry.key_ptr.*)) c += 1;
+                if (predicate(context, entry.key_ptr.*)) c += 1;
             }
             return c;
         }
@@ -246,23 +246,21 @@ test "HashSet anySatisfy allSatisfy noneSatisfy count" {
     _ = try set.add(6);
 
     const isEven = struct {
-        fn f(_: *anyopaque, x: i32) bool {
+        fn f(_: void, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
     const isNeg = struct {
-        fn f(_: *anyopaque, x: i32) bool {
+        fn f(_: void, x: i32) bool {
             return x < 0;
         }
     }.f;
 
-    var dummy: u8 = 0;
-    const ctx: *anyopaque = &dummy;
 
-    try std.testing.expect(set.allSatisfy(ctx, &isEven));
-    try std.testing.expect(set.anySatisfy(ctx, &isEven));
-    try std.testing.expect(set.noneSatisfy(ctx, &isNeg));
-    try std.testing.expectEqual(@as(usize, 3), set.count(ctx, &isEven));
+    try std.testing.expect(set.allSatisfy({}, isEven));
+    try std.testing.expect(set.anySatisfy({}, isEven));
+    try std.testing.expect(set.noneSatisfy({}, isNeg));
+    try std.testing.expectEqual(@as(usize, 3), set.count({}, isEven));
 }
 
 test "HashSet clear" {

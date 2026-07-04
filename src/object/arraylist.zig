@@ -126,22 +126,22 @@ pub fn ArrayList(comptime T: type) type {
             return .{ .items = self.inner.items };
         }
 
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             errdefer result.deinit();
             for (self.inner.items) |item| {
-                if (predicate(ctx, item)) {
+                if (predicate(context, item)) {
                     try result.push(item);
                 }
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
             errdefer result.deinit();
             for (self.inner.items) |item| {
-                if (!predicate(ctx, item)) {
+                if (!predicate(context, item)) {
                     try result.push(item);
                 }
             }
@@ -158,31 +158,31 @@ pub fn ArrayList(comptime T: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.inner.items) |item| {
-                if (predicate(ctx, item)) return true;
+                if (predicate(context, item)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.inner.items) |item| {
-                if (!predicate(ctx, item)) return false;
+                if (!predicate(context, item)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.inner.items) |item| {
-                if (predicate(ctx, item)) return false;
+                if (predicate(context, item)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             for (self.inner.items) |item| {
-                if (predicate(ctx, item)) c += 1;
+                if (predicate(context, item)) c += 1;
             }
             return c;
         }
@@ -362,19 +362,17 @@ test "ArrayList select and reject" {
     try list.push(4);
 
     const isEven = struct {
-        fn f(_: *anyopaque, x: i32) bool {
+        fn f(_: void, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
 
-    var dummy: u8 = 0;
-    const ctx: *anyopaque = &dummy;
 
-    var evens = try list.select(ctx, &isEven);
+    var evens = try list.select({}, isEven);
     defer evens.deinit();
     try std.testing.expectEqual(@as(usize, 2), evens.len());
 
-    var odds = try list.reject(ctx, &isEven);
+    var odds = try list.reject({}, isEven);
     defer odds.deinit();
     try std.testing.expectEqual(@as(usize, 2), odds.len());
 }
@@ -389,23 +387,21 @@ test "ArrayList anySatisfy allSatisfy noneSatisfy count" {
     try list.push(6);
 
     const isEven = struct {
-        fn f(_: *anyopaque, x: i32) bool {
+        fn f(_: void, x: i32) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
     const isNegative = struct {
-        fn f(_: *anyopaque, x: i32) bool {
+        fn f(_: void, x: i32) bool {
             return x < 0;
         }
     }.f;
 
-    var dummy: u8 = 0;
-    const ctx: *anyopaque = &dummy;
 
-    try std.testing.expect(list.allSatisfy(ctx, &isEven));
-    try std.testing.expect(list.anySatisfy(ctx, &isEven));
-    try std.testing.expect(list.noneSatisfy(ctx, &isNegative));
-    try std.testing.expectEqual(@as(usize, 3), list.count(ctx, &isEven));
+    try std.testing.expect(list.allSatisfy({}, isEven));
+    try std.testing.expect(list.anySatisfy({}, isEven));
+    try std.testing.expect(list.noneSatisfy({}, isNegative));
+    try std.testing.expectEqual(@as(usize, 3), list.count({}, isEven));
 }
 
 test "ArrayList clear" {

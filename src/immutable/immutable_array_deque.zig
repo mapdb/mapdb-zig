@@ -167,8 +167,8 @@ pub fn ImmutableArrayDeque(comptime T: type) type {
             };
         }
 
-        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
-            for (self.items) |value| f(ctx, value);
+        pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T) void) void {
+            for (self.items) |value| f(context, value);
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {

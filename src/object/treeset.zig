@@ -196,9 +196,9 @@ pub fn TreeSet(comptime T: type) type {
             return self.inner.removeRange(range, allocator);
         }
 
-        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
+        pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T) void) void {
             var it = self.iterator();
-            while (it.next()) |value| f(ctx, value);
+            while (it.next()) |value| f(context, value);
         }
 
         /// Pull-based iterator yielding each element by value in ascending

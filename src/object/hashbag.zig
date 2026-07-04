@@ -66,10 +66,10 @@ pub fn HashBag(comptime T: type) type {
             return true;
         }
 
-        pub fn forEachWithOccurrences(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T, usize) void) void {
+        pub fn forEachWithOccurrences(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T, usize) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(ctx, entry.key_ptr.*, entry.value_ptr.*);
+                f(context, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
 

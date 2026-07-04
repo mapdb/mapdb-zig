@@ -529,15 +529,15 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return victims.items.len;
         }
 
-        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
-            self.inOrder(self.root, ctx, f);
+        pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K, V) void) void {
+            self.inOrder(self.root, context, f);
         }
 
-        fn inOrder(self: *const Self, node: ?*Node, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
+        fn inOrder(self: *const Self, node: ?*Node, context: anytype, comptime f: fn (@TypeOf(context), K, V) void) void {
             const n = node orelse return;
-            self.inOrder(n.left, ctx, f);
-            f(ctx, n.key, n.value);
-            self.inOrder(n.right, ctx, f);
+            self.inOrder(n.left, context, f);
+            f(context, n.key, n.value);
+            self.inOrder(n.right, context, f);
         }
 
         /// An entry yielded by `Iterator` — key and value by value.

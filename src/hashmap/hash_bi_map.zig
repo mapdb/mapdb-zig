@@ -228,12 +228,12 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             return .{ .entries = self.forward.entries };
         }
 
-        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
-            self.forward.forEachKey(ctx, f);
+        pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
+            self.forward.forEachKey(context, f);
         }
 
-        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
-            self.forward.forEachValue(ctx, f);
+        pub fn forEachValue(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), V) void) void {
+            self.forward.forEachValue(context, f);
         }
 
         // ---- Inverse ----

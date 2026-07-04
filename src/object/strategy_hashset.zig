@@ -86,10 +86,10 @@ pub fn HashSetWithStrategy(comptime T: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, T) void) void {
+        pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(ctx, entry.key_ptr.*);
+                f(context, entry.key_ptr.*);
             }
         }
 

@@ -383,10 +383,10 @@ fn writeI32(writer: anytype, val: i32) !void {
 // Wrapping i32 reductions passed to the production I32ArrayList.injectInto, so
 // the harness exercises the production fold path with i32-seed-width wrapping
 // (algorithms.md "Integer overflow contract").
-fn injectAddWrapI32(_: *anyopaque, acc: i32, v: i32) i32 {
+fn injectAddWrapI32(_: void, acc: i32, v: i32) i32 {
     return acc +% v;
 }
-fn injectMulWrapI32(_: *anyopaque, acc: i32, v: i32) i32 {
+fn injectMulWrapI32(_: void, acc: i32, v: i32) i32 {
     return acc *% v;
 }
 
@@ -1008,7 +1008,7 @@ fn evaluateAssertion(
     // contract"). Routed through the production I32ArrayList.injectInto.
     else if (std.mem.eql(u8, key, "inject_into_sum")) {
         switch (coll.*) {
-            .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 0, injectAddWrapI32)),
+            .array_list => |*l| try writeI32(writer, l.injectInto({}, 0, injectAddWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 0;
                 for (s.slice()) |item| acc = injectAddWrapI32(undefined, acc, item);
@@ -1020,7 +1020,7 @@ fn evaluateAssertion(
     // --- inject_into_product (i32 wrapping fold, via production injectInto) ---
     else if (std.mem.eql(u8, key, "inject_into_product")) {
         switch (coll.*) {
-            .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 1, injectMulWrapI32)),
+            .array_list => |*l| try writeI32(writer, l.injectInto({}, 1, injectMulWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 1;
                 for (s.slice()) |item| acc = injectMulWrapI32(undefined, acc, item);

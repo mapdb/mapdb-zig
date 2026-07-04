@@ -164,16 +164,16 @@ pub fn ArrayDeque(comptime T: type) type {
             return .{ .items = self.items.items };
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.items.items) |value| {
-                if (predicate(ctx, value)) return true;
+                if (predicate(context, value)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (self.items.items) |value| {
-                if (!predicate(ctx, value)) return false;
+                if (!predicate(context, value)) return false;
             }
             return true;
         }

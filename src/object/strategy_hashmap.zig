@@ -103,10 +103,10 @@ pub fn HashMapWithStrategy(comptime K: type, comptime V: type) type {
             self.inner.clearRetainingCapacity();
         }
 
-        pub fn forEach(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K, V) void) void {
+        pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K, V) void) void {
             var it = self.inner.iterator();
             while (it.next()) |entry| {
-                f(ctx, entry.key_ptr.*, entry.value_ptr.*);
+                f(context, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
 

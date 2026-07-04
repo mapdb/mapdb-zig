@@ -185,82 +185,82 @@ pub fn HashSet(comptime T: type) type {
         // ---- Functional Operations ----
 
         /// Returns a new set with only elements satisfying the predicate.
-        pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(ctx, value)) _ = try result.add(value);
+                    if (predicate(context, value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
         /// Returns a new set with elements NOT satisfying the predicate.
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!predicate(ctx, value)) _ = try result.add(value);
+                    if (!predicate(context, value)) _ = try result.add(value);
                 }
             }
             return result;
         }
 
         /// Returns the first element satisfying the predicate, or null.
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(ctx, value)) return value;
+                    if (predicate(context, value)) return value;
                 }
             }
             return null;
         }
 
         /// Returns true if any element satisfies the predicate.
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(ctx, value)) return true;
+                    if (predicate(context, value)) return true;
                 }
             }
             return false;
         }
 
         /// Returns true if all elements satisfy the predicate.
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (!predicate(ctx, value)) return false;
+                    if (!predicate(context, value)) return false;
                 }
             }
             return true;
         }
 
         /// Returns true if no element satisfies the predicate.
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(ctx, value)) return false;
+                    if (predicate(context, value)) return false;
                 }
             }
             return true;
         }
 
         /// Returns the count of elements satisfying the predicate.
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;
-                    if (predicate(ctx, value)) c += 1;
+                    if (predicate(context, value)) c += 1;
                 }
             }
             return c;

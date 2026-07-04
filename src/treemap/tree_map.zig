@@ -256,12 +256,12 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .keys = self.keys.items, .vals = self.vals.items };
         }
 
-        pub fn forEachKey(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, K) void) void {
-            for (self.keys.items) |k| f(ctx, k);
+        pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
+            for (self.keys.items) |k| f(context, k);
         }
 
-        pub fn forEachValue(self: *const Self, ctx: *anyopaque, f: *const fn (ctx: *anyopaque, V) void) void {
-            for (self.vals.items) |val| f(ctx, val);
+        pub fn forEachValue(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), V) void) void {
+            for (self.vals.items) |val| f(context, val);
         }
 
         // ---- Functional Operations ----
@@ -271,56 +271,56 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         /// `select` name is reserved for the order-statistic select on the
         /// sorted set/tree surface (see `selectKey`/`selectEntry`); see
         /// `spec/features/rank-select.md`.
-        pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn selectWhere(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(ctx, k, val)) _ = try result.put(k, val);
+                if (predicate(context, k, val)) _ = try result.put(k, val);
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (self.keys.items, self.vals.items) |k, val| {
-                if (!predicate(ctx, k, val)) _ = try result.put(k, val);
+                if (!predicate(context, k, val)) _ = try result.put(k, val);
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) ?struct { key: K, value: V } {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) ?struct { key: K, value: V } {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(ctx, k, val)) return .{ .key = k, .value = val };
+                if (predicate(context, k, val)) return .{ .key = k, .value = val };
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(ctx, k, val)) return true;
+                if (predicate(context, k, val)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (!predicate(ctx, k, val)) return false;
+                if (!predicate(context, k, val)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(ctx, k, val)) return false;
+                if (predicate(context, k, val)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
             var c: usize = 0;
             for (self.keys.items, self.vals.items) |k, val| {
-                if (predicate(ctx, k, val)) c += 1;
+                if (predicate(context, k, val)) c += 1;
             }
             return c;
         }

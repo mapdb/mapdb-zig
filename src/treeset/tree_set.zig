@@ -310,63 +310,63 @@ pub fn TreeSet(comptime T: type) type {
         /// smallest by 0-based rank); see `select` below and
         /// `spec/features/rank-select.md`. The statically-typed ports cannot
         /// host both a predicate `select` and the order-statistic `select`.
-        pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn selectWhere(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(ctx, node.key)) _ = try result.add(node.key);
+                if (predicate(context, node.key)) _ = try result.add(node.key);
             }
             return result;
         }
 
-        pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
+        pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
             errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!predicate(ctx, node.key)) _ = try result.add(node.key);
+                if (!predicate(context, node.key)) _ = try result.add(node.key);
             }
             return result;
         }
 
-        pub fn detect(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) ?T {
+        pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(ctx, node.key)) return node.key;
+                if (predicate(context, node.key)) return node.key;
             }
             return null;
         }
 
-        pub fn anySatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(ctx, node.key)) return true;
+                if (predicate(context, node.key)) return true;
             }
             return false;
         }
 
-        pub fn allSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (!predicate(ctx, node.key)) return false;
+                if (!predicate(context, node.key)) return false;
             }
             return true;
         }
 
-        pub fn noneSatisfy(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) bool {
+        pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(ctx, node.key)) return false;
+                if (predicate(context, node.key)) return false;
             }
             return true;
         }
 
-        pub fn count(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) usize {
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
-                if (predicate(ctx, node.key)) c += 1;
+                if (predicate(context, node.key)) c += 1;
             }
             return c;
         }
