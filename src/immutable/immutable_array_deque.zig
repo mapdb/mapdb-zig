@@ -71,7 +71,11 @@ pub fn ImmutableArrayDeque(comptime T: type) type {
         }
 
         pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
-            return try fromSlice(allocator, mutable.items.items);
+            // Copy the mutable deque's live range in front-to-back order. Its
+            // backing ring may wrap, so go through `toOwnedSlice` (logical-order
+            // materialization) rather than a raw backing slice.
+            const owned = try mutable.toOwnedSlice(allocator);
+            return .{ .items = owned, .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
