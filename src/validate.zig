@@ -336,7 +336,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
 fn getItemSlice(coll: *Collection, allocator: Allocator) ![]i32 {
     switch (coll.*) {
         .array_list => |*l| {
-            const src = l.toSlice();
+            const src = l.slice();
             const copy = try allocator.alloc(i32, src.len);
             @memcpy(copy, src);
             return copy;
@@ -352,7 +352,7 @@ fn getItemSlice(coll: *Collection, allocator: Allocator) ![]i32 {
             return try s.toSlice(allocator);
         },
         .array_stack => |*s| {
-            const src = s.toSlice();
+            const src = s.slice();
             const copy = try allocator.alloc(i32, src.len);
             @memcpy(copy, src);
             return copy;
@@ -1011,7 +1011,7 @@ fn evaluateAssertion(
             .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 0, injectAddWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 0;
-                for (s.toSlice()) |item| acc = injectAddWrapI32(undefined, acc, item);
+                for (s.slice()) |item| acc = injectAddWrapI32(undefined, acc, item);
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -1023,7 +1023,7 @@ fn evaluateAssertion(
             .array_list => |*l| try writeI32(writer, l.injectInto(undefined, 1, injectMulWrapI32)),
             .array_stack => |*s| {
                 var acc: i32 = 1;
-                for (s.toSlice()) |item| acc = injectMulWrapI32(undefined, acc, item);
+                for (s.slice()) |item| acc = injectMulWrapI32(undefined, acc, item);
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -1037,12 +1037,12 @@ fn evaluateAssertion(
         switch (coll.*) {
             .array_list => |*l| {
                 var acc: i32 = 1;
-                for (l.toSlice()) |item| acc *%= item;
+                for (l.slice()) |item| acc *%= item;
                 try writeI32(writer, acc);
             },
             .array_stack => |*s| {
                 var acc: i32 = 1;
-                for (s.toSlice()) |item| acc *%= item;
+                for (s.slice()) |item| acc *%= item;
                 try writeI32(writer, acc);
             },
             else => try writeNull(writer),
@@ -3680,7 +3680,7 @@ fn runF32ArrayList(
             list.clear();
         }
     }
-    const values = list.toSlice();
+    const values = list.slice();
     for (assertions.keys(), assertions.values()) |key, expected| {
         if (std.mem.eql(u8, key, "comment")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
@@ -3706,7 +3706,7 @@ fn runF32ArrayList(
             defer sorted_list.deinit();
             for (values) |v| try sorted_list.add(v);
             sorted_list.sort();
-            const buf = sorted_list.toSlice();
+            const buf = sorted_list.slice();
             try vw.writeAll("[");
             for (buf, 0..) |v, i| {
                 if (i > 0) try vw.writeAll(",");

@@ -73,7 +73,7 @@ test "ArrayList.iterator yields elements in insertion order" {
     try testing.expectEqual(@as(?i32, null), it.next());
 
     // Matches toSlice exactly.
-    const sl = list.toSlice();
+    const sl = list.slice();
     var it2 = list.iterator();
     for (sl) |expected| try testing.expectEqual(@as(?i32, expected), it2.next());
     try testing.expectEqual(@as(?i32, null), it2.next());
@@ -87,7 +87,7 @@ test "ArrayStack.iterator yields bottom-to-top, matching forEach" {
     try s.push(2);
     try s.push(3);
 
-    const sl = s.toSlice(); // bottom-to-top
+    const sl = s.slice(); // bottom-to-top
     var it = s.iterator();
     for (sl) |expected| try testing.expectEqual(@as(?i32, expected), it.next());
     try testing.expectEqual(@as(?i32, null), it.next());

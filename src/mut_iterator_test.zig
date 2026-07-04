@@ -65,7 +65,7 @@ test "ArrayList.mutIterator: writes through *T are observed in order" {
     var it = list.mutIterator();
     while (it.next()) |p| p.* *= 2;
 
-    try testing.expectEqualSlices(i32, &[_]i32{ 20, 40, 60 }, list.toSlice());
+    try testing.expectEqualSlices(i32, &[_]i32{ 20, 40, 60 }, list.slice());
 
     // Pointers are stable across the same backing: a second pass sees the writes.
     var it2 = list.mutIterator();
@@ -93,7 +93,7 @@ test "ArrayList(f32).mutIterator: distinct NaN/zero bit patterns survive intact"
     var i: usize = 0;
     while (it.next()) |p| : (i += 1) p.* = writes[i];
 
-    const sl = list.toSlice();
+    const sl = list.slice();
     try testing.expectEqual(@as(u32, 0x7FC0_1234), @as(u32, @bitCast(sl[0])));
     try testing.expectEqual(@as(u32, 0x8000_0000), @as(u32, @bitCast(sl[1]))); // -0.0
     try testing.expectEqual(@as(u32, @bitCast(pos_inf)), @as(u32, @bitCast(sl[2])));
@@ -110,7 +110,7 @@ test "ArrayStack.mutIterator: writes through *T are observed bottom-to-top" {
     var it = s.mutIterator();
     while (it.next()) |p| p.* += 100;
 
-    try testing.expectEqualSlices(i32, &[_]i32{ 101, 102, 103 }, s.toSlice());
+    try testing.expectEqualSlices(i32, &[_]i32{ 101, 102, 103 }, s.slice());
     // Peek (top) reflects the mutation.
     try testing.expectEqual(@as(?i32, 103), s.peek());
 }

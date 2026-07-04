@@ -334,8 +334,9 @@ pub fn ArrayList(comptime T: type) type {
             return result;
         }
 
-        /// Returns the elements as a slice.
-        pub fn toSlice(self: *const Self) []const T {
+        /// Borrowed view into internal storage; invalidated by any structural
+        /// mutation; do not free.
+        pub fn slice(self: *const Self) []const T {
             return self.items.items;
         }
 

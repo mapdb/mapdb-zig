@@ -92,7 +92,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         };
 
         /// Returns a pull-based iterator over `{ key, value }` entries in
-        /// arbitrary order. Non-allocating.
+        /// arbitrary order. Non-allocating. STRUCTURAL mutation (put/remove/
+        /// clear/deinit) during iteration invalidates the iterator; do not free
+        /// anything it yields.
         pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = self.inner.iterator() };
         }

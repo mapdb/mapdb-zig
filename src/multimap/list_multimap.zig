@@ -210,8 +210,11 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
             self.total_size += 1;
         }
 
-        /// Returns a slice of values for the given key. No allocation; the
-        /// returned slice is a view into internal storage.
+        /// Returns a slice of values for the given key. No allocation; a borrowed
+        /// view into internal storage — do not free. Invalidated by any
+        /// structural mutation: growth of this key's list (put), removal of this
+        /// key, a rehash of the backing map (from inserting other keys), clear,
+        /// or deinit.
         pub fn get(self: *const Self, key: K) []const V {
             const map_key = mapKey(key);
             if (self.inner.getPtr(map_key)) |list_ptr| {

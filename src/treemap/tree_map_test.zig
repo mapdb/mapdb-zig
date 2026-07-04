@@ -128,7 +128,7 @@ test "TreeMap: parameterized sorted iteration, min, max, range, navigation" {
             try std.testing.expect(m.floor(ks[1]).?.key == ks[1]);
 
             // rangeKeys over [lo, hi] returns both keys in order.
-            const rk = m.rangeKeys(ks[0], ks[1]);
+            const rk = m.rangeKeysSlice(ks[0], ks[1]);
             try std.testing.expectEqual(@as(usize, 2), rk.len);
             try std.testing.expect(rk[0] == ks[0]);
             try std.testing.expect(rk[1] == ks[1]);

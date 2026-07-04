@@ -108,7 +108,7 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
         try testing.expect(l.remove(s[0]));
         try testing.expectEqual(@as(usize, 2), l.len());
 
-        var l2 = try arraylist.ArrayList(T).of(testing.allocator, l.toSlice());
+        var l2 = try arraylist.ArrayList(T).of(testing.allocator, l.slice());
         defer l2.deinit();
         try testing.expect(l.eql(&l2));
     }

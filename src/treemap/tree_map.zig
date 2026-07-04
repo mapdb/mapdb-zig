@@ -180,10 +180,14 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return .{ .key = self.keys.items[last], .value = self.vals.items[last] };
         }
 
+        /// Borrowed view into internal storage; invalidated by any structural
+        /// mutation; do not free.
         pub fn keysSlice(self: *const Self) []const K {
             return self.keys.items;
         }
 
+        /// Borrowed view into internal storage; invalidated by any structural
+        /// mutation; do not free.
         pub fn valuesSlice(self: *const Self) []const V {
             return self.vals.items;
         }
@@ -339,8 +343,9 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return null;
         }
 
-        /// Returns keys in [from, to] inclusive as a slice view.
-        pub fn rangeKeys(self: *const Self, from: K, to: K) []const K {
+        /// Returns keys in [from, to] inclusive as a borrowed view into internal
+        /// storage; invalidated by any structural mutation; do not free.
+        pub fn rangeKeysSlice(self: *const Self, from: K, to: K) []const K {
             const lo = self.findIndex(from).index;
             var hi = lo;
             while (hi < self.keys.items.len) {

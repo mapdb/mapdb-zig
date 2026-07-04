@@ -111,7 +111,9 @@ pub fn ImmutableHashBag(comptime T: type) type {
             return self.size;
         }
 
-        pub fn toSlice(self: *const Self) []const T {
+        /// Borrowed view into internal storage; invalidated by any structural
+        /// mutation; do not free.
+        pub fn slice(self: *const Self) []const T {
             _ = self;
             // Not directly applicable for bags; use toMutable().
             return &[_]T{};

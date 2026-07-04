@@ -132,7 +132,9 @@ pub fn ImmutableHashSet(comptime T: type) type {
             return false;
         }
 
-        pub fn toSlice(self: *const Self) []const T {
+        /// Borrowed view into internal storage; invalidated by any structural
+        /// mutation; do not free.
+        pub fn slice(self: *const Self) []const T {
             return self.items;
         }
 
