@@ -76,11 +76,17 @@ pub fn ArrayDeque(comptime T: type) type {
         // ---- capacity ------------------------------------------------------
 
         /// Grow (never shrink) so at least `needed` elements fit. Reallocating
-        /// re-lays the live range contiguously at index 0.
+        /// re-lays the live range contiguously at index 0. Capacity is always a
+        /// power of two; a `needed` too large to round up (or to allocate) is
+        /// reported as `error.OutOfMemory` rather than trapping or yielding a
+        /// non-power-of-two buffer that would corrupt the `& mask` indexing.
         fn ensureCapacity(self: *Self, needed: usize) Allocator.Error!void {
             if (needed <= self.buf.len) return;
-            var new_cap: usize = if (self.buf.len == 0) MIN_CAPACITY else self.buf.len;
-            while (new_cap < needed) new_cap *|= 2;
+            // ceilPowerOfTwo(buf.len + 1) == 2 * buf.len, so incremental growth
+            // still doubles (amortized O(1)); a bulk reserve jumps straight to
+            // the right power of two.
+            const new_cap = std.math.ceilPowerOfTwo(usize, @max(needed, MIN_CAPACITY)) catch
+                return error.OutOfMemory;
             const new_buf = try self.allocator.alloc(T, new_cap);
             // Copy in logical (front-to-back) order into the fresh, unwrapped buf.
             const mask = self.buf.len -% 1;
@@ -90,9 +96,14 @@ pub fn ArrayDeque(comptime T: type) type {
             self.head = 0;
         }
 
-        /// Ensures capacity for `additional` more items.
+        /// Ensures capacity for `additional` more items. A request so large that
+        /// `count + additional` overflows `usize` is reported as
+        /// `error.OutOfMemory` (it could never be allocated anyway) instead of
+        /// trapping on the addition in safe builds.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            try self.ensureCapacity(self.count + additional);
+            const needed = std.math.add(usize, self.count, additional) catch
+                return error.OutOfMemory;
+            try self.ensureCapacity(needed);
         }
 
         // ---- ends (all O(1) amortized) -------------------------------------
@@ -365,6 +376,20 @@ test "ArrayDeque ring: growth while wrapped preserves order" {
     try testing.expectEqual(@as(usize, 40), got.len);
     i = 0;
     while (i < 40) : (i += 1) try testing.expectEqual(@as(i32, 39 - i), got[@intCast(i)]);
+}
+
+test "ArrayDeque: ensureUnusedCapacity reports overflow as OOM (no trap)" {
+    const a = testing.allocator;
+    var d = ArrayDeque(i32).init(a);
+    defer d.deinit();
+    try d.addLast(1);
+    // count + additional overflows usize -> graceful OOM, not an integer-overflow
+    // panic in safe builds.
+    try testing.expectError(error.OutOfMemory, d.ensureUnusedCapacity(std.math.maxInt(usize)));
+    // Deque is untouched and still usable.
+    try testing.expectEqual(@as(usize, 1), d.len());
+    try d.addLast(2);
+    try testing.expectEqual(@as(?i32, 1), d.peekFirst());
 }
 
 test "ArrayDeque ring: large FIFO drain is O(n) and correct (D8)" {
