@@ -74,7 +74,7 @@ pub fn RangeSet(comptime T: type) type {
         /// cardinality — `add(open(1, 2))` over `i32` **stores** the range. The
         /// merged range keeps the **outer** cuts of every connected member (the
         /// cut min/max, no `±1` math).
-        pub fn add(self: *Self, range: Range) !void {
+        pub fn add(self: *Self, range: Range) Allocator.Error!void {
             // Empty-range no-op (cut-empty), per the normative empty-range rule.
             if (range.isEmpty()) return;
 
@@ -107,7 +107,7 @@ pub fn RangeSet(comptime T: type) type {
 
         /// [`add`](RangeSet.add) each range; the final normal form is
         /// order-independent.
-        pub fn addAll(self: *Self, ranges: []const Range) !void {
+        pub fn addAll(self: *Self, ranges: []const Range) Allocator.Error!void {
             for (ranges) |r| try self.add(r);
         }
 
@@ -115,7 +115,7 @@ pub fn RangeSet(comptime T: type) type {
         /// boundary. A cut-empty `range` is a **no-op**. The split is pure cut
         /// arithmetic — the boundary cuts flip (`remove([4, 7))` from `[1, 9]`
         /// leaves `[1, 4)` and `[7, 9]`), never `±1`.
-        pub fn remove(self: *Self, range: Range) !void {
+        pub fn remove(self: *Self, range: Range) Allocator.Error!void {
             if (range.isEmpty()) return;
             var out: std.ArrayListUnmanaged(Range) = .{};
             errdefer out.deinit(self.allocator);

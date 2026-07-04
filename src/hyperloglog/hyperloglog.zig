@@ -80,7 +80,7 @@ pub const HyperLogLog = struct {
     /// `p` must be in `4 ..= 18`; otherwise `HllError.BadPrecision` (never a
     /// silent clamp — a clamp would let two ports build differently-sized
     /// arrays from the same nominal `p`).
-    pub fn withPrecision(allocator: Allocator, p: u8) !HyperLogLog {
+    pub fn withPrecision(allocator: Allocator, p: u8) (HllError || Allocator.Error)!HyperLogLog {
         if (p < MIN_PRECISION or p > MAX_PRECISION) {
             return HllError.BadPrecision;
         }
@@ -233,7 +233,7 @@ pub const HyperLogLog = struct {
     /// Serialize to the v1 wire form: 5-byte header (`"HLL1"` + `p`) followed by
     /// one `u8` per register in index order. Total length `5 + 2^p`. The
     /// returned slice is caller-owned (allocated by `allocator`).
-    pub fn toBytes(self: *const HyperLogLog, allocator: Allocator) ![]u8 {
+    pub fn toBytes(self: *const HyperLogLog, allocator: Allocator) Allocator.Error![]u8 {
         const out = try allocator.alloc(u8, 5 + self.regs.len);
         @memcpy(out[0..4], &MAGIC);
         out[4] = self.p;
@@ -245,7 +245,7 @@ pub const HyperLogLog = struct {
     /// ports disagree on validity): too short, bad magic, `p` out of range,
     /// length `!= 5 + 2^p`, or any register byte `> 64 - p + 1`. The returned
     /// sketch owns a fresh register allocation.
-    pub fn fromBytes(allocator: Allocator, bytes: []const u8) !HyperLogLog {
+    pub fn fromBytes(allocator: Allocator, bytes: []const u8) (HllError || Allocator.Error)!HyperLogLog {
         if (bytes.len < 5) {
             return HllError.TooShort;
         }

@@ -70,7 +70,7 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
         /// the old value); the new `(range, value)` is then inserted. A
         /// **cut-empty** `range` is a **no-op**. `put` does **not** coalesce —
         /// an adjacent equal value stays a distinct entry.
-        pub fn put(self: *Self, range: Range, value: V) !void {
+        pub fn put(self: *Self, range: Range, value: V) Allocator.Error!void {
             if (range.isEmpty()) return;
             try self.clipOut(range);
             try self.insertEntry(range, value);
@@ -81,7 +81,7 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
         /// **equals** `value`, producing one entry spanning the union.
         /// Neighbours with a different value are left untouched (clipped by the
         /// `put` step as usual).
-        pub fn putCoalescing(self: *Self, range: Range, value: V) !void {
+        pub fn putCoalescing(self: *Self, range: Range, value: V) Allocator.Error!void {
             if (range.isEmpty()) return;
             try self.clipOut(range);
             // Span over every connected entry with an EQUAL value, dropping them.
@@ -120,7 +120,7 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
         /// Unmap `range`, **splitting** any entry straddling either boundary
         /// (both fragments keep the old value). A cut-empty `range` is a
         /// **no-op**.
-        pub fn remove(self: *Self, range: Range) !void {
+        pub fn remove(self: *Self, range: Range) Allocator.Error!void {
             if (range.isEmpty()) return;
             try self.clipOut(range);
         }

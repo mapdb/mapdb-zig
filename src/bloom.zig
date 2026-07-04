@@ -64,7 +64,7 @@ pub const Bloom = struct {
     /// `m_bits == 0` is **invalid** and traps (a 0-bit array can hold nothing and
     /// every `positions` modulo would be by zero). `k == 0` is degenerate but
     /// **legal** (see `mightContain`).
-    pub fn withParams(allocator: Allocator, m_bits: u32, k_funcs: u32) !Bloom {
+    pub fn withParams(allocator: Allocator, m_bits: u32, k_funcs: u32) Allocator.Error!Bloom {
         // `m_bits == 0` is the one construction error and MUST trap in EVERY
         // build mode (the spec's `MUST trap`; the Rust reference uses an always-on
         // `assert!`, Go panics, TS/Java throw). A bare `std.debug.assert` is
@@ -99,7 +99,7 @@ pub const Bloom = struct {
     ///
     /// Requires `n >= 1` and `0 < p < 1`. `n == 0`, `p <= 0`, `p >= 1`, `NaN`,
     /// and `±Infinity` are invalid and trap.
-    pub fn optimal(allocator: Allocator, n_expected: u64, p: f64) !Bloom {
+    pub fn optimal(allocator: Allocator, n_expected: u64, p: f64) Allocator.Error!Bloom {
         // These are REQUIRED-INPUT preconditions and MUST trap in EVERY build
         // mode (the spec's `MUST trap`; the other ports panic/throw). A bare
         // `std.debug.assert` is compiled out in ReleaseFast/ReleaseSmall, which
@@ -240,7 +240,7 @@ pub const Bloom = struct {
 
     /// Allocate and serialize the bit array (length exactly `byteLen()`). The
     /// caller owns the returned slice and must free it.
-    pub fn toBytesAlloc(self: *const Bloom, allocator: Allocator) ![]u8 {
+    pub fn toBytesAlloc(self: *const Bloom, allocator: Allocator) Allocator.Error![]u8 {
         const out = try allocator.alloc(u8, self.byteLen());
         self.toBytes(out);
         return out;
@@ -254,7 +254,7 @@ pub const Bloom = struct {
     /// The sorted-ascending indices of the set bits — a human-legible alternate
     /// oracle to `toBytes` (drives the `set_bits` scenario assertion). The caller
     /// owns the returned slice and must free it.
-    pub fn setBitsAlloc(self: *const Bloom, allocator: Allocator) ![]u32 {
+    pub fn setBitsAlloc(self: *const Bloom, allocator: Allocator) Allocator.Error![]u32 {
         var list = try std.ArrayListUnmanaged(u32).initCapacity(allocator, self.bitCount());
         errdefer list.deinit(allocator);
         for (self.words, 0..) |w, wi| {
