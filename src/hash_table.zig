@@ -16,7 +16,22 @@ const DEFAULT_CAPACITY: usize = 16;
 
 fn hashKey(comptime K: type, key: K) u64 {
     const raw: u64 = switch (@typeInfo(K)) {
-        .int, .comptime_int => @bitCast(@as(i64, @intCast(key))),
+        // Width-correct and injective per type: reinterpret the key as its
+        // same-width unsigned integer instead of funnelling every int through
+        // an `@as(i64, @intCast(key))`, which panics in safe builds and is UB
+        // in ReleaseFast for any key > maxInt(i64) — e.g. `HashMap(u64, V)`
+        // with keys near maxInt(u64), or u128/i128 (D1). Widths > 64 fold the
+        // two 64-bit halves together (the untaken branch is comptime-pruned
+        // for narrower widths, so the `>> 64` never type-errors there).
+        .int => blk: {
+            const U = std.meta.Int(.unsigned, @bitSizeOf(K));
+            const u: U = @bitCast(key);
+            break :blk if (@bitSizeOf(K) <= 64)
+                @as(u64, u)
+            else
+                @as(u64, @truncate(u)) ^ @as(u64, @truncate(u >> 64));
+        },
+        .comptime_int => @bitCast(@as(i64, @intCast(key))),
         .float => if (K == f32)
             @as(u64, @as(u32, @bitCast(key)))
         else
@@ -762,4 +777,40 @@ test "hashKey: i64 high-32-bit family stores/reads through production map" {
         const key: i64 = @intCast(@as(u64, @intCast(i)) *% (@as(u64, 1) << 32) +% 1);
         try std.testing.expectEqual(@as(?i32, @intCast(i)), map.get(key));
     }
+}
+
+test "hashKey: wide unsigned keys near maxInt(u64) don't trap (D1)" {
+    // Before D1 the `.int` branch did `@bitCast(@as(i64, @intCast(key)))`, which
+    // is a safety panic (Debug/ReleaseSafe) / UB (ReleaseFast) for any key
+    // above maxInt(i64). Keys clustered near maxInt(u64) must hash and round-trip
+    // through the production map without trapping.
+    var map = try OpenHashMap(u64, i32).init(std.testing.allocator);
+    defer map.deinit();
+    const keys = [_]u64{
+        std.math.maxInt(u64),
+        std.math.maxInt(u64) - 1,
+        std.math.maxInt(u64) - 2,
+        std.math.maxInt(i64), // boundary
+        @as(u64, std.math.maxInt(i64)) + 1, // 0x8000…: first value that used to trap
+        0xDEAD_BEEF_CAFE_BABE,
+        0xFFFF_FFFF_0000_0000,
+        1,
+    };
+    for (keys, 0..) |k, idx| {
+        _ = hashKey(u64, k); // must not trap
+        _ = try map.put(k, @intCast(idx));
+    }
+    try std.testing.expectEqual(keys.len, map.len());
+    for (keys, 0..) |k, idx| {
+        try std.testing.expectEqual(@as(?i32, @intCast(idx)), map.get(k));
+    }
+}
+
+test "hashKey: u128 keys fold both halves without trapping (D1)" {
+    const hi: u128 = @as(u128, 0xDEAD_BEEF) << 64;
+    _ = hashKey(u128, std.math.maxInt(u128));
+    _ = hashKey(u128, hi);
+    _ = hashKey(u128, hi | 1);
+    // Distinct high/low halves must not alias to the same raw hash trivially.
+    try std.testing.expect(hashKey(u128, hi) != hashKey(u128, hi | 1));
 }

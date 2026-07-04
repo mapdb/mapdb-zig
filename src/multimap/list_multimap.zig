@@ -196,7 +196,17 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayListUnmanaged(V){};
             }
-            try gop.value_ptr.append(self.allocator, value);
+            gop.value_ptr.append(self.allocator, value) catch |err| {
+                // A failed append on a freshly-created key would leave an
+                // observable empty entry (containsKey true, get().len == 0,
+                // keysCount disagreeing with totalSize). Roll it back so a
+                // failed put is not observable (F5).
+                if (!gop.found_existing) {
+                    gop.value_ptr.deinit(self.allocator);
+                    _ = self.inner.remove(map_key);
+                }
+                return err;
+            };
             self.total_size += 1;
         }
 

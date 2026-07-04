@@ -426,3 +426,28 @@ comptime {
     // Force-compile the generic set shape over a second element type.
     _ = ImmutableSortedSet(i64);
 }
+
+// ── Float keys route through the IEEE-754 total order (F6) ──
+// Same order as the primitive TreeMap/TreeSet float family: -0.0 < +0.0 and
+// NaN payloads are ordered. Under std.math.order this input would look like a
+// duplicate (-0.0 == +0.0 → construction panic) and NaN comparisons would be
+// bogus, so this test pins that immutable_sorted agrees with float_order.
+test "set(f64) uses IEEE-754 total order (F6)" {
+    const S = ImmutableSortedSet(f64);
+    const nan = std.math.nan(f64);
+    const inf = std.math.inf(f64);
+    // Strictly ascending in total order: -inf < -1 < -0.0 < +0.0 < 1 < +inf < +NaN.
+    var s = try S.fromSorted(testing.allocator, &.{ -inf, -1.0, -0.0, 0.0, 1.0, inf, nan });
+    defer s.deinit();
+    try testing.expectEqual(@as(usize, 7), s.len());
+    // ±0 are distinct, ordered members; NaN and infinities are found.
+    try testing.expect(s.contains(-0.0));
+    try testing.expect(s.contains(0.0));
+    try testing.expect(s.contains(nan));
+    try testing.expect(s.contains(inf));
+    try testing.expect(s.contains(-inf));
+    const es = s.elementsSlice();
+    try testing.expectEqual(@as(f64, -inf), es[0]);
+    try testing.expectEqual(@as(f64, inf), es[5]);
+    try testing.expect(std.math.isNan(es[6]));
+}

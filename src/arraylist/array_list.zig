@@ -89,20 +89,30 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Returns the element at the given index, or null if out of bounds.
+        /// This is the bounds-checked accessor; `set`/`removeAtIndex` instead
+        /// assert their index as a precondition (see D5).
         pub fn get(self: *const Self, index: usize) ?T {
             if (index >= self.items.items.len) return null;
             return self.items.items[index];
         }
 
         /// Sets the element at the given index. Returns the old value.
+        /// Asserts `index < len()` as a precondition — an out-of-bounds index is
+        /// a safety-checked panic in Debug/ReleaseSafe and UB in ReleaseFast
+        /// (this differs from `get`, which returns null out of bounds; use `get`
+        /// when the index may be invalid).
         pub fn set(self: *Self, index: usize, value: T) T {
+            std.debug.assert(index < self.items.items.len);
             const old = self.items.items[index];
             self.items.items[index] = value;
             return old;
         }
 
         /// Removes and returns the element at the given index.
+        /// Asserts `index < len()` as a precondition (same contract as `set`;
+        /// see D5) — out-of-bounds is a checked panic / ReleaseFast UB.
         pub fn removeAtIndex(self: *Self, index: usize) T {
+            std.debug.assert(index < self.items.items.len);
             return self.items.orderedRemove(index);
         }
 

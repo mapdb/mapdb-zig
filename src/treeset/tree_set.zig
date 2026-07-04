@@ -64,6 +64,11 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             destroySubtree(self.treap.root, self.allocator);
+            // Leave no dangling root: after freeing the nodes, a second deinit
+            // (or any read) would otherwise walk freed memory / double-free
+            // (D10). Reset to the empty-tree state, mirroring clear().
+            self.treap.root = null;
+            self.node_count = 0;
         }
 
         fn destroySubtree(node_opt: ?*TreapType.Node, allocator: Allocator) void {
@@ -121,8 +126,11 @@ pub fn TreeSet(comptime T: type) type {
 
             fn poison(self: *Sink) void {
                 self.poisoned = true;
+                // Capture the allocator before deinit — the D6 twin: reading
+                // self.set.allocator after self.set.deinit() reads a freed set.
+                const allocator = self.set.allocator;
                 self.set.deinit();
-                self.set = Self.init(self.set.allocator);
+                self.set = Self.init(allocator);
             }
 
             pub fn put(self: *Sink, value: T) Error!void {
@@ -835,4 +843,18 @@ test "TreeSet rank/select: empty, single, signed extremes" {
     try std.testing.expectEqual(@as(?i32, std.math.minInt(i32)), ext.select(0));
     try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), ext.select(4));
     try std.testing.expectEqual(@as(?i32, null), ext.select(5));
+}
+
+test "TreeSet deinit twice is safe (D10)" {
+    // deinit used to free nodes but leave treap.root dangling; a second deinit
+    // would then double-free. After the fix, deinit nulls the root and zeroes
+    // the count, so a redundant deinit is a no-op (testing.allocator would
+    // detect a double-free / leak).
+    var s = TreeSet(i32).init(std.testing.allocator);
+    _ = try s.add(1);
+    _ = try s.add(2);
+    _ = try s.add(3);
+    s.deinit();
+    try std.testing.expectEqual(@as(usize, 0), s.size());
+    s.deinit(); // must not double-free
 }

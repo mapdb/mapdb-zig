@@ -208,9 +208,23 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                 gop.value_ptr.* = std.ArrayListUnmanaged(V){};
             }
             for (gop.value_ptr.items) |existing| {
-                if (valueEql(V, existing, value)) return;
+                if (valueEql(V, existing, value)) {
+                    // Value already present: drop the freshly-created empty key
+                    // if this getOrPut created one (cannot happen — a new key
+                    // has no items — but keep the invariant explicit), then no-op.
+                    return;
+                }
             }
-            try gop.value_ptr.append(self.allocator, value);
+            gop.value_ptr.append(self.allocator, value) catch |err| {
+                // A failed append on a freshly-created key would leave an
+                // observable empty entry. Roll it back so a failed put is not
+                // observable (F5).
+                if (!gop.found_existing) {
+                    gop.value_ptr.deinit(self.allocator);
+                    _ = self.inner.remove(map_key);
+                }
+                return err;
+            };
             self.total_size += 1;
         }
 

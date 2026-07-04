@@ -69,17 +69,23 @@ const Order = std.math.Order;
 
 const range_mod = @import("../range.zig");
 const Range = range_mod.Range;
+const float_order = @import("../float_order.zig");
 
-/// Total order on the element type. v1 is i32 (natural signed order); the
-/// float matrix later routes floats through the IEEE-754 total order
-/// (`algorithms.md` §"Float ordering for tree collections"). `bool` is ordered
-/// explicitly (false < true) so the generic shape can be force-compiled with a
-/// `bool` parameter as the rest of the family does.
+/// Total order on the element type. Integers use the natural signed/unsigned
+/// order; floats route through the IEEE-754 **total order**
+/// (`algorithms.md` §"Float ordering for tree collections") so that `-0.0 <
+/// +0.0` and NaN payloads are ordered — identical to the primitive
+/// `TreeMap`/`TreeSet` float behaviour, so the same key type never yields two
+/// different orders across the library (F6). `bool` is ordered explicitly
+/// (false < true) so the generic shape can be force-compiled with a `bool`
+/// parameter as the rest of the family does.
 fn compareValues(comptime T: type, a: T, b: T) Order {
     if (T == bool) {
         if (a == b) return .eq;
         return if (!a and b) .lt else .gt;
     }
+    if (T == f32) return float_order.totalCmpF32(a, b);
+    if (T == f64) return float_order.totalCmpF64(a, b);
     return std.math.order(a, b);
 }
 

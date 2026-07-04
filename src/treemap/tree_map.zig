@@ -657,8 +657,14 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
             fn poison(self: *Sink) void {
                 self.poisoned = true;
+                // Capture the allocator BEFORE deinit: reading self.map.allocator
+                // afterwards is a read of a just-freed map — it happens to work
+                // today only because primitive deinit leaves the struct readable,
+                // and it would read `undefined` under a poison-on-deinit policy
+                // (D6). Capture-first makes the order-of-operations explicit.
+                const allocator = self.map.allocator;
                 self.map.deinit();
-                self.map = Self.init(self.map.allocator);
+                self.map = Self.init(allocator);
             }
 
             /// Appends one ascending key/value pair. Returns `error.NotSorted`

@@ -294,3 +294,53 @@ test "SetMultimap(i64, i32): high-32-bit-varying key family stays distinct at sc
     }
     try std.testing.expect(!m.containsKey(highBitKey(N)));
 }
+
+// ---------------------------------------------------------------------------
+// F5: a failed put must not leave an observable empty key entry.
+// ---------------------------------------------------------------------------
+
+test "ListMultimap put rolls back new key on append OOM (F5)" {
+    var fail_index: usize = 0;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(
+            std.testing.allocator,
+            .{ .fail_index = fail_index },
+        );
+        var m = ListMultimap(i32, i32).init(failing.allocator());
+        defer m.deinit();
+        // Populate one existing key so we exercise the new-key path separately.
+        m.put(1, 10) catch {};
+        // Attempt to add a brand-new key. On OOM the key must not appear, and
+        // total_size must equal the summed per-key counts.
+        m.put(2, 20) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(!m.containsKey(2));
+        };
+        // Invariant: total_size == sum of get(key).len over all keys.
+        var it = m.inner.iterator();
+        var summed: usize = 0;
+        while (it.next()) |e| summed += e.value_ptr.items.len;
+        try std.testing.expectEqual(summed, m.size());
+    }
+}
+
+test "SetMultimap put rolls back new key on append OOM (F5)" {
+    var fail_index: usize = 0;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(
+            std.testing.allocator,
+            .{ .fail_index = fail_index },
+        );
+        var m = SetMultimap(i32, i32).init(failing.allocator());
+        defer m.deinit();
+        m.put(1, 10) catch {};
+        m.put(2, 20) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(!m.containsKey(2));
+        };
+        var it = m.inner.iterator();
+        var summed: usize = 0;
+        while (it.next()) |e| summed += e.value_ptr.items.len;
+        try std.testing.expectEqual(summed, m.size());
+    }
+}

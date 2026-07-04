@@ -36,6 +36,17 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// old key's forward mapping is removed.
         /// Returns the previous value associated with the key, if any.
         pub fn put(self: *Self, key: K, value: V) Allocator.Error!?V {
+            // Reserve capacity up front so that the method is infallible past
+            // this point. A mid-operation allocation failure would otherwise
+            // corrupt the bijection (F1): the removals below fire first, and a
+            // failing `forward.put`/`inverse.put` afterwards would leave the two
+            // indexes disagreeing. `ensureUnusedCapacity` never shrinks and the
+            // removals only free slots, so one reserved slot per map covers the
+            // worst case (both key and value are new). If either reservation
+            // fails, nothing has been mutated yet — the bimap is untouched.
+            try self.forward.ensureUnusedCapacity(self.allocator, 1);
+            try self.inverse.ensureUnusedCapacity(self.allocator, 1);
+
             // Remove any existing mapping for this value (bijection enforcement)
             if (self.inverse.get(value)) |existing_key| {
                 _ = self.forward.fetchRemove(existing_key);
@@ -49,8 +60,8 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
                 _ = self.inverse.fetchRemove(existing_value);
             }
 
-            try self.forward.put(self.allocator, key, value);
-            try self.inverse.put(self.allocator, value, key);
+            self.forward.putAssumeCapacity(key, value);
+            self.inverse.putAssumeCapacity(value, key);
 
             return old_value;
         }
@@ -212,4 +223,50 @@ test "HashBiMap clear" {
     _ = try bimap.put(1, 10);
     bimap.clear();
     try std.testing.expect(bimap.isEmpty());
+}
+
+/// Assert the bimap's core invariant: forward and inverse have equal size and
+/// every forward `k -> v` has a matching inverse `v -> k`.
+fn expectBijection(bimap: *const HashBiMap(i32, i32)) !void {
+    try std.testing.expectEqual(bimap.forward.count(), bimap.inverse.count());
+    var it = bimap.forward.iterator();
+    while (it.next()) |e| {
+        const k = e.key_ptr.*;
+        const v = e.value_ptr.*;
+        try std.testing.expectEqual(@as(?i32, k), bimap.inverse.get(v));
+    }
+}
+
+test "HashBiMap put preserves bijection under OOM (F1)" {
+    // Sweep FailingAllocator fail_index: at every allocation-failure point the
+    // bimap must remain a valid bijection with no leaks (testing.allocator
+    // backs the FailingAllocator, so a leak fails the test).
+    var fail_index: usize = 0;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(
+            std.testing.allocator,
+            .{ .fail_index = fail_index },
+        );
+        var bimap = HashBiMap(i32, i32).init(failing.allocator());
+        defer bimap.deinit();
+
+        // Best-effort setup; some puts may fail at low fail indices.
+        _ = bimap.put(1, 10) catch {};
+        _ = bimap.put(2, 20) catch {};
+        try expectBijection(&bimap);
+
+        // The operation under test: reassign value 20 to key 1 (removes key 2
+        // and key 1's old value 10). Whether it succeeds or fails with OOM, the
+        // bijection invariant must hold.
+        _ = bimap.put(1, 20) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try expectBijection(&bimap);
+            continue;
+        };
+        try expectBijection(&bimap);
+        // On success the reassignment is complete: key 2 and value 10 are gone.
+        try std.testing.expect(!bimap.containsKey(2));
+        try std.testing.expect(!bimap.containsValue(10));
+        try std.testing.expectEqual(@as(?i32, 20), bimap.get(1));
+    }
 }

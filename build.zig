@@ -71,7 +71,9 @@ pub fn build(b: *std.Build) void {
     const trapprobe_step = b.step("trapprobe", "Run the out-of-process required-input trap probe");
     trapprobe_step.dependOn(&run_trapprobe.step);
     // Unit tests
+    const test_filters = b.option([]const []const u8, "test-filter", "Only run tests whose name contains the given substring (repeatable)") orelse &.{};
     const lib_unit_tests = b.addTest(.{
+        .filters = test_filters,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
