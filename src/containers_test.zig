@@ -31,6 +31,8 @@ const priority_queue = @import("priority_queue/priority_queue.zig");
 const treeset = @import("treeset/treeset.zig");
 const bag = @import("bag/bag.zig");
 const multimap = @import("multimap/multimap.zig");
+const hashmap = @import("hashmap/hashmap.zig");
+const treemap = @import("treemap/treemap.zig");
 
 // ---------------------------------------------------------------------------
 // Force-compile every method on every instantiation of every family.
@@ -642,4 +644,72 @@ test "HashBag.select/reject compile and filter, preserving counts (infallible-in
     defer odds.deinit();
     try testing.expectEqual(@as(usize, 2), odds.occurrencesOf(3));
     try testing.expectEqual(@as(usize, 0), odds.occurrencesOf(2));
+}
+
+// ---------------------------------------------------------------------------
+// Functional-op instantiation coverage.
+//
+// Predicate/callback methods (`context: anytype, comptime f`) are generic:
+// their bodies are only semantically analyzed when instantiated. A body error
+// (e.g. the Step-5 stale `try init` in select/reject, or a Step-1 anytype-
+// callback slip) stays invisible to `zig build test` unless *something* calls
+// the method at a concrete type. Several of these had zero call-sites in the
+// whole suite. This harness force-instantiates the predicate family across
+// every primitive collection so that class of break fails the build.
+// ---------------------------------------------------------------------------
+
+fn fop_elemPred(_: void, _: i32) bool {
+    return true;
+}
+fn fop_elemConsume(_: void, _: i32) void {}
+fn fop_elemFold(_: void, a: i32, b: i32) i32 {
+    return a +% b;
+}
+fn fop_kvPred(_: void, _: i32, _: i32) bool {
+    return true;
+}
+fn fop_kvConsume(_: void, _: i32, _: i32) void {}
+fn fop_kvFold(_: void, acc: i32, _: i32, v: i32) i32 {
+    return acc +% v;
+}
+
+fn fopExerciseElem(comptime T: type) void {
+    var c = T.init(testing.allocator);
+    defer c.deinit();
+    if (@hasDecl(T, "detect")) _ = c.detect({}, fop_elemPred);
+    if (@hasDecl(T, "anySatisfy")) _ = c.anySatisfy({}, fop_elemPred);
+    if (@hasDecl(T, "allSatisfy")) _ = c.allSatisfy({}, fop_elemPred);
+    if (@hasDecl(T, "noneSatisfy")) _ = c.noneSatisfy({}, fop_elemPred);
+    if (@hasDecl(T, "forEach")) c.forEach({}, fop_elemConsume);
+    if (@hasDecl(T, "injectInto")) _ = c.injectInto({}, 0, fop_elemFold);
+}
+
+fn fopExerciseKV(comptime T: type) void {
+    var c = T.init(testing.allocator);
+    defer c.deinit();
+    if (@hasDecl(T, "detect")) _ = c.detect({}, fop_kvPred);
+    if (@hasDecl(T, "anySatisfy")) _ = c.anySatisfy({}, fop_kvPred);
+    if (@hasDecl(T, "allSatisfy")) _ = c.allSatisfy({}, fop_kvPred);
+    if (@hasDecl(T, "noneSatisfy")) _ = c.noneSatisfy({}, fop_kvPred);
+    if (@hasDecl(T, "forEach")) c.forEach({}, fop_kvConsume);
+    if (@hasDecl(T, "injectInto")) _ = c.injectInto({}, 0, fop_kvFold);
+}
+
+test "functional-op predicate family instantiates on every primitive collection" {
+    inline for (.{
+        arraylist.ArrayList(i32),
+        hashset.HashSet(i32),
+        stack.ArrayStack(i32),
+        deque.ArrayDeque(i32),
+        treeset.TreeSet(i32),
+        bag.TreeBag(i32),
+        bag.HashBag(i32),
+    }) |T| fopExerciseElem(T);
+
+    inline for (.{
+        hashmap.HashMap(i32, i32),
+        treemap.TreeMap(i32, i32),
+        multimap.ListMultimap(i32, i32),
+        multimap.SetMultimap(i32, i32),
+    }) |T| fopExerciseKV(T);
 }
