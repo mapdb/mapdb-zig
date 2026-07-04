@@ -132,6 +132,28 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench_exe);
     const bench_step = b.step("bench", "Run collection microbenchmarks (ReleaseFast)");
     bench_step.dependOn(&run_bench.step);
+
+    // `zig build bench-deferred` — the measurement gate for the three
+    // "measure-first" deferred items (D3 hashmap footprint, D9 TreeSet
+    // allocation count, D13 RangeSet mutation scaling). Same ReleaseFast +
+    // dedicated-release-module shape as `bench`.
+    const bench_def_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const bench_def_exe = b.addExecutable(.{
+        .name = "bench-deferred",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench_deferred.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "mapdb_collections", .module = bench_def_mod }},
+        }),
+    });
+    const run_bench_def = b.addRunArtifact(bench_def_exe);
+    const bench_def_step = b.step("bench-deferred", "Measure D3/D9/D13 hot paths (measure-first gate)");
+    bench_def_step.dependOn(&run_bench_def.step);
 }
 
 /// Add an executable (Zig 0.15+ module shape; build.zig.zon pins
