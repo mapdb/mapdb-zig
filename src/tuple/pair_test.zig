@@ -145,27 +145,31 @@ test "eql float-member bit-equality: NaN equals itself by bits, +0 != -0" {
 }
 
 test "format renders as (first, second)" {
-    // The pair's `format` retains the legacy 4-arg signature
-    // `format(self, comptime fmt, options, writer)` that the rest of this
-    // codebase uses, so it is exercised by calling it directly on a writer
-    // (the `{}`/`{f}` format-string dispatch in this Zig version expects the
-    // newer 1-arg signature and is therefore not used here).
+    // The pair's `format` uses Zig 0.15's 1-arg custom-format signature
+    // `format(self, writer)`, so it is exercised by calling it directly on a
+    // writer here (see the "{f}" dispatch test below for the format-string path).
     var buf: [64]u8 = undefined;
 
     {
         var fbs = std.io.fixedBufferStream(&buf);
-        try Pair(i32, i32).new(1, 2).format("", .{}, fbs.writer());
+        try Pair(i32, i32).new(1, 2).format(fbs.writer());
         try std.testing.expectEqualStrings("(1, 2)", fbs.getWritten());
     }
     {
         var fbs = std.io.fixedBufferStream(&buf);
-        try Pair(bool, u21).new(true, 'b').format("", .{}, fbs.writer());
+        try Pair(bool, u21).new(true, 'b').format(fbs.writer());
         try std.testing.expectEqualStrings("(true, 98)", fbs.getWritten());
     }
     {
         // Float member renders via default float formatting.
         var fbs = std.io.fixedBufferStream(&buf);
-        try Pair(f64, i32).new(1.5, 2).format("", .{}, fbs.writer());
+        try Pair(f64, i32).new(1.5, 2).format(fbs.writer());
         try std.testing.expectEqualStrings("(1.5, 2)", fbs.getWritten());
     }
+}
+
+test "format renders via {f} dispatch" {
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{Pair(i32, i32).new(1, 2)});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("(1, 2)", out);
 }

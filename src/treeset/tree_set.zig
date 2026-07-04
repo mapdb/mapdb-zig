@@ -650,7 +650,7 @@ pub fn TreeSet(comptime T: type) type {
         // ---- Formatting ----
 
         /// Formats as "{v1, v2, v3}" in sorted order.
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             var is_first = true;
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
@@ -864,4 +864,12 @@ test "TreeSet deinit twice is safe (D10)" {
     s.deinit();
     try std.testing.expectEqual(@as(usize, 0), s.size());
     s.deinit(); // must not double-free
+}
+
+test "TreeSet: {f} dispatch renders {1, 2, 3} in sorted order" {
+    var s = try setOf(std.testing.allocator, &.{ 3, 1, 2 });
+    defer s.deinit();
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{s});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1, 2, 3}", out);
 }

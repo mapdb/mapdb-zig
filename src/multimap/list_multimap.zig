@@ -454,7 +454,7 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
 
         // ---- Formatting ----
 
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             var first = true;
             var it = self.inner.iterator();

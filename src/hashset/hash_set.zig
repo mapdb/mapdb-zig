@@ -375,7 +375,7 @@ pub fn HashSet(comptime T: type) type {
         // ---- Formatting ----
 
         /// Formats the set as "{v1, v2, v3}".
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             var first = true;
             for (0..self.inner.capacity) |i| {

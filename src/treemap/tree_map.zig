@@ -593,7 +593,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         // ---- Formatting ----
 
         /// Formats as "{k1=v1, k2=v2}" in sorted key order.
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             for (self.keys.items, self.vals.items, 0..) |k, v, i| {
                 if (i > 0) try writer.writeAll(", ");

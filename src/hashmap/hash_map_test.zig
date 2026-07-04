@@ -309,3 +309,25 @@ test "HashMap.initWithCapacity(N) holds N elements without rehash (D2)" {
     // No rehash occurred: capacity is unchanged across the N inserts.
     try std.testing.expectEqual(cap_before, m.inner.capacity);
 }
+
+// ---------------------------------------------------------------------------
+// D11: `{f}` format-string dispatch reaches the 1-arg custom `format` method.
+// ---------------------------------------------------------------------------
+
+test "I32I32HashMap: {f} dispatch renders {1=10}" {
+    var m = try agg.I32I32HashMap.init(std.testing.allocator);
+    defer m.deinit();
+    _ = try m.put(1, 10);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{m});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1=10}", out);
+}
+
+test "I32I32HashBiMap: {f} dispatch renders {1<->2}" {
+    var m = try HashBiMap(i32, i32).init(std.testing.allocator);
+    defer m.deinit();
+    _ = try m.put(1, 2);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{m});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1<->2}", out);
+}

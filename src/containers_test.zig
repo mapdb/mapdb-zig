@@ -526,3 +526,66 @@ test "F4 OOM: ListMultimap.valuesToSlice no scratch-list leak" {
         break;
     }
 }
+
+// ---------------------------------------------------------------------------
+// D11: `{f}` format-string dispatch reaches the 1-arg custom `format` method.
+// A regression to the legacy 4-arg signature would make `{f}` fail to compile
+// or fall back to the default struct dump.
+// ---------------------------------------------------------------------------
+
+test "ArrayList: {f} dispatch renders [1, 2, 3]" {
+    var l = try arraylist.ArrayList(i32).of(testing.allocator, &[_]i32{ 1, 2, 3 });
+    defer l.deinit();
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{l});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[1, 2, 3]", out);
+}
+
+test "HashSet: {f} dispatch renders {7}" {
+    var set = try hashset.HashSet(i32).of(testing.allocator, &[_]i32{7});
+    defer set.deinit();
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{set});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{7}", out);
+}
+
+test "ArrayStack: {f} dispatch renders [2, 1] (top-to-bottom)" {
+    var st = stack.ArrayStack(i32).init(testing.allocator);
+    defer st.deinit();
+    try st.push(1);
+    try st.push(2);
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{st});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[2, 1]", out);
+}
+
+test "ArrayDeque: {f} dispatch renders [1, 2]" {
+    var d = deque.ArrayDeque(i32).init(testing.allocator);
+    defer d.deinit();
+    try d.addLast(1);
+    try d.addLast(2);
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{d});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[1, 2]", out);
+}
+
+test "HashBag: {f} dispatch renders {5x2}" {
+    var hb = try bag.HashBag(i32).init(testing.allocator);
+    defer hb.deinit();
+    try hb.add(5);
+    try hb.add(5);
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{hb});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{5x2}", out);
+}
+
+test "TreeBag: {f} dispatch renders {1x2, 2x1} in sorted order" {
+    var tb = bag.TreeBag(i32).init(testing.allocator);
+    defer tb.deinit();
+    try tb.add(2);
+    try tb.add(1);
+    try tb.add(1);
+    const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{tb});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{1x2, 2x1}", out);
+}

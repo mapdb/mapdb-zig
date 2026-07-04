@@ -65,8 +65,8 @@ pub fn Pair(comptime A: type, comptime B: type) type {
             return memberEql(A, self.first, other.first) and memberEql(B, self.second, other.second);
         }
 
-        pub fn format(self: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try std.fmt.format(writer, "({}, {})", .{ self.first, self.second });
+        pub fn format(self: Self, writer: anytype) !void {
+            try writer.print("({}, {})", .{ self.first, self.second });
         }
     };
 }

@@ -186,7 +186,7 @@ pub fn ArrayDeque(comptime T: type) type {
             return true;
         }
 
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("[");
             for (self.items.items, 0..) |value, i| {
                 if (i > 0) try writer.writeAll(", ");

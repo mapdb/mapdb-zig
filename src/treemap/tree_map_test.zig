@@ -521,3 +521,17 @@ test "TreeMap rank/select: empty, single, signed extremes, after remove" {
     try std.testing.expectEqual(@as(?i32, 40), rem.selectKey(2));
     try std.testing.expectEqual(@as(?i32, null), rem.selectKey(4));
 }
+
+// ---------------------------------------------------------------------------
+// D11: `{f}` format-string dispatch reaches the 1-arg custom `format` method.
+// ---------------------------------------------------------------------------
+
+test "TreeMap: {f} dispatch renders {1=10, 2=20} in sorted key order" {
+    var m = TreeMap(i32, i32).init(std.testing.allocator);
+    defer m.deinit();
+    _ = try m.put(2, 20);
+    _ = try m.put(1, 10);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{m});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1=10, 2=20}", out);
+}

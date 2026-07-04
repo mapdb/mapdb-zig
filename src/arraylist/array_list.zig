@@ -462,7 +462,7 @@ pub fn ArrayList(comptime T: type) type {
         // ---- Equality ----
 
         /// Formats the list as "[v1, v2, v3]".
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("[");
             for (self.items.items, 0..) |item, i| {
                 if (i > 0) try writer.writeAll(", ");

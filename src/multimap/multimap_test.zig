@@ -344,3 +344,25 @@ test "SetMultimap put rolls back new key on append OOM (F5)" {
         try std.testing.expectEqual(summed, m.size());
     }
 }
+
+// ---------------------------------------------------------------------------
+// D11: `{f}` format-string dispatch reaches the 1-arg custom `format` method.
+// ---------------------------------------------------------------------------
+
+test "ListMultimap: {f} dispatch renders {1=10}" {
+    var mm = ListMultimap(i32, i32).init(std.testing.allocator);
+    defer mm.deinit();
+    try mm.put(1, 10);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{mm});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1=10}", out);
+}
+
+test "SetMultimap: {f} dispatch renders {1=10}" {
+    var mm = SetMultimap(i32, i32).init(std.testing.allocator);
+    defer mm.deinit();
+    try mm.put(1, 10);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{mm});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1=10}", out);
+}

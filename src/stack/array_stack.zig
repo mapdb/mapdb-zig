@@ -246,7 +246,7 @@ pub fn ArrayStack(comptime T: type) type {
         // ---- Formatting ----
 
         /// Formats as "[top, ..., bottom]" (top-to-bottom order).
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("[");
             var i = self.items.items.len;
             var first = true;

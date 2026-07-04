@@ -377,7 +377,7 @@ pub fn HashBag(comptime T: type) type {
         // ---- Formatting ----
 
         /// Formats as "{v1x2, v2x1}".
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             var first = true;
             for (0..self.counts.capacity) |i| {

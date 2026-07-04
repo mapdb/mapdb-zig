@@ -221,7 +221,7 @@ pub const BitSet = struct {
         return true;
     }
 
-    pub fn format(self: *const BitSet, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: *const BitSet, writer: anytype) !void {
         try writer.writeAll("{");
         var first = true;
         var b = self.nextSetBit(0);
@@ -319,4 +319,15 @@ test "BitSet: eql" {
     try c.set(1);
     try c.set(3);
     try std.testing.expect(a.eql(&c));
+}
+
+test "BitSet: {f} dispatch renders {1, 2, 3}" {
+    var b = BitSet.init(std.testing.allocator);
+    defer b.deinit();
+    try b.set(1);
+    try b.set(2);
+    try b.set(3);
+    const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{b});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{1, 2, 3}", out);
 }

@@ -393,7 +393,7 @@ pub fn TreeBag(comptime T: type) type {
         // ---- Formatting ----
 
         /// Formats as "{v1x2, v2x1}" in sorted order.
-        pub fn format(self: *const Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: *const Self, writer: anytype) !void {
             try writer.writeAll("{");
             var first = true;
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
