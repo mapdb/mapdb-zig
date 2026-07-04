@@ -147,6 +147,26 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return n.value;
         }
 
+        /// Borrowed pointer to the value still owned by the map, or null.
+        /// Aliases the stored value for in-place mutation (unlike the shallow
+        /// copy from `get`). Invalidated by any structural mutation
+        /// (put/remove/clear/deinit). Never free through this pointer.
+        /// (Node storage keeps the pointee address stable across unrelated
+        /// inserts/rotations, but do not rely on that — the documented contract
+        /// is "invalidated by any structural mutation", uniform with the hash
+        /// maps, so the implementation stays free to change.)
+        pub fn getPtr(self: *Self, key: K) ?*V {
+            const n = self.findNode(key) orelse return null;
+            return &n.value;
+        }
+
+        /// Const borrowed pointer to the value still owned by the map, or null.
+        /// Same invalidation rules as `getPtr`; read-only.
+        pub fn getConstPtr(self: *const Self, key: K) ?*const V {
+            const n = self.findNode(key) orelse return null;
+            return &n.value;
+        }
+
         pub fn containsKey(self: *const Self, key: K) bool {
             return self.findNode(key) != null;
         }

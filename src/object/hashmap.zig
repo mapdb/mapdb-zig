@@ -37,6 +37,21 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return self.inner.get(key);
         }
 
+        /// Borrowed pointer to the value still owned by the map, or null.
+        /// Unlike `get` (a shallow copy — a *read*), this aliases the stored
+        /// value so it can be mutated in place. Invalidated by any structural
+        /// mutation (put/remove/clear/deinit, including rehash). Never free
+        /// through this pointer — the map still owns the value.
+        pub fn getPtr(self: *Self, key: K) ?*V {
+            return self.inner.getPtr(key);
+        }
+
+        /// Const borrowed pointer to the value still owned by the map, or null.
+        /// Same invalidation rules as `getPtr`; read-only.
+        pub fn getConstPtr(self: *const Self, key: K) ?*const V {
+            return self.inner.getPtr(key);
+        }
+
         /// Remove a key. Returns the old value if the key was present.
         pub fn remove(self: *Self, key: K) ?V {
             const result = self.inner.fetchRemove(key);

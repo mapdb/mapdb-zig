@@ -39,6 +39,20 @@ pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
             return self.inner.get(key);
         }
 
+        /// Borrowed pointer to the value still owned by the map, or null.
+        /// Aliases the stored value for in-place mutation (unlike the shallow
+        /// copy from `get`). Invalidated by any structural mutation
+        /// (put/remove/clear/deinit). Never free through this pointer.
+        pub fn getPtr(self: *Self, key: K) ?*V {
+            return self.inner.getPtr(key);
+        }
+
+        /// Const borrowed pointer to the value still owned by the map, or null.
+        /// Same invalidation rules as `getPtr`; read-only.
+        pub fn getConstPtr(self: *const Self, key: K) ?*const V {
+            return self.inner.getPtr(key);
+        }
+
         /// Remove a key. Returns the old value if the key was present.
         pub fn remove(self: *Self, key: K) ?V {
             const result = self.inner.fetchOrderedRemove(key);
