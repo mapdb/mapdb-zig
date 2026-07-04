@@ -109,11 +109,29 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Emit library autodoc into zig-out/docs");
     docs_step.dependOn(&install_docs.step);
 
-    // NOTE: a `bench` step is intentionally not wired yet — the in-tree
-    // `bench_*.zig` files reference a pre-existing removed API (`.config`
-    // field, ignored error unions) and no longer compile. They need porting
-    // to the current generic surface before a bench step can measure the
-    // Step 1/2 monomorphization work. Tracked in the fable-review status doc.
+    // `zig build bench` — throughput/latency microbenchmarks. Forced to
+    // ReleaseFast (a Debug bench measures safety checks, not the algorithm) and
+    // given its own library module at the same optimize level so the import is
+    // compiled release too. `bench_zig.zig` is the core-collections sweep; it is
+    // the measurement gate for the deferred hot-internal rewrites (D3 table
+    // metadata layout, D9 TreeSet pooling, D13 RangeSet splice).
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench_zig.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "mapdb_collections", .module = bench_mod }},
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run collection microbenchmarks (ReleaseFast)");
+    bench_step.dependOn(&run_bench.step);
 }
 
 /// Add an executable (Zig 0.15+ module shape; build.zig.zon pins

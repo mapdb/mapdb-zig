@@ -5,8 +5,9 @@
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
 // Benchmark and stress test for Zig collections.
-// Run: zig run bench_zig.zig
-// Or:  zig build-exe --dep mapdb:src/root.zig bench_zig.zig
+// Run: `zig build bench` (compiles this file in ReleaseFast against the
+// library module). Pure-read loops are guarded with std.mem.doNotOptimizeAway
+// so ReleaseFast cannot dead-code-eliminate them into 0 ns/op.
 
 const std = @import("std");
 const root = @import("mapdb_collections");
@@ -27,8 +28,7 @@ fn nanos() i128 {
 }
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("=== Zig Benchmark ===\nN={}\n\n", .{N});
+    std.debug.print("=== Zig Benchmark ===\nN={}\n\n", .{N});
 
     const alloc = std.heap.page_allocator;
 
@@ -42,12 +42,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                _ = m.put(i, i * 10);
+                _ = try m.put(i, i * 10);
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashMap.put         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashMap.put         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // HashMap.get
@@ -55,7 +55,7 @@ pub fn main() !void {
         var m = I32I32HashMap.init(alloc);
         defer m.deinit();
         var i: i32 = 0;
-        while (i < N) : (i += 1) _ = m.put(i, i * 10);
+        while (i < N) : (i += 1) _ = try m.put(i, i * 10);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
@@ -63,12 +63,12 @@ pub fn main() !void {
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = m.get(i);
+                std.mem.doNotOptimizeAway(m.get(i));
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashMap.get         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashMap.get         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // HashMap.remove
@@ -79,7 +79,7 @@ pub fn main() !void {
             var m = I32I32HashMap.init(alloc);
             defer m.deinit();
             var i: i32 = 0;
-            while (i < N) : (i += 1) _ = m.put(i, i * 10);
+            while (i < N) : (i += 1) _ = try m.put(i, i * 10);
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
@@ -88,7 +88,7 @@ pub fn main() !void {
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashMap.remove      {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashMap.remove      {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // HashMap.forEach
@@ -96,21 +96,21 @@ pub fn main() !void {
         var m = I32I32HashMap.init(alloc);
         defer m.deinit();
         var i: i32 = 0;
-        while (i < N) : (i += 1) _ = m.put(i, i * 10);
+        while (i < N) : (i += 1) _ = try m.put(i, i * 10);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
         while (w < WARM) : (w += 1) {
             const start = nanos();
-            m.forEachValue(struct {
-                fn f(v: i32) void {
-                    _ = v;
+            m.forEachValue({}, struct {
+                fn f(_: void, v: i32) void {
+                    std.mem.doNotOptimizeAway(v);
                 }
             }.f);
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashMap.iterate     {} entries  {d:.3}ms  ({} ns/entry)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashMap.iterate     {} entries  {d:.3}ms  ({} ns/entry)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // HashSet.add
@@ -123,12 +123,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                _ = s.add(i);
+                _ = try s.add(i);
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashSet.add         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashSet.add         {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // HashSet.contains
@@ -136,7 +136,7 @@ pub fn main() !void {
         var s = I32HashSet.init(alloc);
         defer s.deinit();
         var i: i32 = 0;
-        while (i < N) : (i += 1) _ = s.add(i);
+        while (i < N) : (i += 1) _ = try s.add(i);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
@@ -144,12 +144,12 @@ pub fn main() !void {
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = s.contains(i);
+                std.mem.doNotOptimizeAway(s.contains(i));
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("HashSet.contains    {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("HashSet.contains    {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // ArrayList.add
@@ -162,12 +162,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                _ = a.add(i);
+                try a.push(i);
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("ArrayList.add       {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("ArrayList.add       {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // Bag.add
@@ -180,12 +180,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                b.add(@rem(i, 1000));
+                try b.add(@rem(i, 1000));
             }
             const d: u64 = @intCast(nanos() - start);
             if (d < best) best = d;
         }
-        try stdout.print("Bag.add             {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("Bag.add             {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // ArrayDeque.addLast
@@ -198,12 +198,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                d.addLast(i);
+                try d.addLast(i);
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("ArrayDeque.addLast  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("ArrayDeque.addLast  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // ArrayDeque.peek
@@ -211,7 +211,7 @@ pub fn main() !void {
         var d = I32ArrayDeque.init(alloc);
         defer d.deinit();
         var i: i32 = 0;
-        while (i < N) : (i += 1) d.addLast(i);
+        while (i < N) : (i += 1) try d.addLast(i);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
@@ -219,13 +219,13 @@ pub fn main() !void {
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = d.peekFirst();
-                _ = d.peekLast();
+                std.mem.doNotOptimizeAway(d.peekFirst());
+                std.mem.doNotOptimizeAway(d.peekLast());
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("ArrayDeque.peek     {} ops  {d:.3}ms  ({} ns/op)\n", .{ N * 2, @as(f64, @floatFromInt(best)) / 1e6, best / (N * 2) });
+        std.debug.print("ArrayDeque.peek     {} ops  {d:.3}ms  ({} ns/op)\n", .{ N * 2, @as(f64, @floatFromInt(best)) / 1e6, best / (N * 2) });
     }
 
     // ArrayDeque.removeFirst
@@ -236,16 +236,16 @@ pub fn main() !void {
             var d = I32ArrayDeque.init(alloc);
             defer d.deinit();
             var i: i32 = 0;
-            while (i < N) : (i += 1) d.addLast(i);
+            while (i < N) : (i += 1) try d.addLast(i);
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = d.removeFirst();
+                std.mem.doNotOptimizeAway(d.removeFirst());
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("ArrayDeque.remove   {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("ArrayDeque.remove   {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // PriorityQueue.push
@@ -258,12 +258,12 @@ pub fn main() !void {
             const start = nanos();
             var i: i32 = 0;
             while (i < N) : (i += 1) {
-                q.push(i);
+                try q.push(i);
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("PriorityQueue.push  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("PriorityQueue.push  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // PriorityQueue.peek
@@ -271,7 +271,7 @@ pub fn main() !void {
         var q = I32PriorityQueue.init(alloc);
         defer q.deinit();
         var i: i32 = 0;
-        while (i < N) : (i += 1) q.push(i);
+        while (i < N) : (i += 1) try q.push(i);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
@@ -279,12 +279,12 @@ pub fn main() !void {
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = q.peek();
+                std.mem.doNotOptimizeAway(q.peek());
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("PriorityQueue.peek  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("PriorityQueue.peek  {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // PriorityQueue.pop
@@ -295,7 +295,7 @@ pub fn main() !void {
             var q = I32PriorityQueue.init(alloc);
             defer q.deinit();
             var i: i32 = 0;
-            while (i < N) : (i += 1) q.push(i);
+            while (i < N) : (i += 1) try q.push(i);
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
@@ -304,7 +304,7 @@ pub fn main() !void {
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("PriorityQueue.pop   {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("PriorityQueue.pop   {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // BitSet.set
@@ -317,12 +317,12 @@ pub fn main() !void {
             const start = nanos();
             var i: usize = 0;
             while (i < N) : (i += 1) {
-                b.set(i);
+                try b.set(i);
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("BitSet.set          {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("BitSet.set          {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // BitSet.get
@@ -330,7 +330,7 @@ pub fn main() !void {
         var b = BitSet.init(alloc);
         defer b.deinit();
         var i: usize = 0;
-        while (i < N) : (i += 1) b.set(i);
+        while (i < N) : (i += 1) try b.set(i);
 
         var best: u64 = std.math.maxInt(u64);
         var w: usize = 0;
@@ -338,12 +338,12 @@ pub fn main() !void {
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
-                _ = b.get(i);
+                std.mem.doNotOptimizeAway(b.get(i));
             }
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("BitSet.get          {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("BitSet.get          {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // BitSet.clearBit
@@ -354,7 +354,7 @@ pub fn main() !void {
             var b = BitSet.init(alloc);
             defer b.deinit();
             var i: usize = 0;
-            while (i < N) : (i += 1) b.set(i);
+            while (i < N) : (i += 1) try b.set(i);
             const start = nanos();
             i = 0;
             while (i < N) : (i += 1) {
@@ -363,11 +363,11 @@ pub fn main() !void {
             const elapsed: u64 = @intCast(nanos() - start);
             if (elapsed < best) best = elapsed;
         }
-        try stdout.print("BitSet.clearBit     {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
+        std.debug.print("BitSet.clearBit     {} ops  {d:.3}ms  ({} ns/op)\n", .{ N, @as(f64, @floatFromInt(best)) / 1e6, best / N });
     }
 
     // === Stress Tests ===
-    try stdout.print("\n=== Stress Tests ===\n", .{});
+    std.debug.print("\n=== Stress Tests ===\n", .{});
 
     // Collision keys
     {
@@ -376,7 +376,7 @@ pub fn main() !void {
         const start = nanos();
         var i: i32 = 0;
         while (i < 10000) : (i += 1) {
-            _ = m.put(i * 16, i);
+            _ = try m.put(i * 16, i);
         }
         const d: u64 = @intCast(nanos() - start);
         var ok = true;
@@ -387,7 +387,7 @@ pub fn main() !void {
                 break;
             }
         }
-        try stdout.print("STRESS collision_keys   10000 ops  {d:.3}ms  all_found={}\n", .{ @as(f64, @floatFromInt(d)) / 1e6, ok });
+        std.debug.print("STRESS collision_keys   10000 ops  {d:.3}ms  all_found={}\n", .{ @as(f64, @floatFromInt(d)) / 1e6, ok });
     }
 
     // Delete heavy
@@ -395,16 +395,16 @@ pub fn main() !void {
         var m = I32I32HashMap.init(alloc);
         defer m.deinit();
         var i: i32 = 0;
-        while (i < 50000) : (i += 1) _ = m.put(i, i);
+        while (i < 50000) : (i += 1) _ = try m.put(i, i);
         const start = nanos();
         i = 0;
         while (i < 50000) : (i += 2) _ = m.remove(i);
         i = 50000;
-        while (i < 75000) : (i += 1) _ = m.put(i, i);
+        while (i < 75000) : (i += 1) _ = try m.put(i, i);
         i = 0;
         while (i < 75000) : (i += 1) _ = m.remove(i);
         const d: u64 = @intCast(nanos() - start);
-        try stdout.print("STRESS delete_heavy    125000 ops  {d:.3}ms  size={} (expect 0)\n", .{ @as(f64, @floatFromInt(d)) / 1e6, m.len() });
+        std.debug.print("STRESS delete_heavy    125000 ops  {d:.3}ms  size={} (expect 0)\n", .{ @as(f64, @floatFromInt(d)) / 1e6, m.len() });
     }
 
     // Resize cycles
@@ -415,40 +415,40 @@ pub fn main() !void {
         var cycle: usize = 0;
         while (cycle < 10) : (cycle += 1) {
             var i: i32 = 0;
-            while (i < 10000) : (i += 1) _ = m.put(i, i);
+            while (i < 10000) : (i += 1) _ = try m.put(i, i);
             m.clear();
         }
         const d: u64 = @intCast(nanos() - start);
-        try stdout.print("STRESS resize_cycles   100000 ops  {d:.3}ms  size={} (expect 0)\n", .{ @as(f64, @floatFromInt(d)) / 1e6, m.len() });
+        std.debug.print("STRESS resize_cycles   100000 ops  {d:.3}ms  size={} (expect 0)\n", .{ @as(f64, @floatFromInt(d)) / 1e6, m.len() });
     }
 
     // Float edge cases
     {
         var m = F32F32HashMap.init(alloc);
         defer m.deinit();
-        _ = m.put(1.0, 10.0);
-        _ = m.put(-0.0, 20.0);
-        _ = m.put(std.math.inf(f32), 30.0);
-        _ = m.put(std.math.nan(f32), 40.0);
-        _ = m.put(std.math.nan(f32), 50.0); // NaN overwrite
+        _ = try m.put(1.0, 10.0);
+        _ = try m.put(-0.0, 20.0);
+        _ = try m.put(std.math.inf(f32), 30.0);
+        _ = try m.put(std.math.nan(f32), 40.0);
+        _ = try m.put(std.math.nan(f32), 50.0); // NaN overwrite
         const nan_val = m.get(std.math.nan(f32));
         const neg_zero = m.get(-0.0);
         const inf_val = m.get(std.math.inf(f32));
-        try stdout.print("STRESS float_keys      NaN={?} -0.0={?} Inf={?} size={} (expect 4)\n", .{ nan_val, neg_zero, inf_val, m.len() });
+        std.debug.print("STRESS float_keys      NaN={?} -0.0={?} Inf={?} size={} (expect 4)\n", .{ nan_val, neg_zero, inf_val, m.len() });
     }
 
     // Edge keys
     {
         var m = I32I32HashMap.init(alloc);
         defer m.deinit();
-        _ = m.put(0, 100);
-        _ = m.put(-1, 200);
-        _ = m.put(std.math.maxInt(i32), 300);
-        _ = m.put(std.math.minInt(i32), 400);
+        _ = try m.put(0, 100);
+        _ = try m.put(-1, 200);
+        _ = try m.put(std.math.maxInt(i32), 300);
+        _ = try m.put(std.math.minInt(i32), 400);
         const ok = m.len() == 4 and
             m.get(0) != null and
             m.get(std.math.maxInt(i32)) != null and
             m.get(std.math.minInt(i32)) != null;
-        try stdout.print("STRESS edge_keys       boundary values  ok={}\n", .{ok});
+        std.debug.print("STRESS edge_keys       boundary values  ok={}\n", .{ok});
     }
 }
