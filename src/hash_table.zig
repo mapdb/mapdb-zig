@@ -85,6 +85,10 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             return initCapacity(alloc, DEFAULT_CAPACITY);
         }
 
+        /// Allocate a table of `nextPow2(max(requested, 16))` **slots**. Note
+        /// this is a slot count, not an element capacity: under the 0.75 load
+        /// factor it holds only ~¾ of `requested` elements before rehashing.
+        /// Callers that want "fits N elements" want `initForElements` (D7).
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
             return initAtLeast(alloc, nextPow2(@max(requested, DEFAULT_CAPACITY)));
         }
@@ -353,6 +357,10 @@ pub fn OpenHashSet(comptime K: type) type {
             return initCapacity(alloc, DEFAULT_CAPACITY);
         }
 
+        /// Allocate a table of `nextPow2(max(requested, 16))` **slots** — a slot
+        /// count, not an element capacity (holds ~¾ of `requested` before
+        /// rehashing under the 0.75 load factor). Use `initForElements` for
+        /// "fits N elements" (D7).
         pub fn initCapacity(alloc: Allocator, requested: usize) Allocator.Error!Self {
             return initAtLeast(alloc, nextPow2(@max(requested, DEFAULT_CAPACITY)));
         }

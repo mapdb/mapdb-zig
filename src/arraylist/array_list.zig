@@ -247,7 +247,12 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Returns the sum of all elements. Float elements sum in their own
-        /// type; `bool` / `char` / integer elements sum into an `i64` accumulator.
+        /// type; `bool` / `char` / integer elements sum into an `i64`
+        /// accumulator with **two's-complement wraparound** on overflow, matching
+        /// the Java and Go originals (which wrap silently). This is deliberate:
+        /// a trapping `+=` (Zig's default) would panic in safe builds and be UB
+        /// in ReleaseFast where the ports wrap — a cross-language behavior
+        /// divergence. Pinned by the cross-language validation suite (D4).
         pub fn sum(self: *const Self) SumType {
             if (@typeInfo(T) == .float) {
                 var total: T = 0;
@@ -258,13 +263,24 @@ pub fn ArrayList(comptime T: type) type {
             } else if (T == bool) {
                 var total: i64 = 0;
                 for (self.items.items) |item| {
-                    total += @as(i64, if (item) 1 else 0);
+                    total +%= @as(i64, if (item) 1 else 0);
                 }
                 return total;
             } else {
                 var total: i64 = 0;
                 for (self.items.items) |item| {
-                    total += @as(i64, @intCast(item));
+                    // Width-safe widen to i64: signed and sub-64-bit unsigned
+                    // types widen losslessly; a 64-bit unsigned element is
+                    // reinterpreted (two's-complement) so keys > maxInt(i64)
+                    // never trap (the D1 cast trap, avoided here too).
+                    const w: i64 = switch (@typeInfo(T)) {
+                        .int => |info| if (info.signedness == .unsigned and info.bits >= 64)
+                            @bitCast(@as(u64, item))
+                        else
+                            @intCast(item),
+                        else => @intCast(item),
+                    };
+                    total +%= w;
                 }
                 return total;
             }

@@ -295,3 +295,17 @@ test "I32F32HashBiMap: inverse returns F32I32HashBiMap (transposed type)" {
     try std.testing.expectEqual(agg.F32I32HashBiMap, @TypeOf(inv));
     try std.testing.expectEqual(@as(?i32, 7), inv.get(1.25));
 }
+
+test "HashMap.initWithCapacity(N) holds N elements without rehash (D2)" {
+    // initWithCapacity previously allocated N *slots*, so the 0.75 load factor
+    // forced a rehash before N puts completed. It must now mean N *elements*.
+    const N: usize = 100;
+    var m = try HashMap(i32, i32).initWithCapacity(std.testing.allocator, N);
+    defer m.deinit();
+    const cap_before = m.inner.capacity;
+    var i: i32 = 0;
+    while (i < @as(i32, @intCast(N))) : (i += 1) _ = try m.put(i, i);
+    try std.testing.expectEqual(@as(usize, N), m.len());
+    // No rehash occurred: capacity is unchanged across the N inserts.
+    try std.testing.expectEqual(cap_before, m.inner.capacity);
+}

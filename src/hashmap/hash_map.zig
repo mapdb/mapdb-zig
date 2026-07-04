@@ -77,15 +77,20 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             };
         }
 
-        /// Create with pre-allocated capacity.
+        /// Create pre-sized to hold at least `capacity` *elements* without a
+        /// mid-load rehash. Capacity means elements, matching stdlib
+        /// `ensureTotalCapacity` and this library's own `ensureCapacity` — not
+        /// raw slot count. Previously this routed through `initCapacity`, which
+        /// allocated `capacity` *slots*, so `initWithCapacity(100)` rehashed on
+        /// the 96th put under the 0.75 load factor (D2). It now applies the
+        /// required-capacity formula so the promised element count fits.
         pub fn initWithCapacity(allocator: Allocator, capacity: usize) Allocator.Error!Self {
-            return .{
-                .inner = try OpenHashMap(K, V).initCapacity(allocator, capacity),
-                .allocator = allocator,
-            };
+            return initForElements(allocator, capacity);
         }
 
-        fn initForElements(allocator: Allocator, n: usize) Allocator.Error!Self {
+        /// Create pre-sized for exactly `n` elements with a guaranteed
+        /// zero mid-load rehash. `initWithCapacity` is the public spelling.
+        pub fn initForElements(allocator: Allocator, n: usize) Allocator.Error!Self {
             return .{
                 .inner = try OpenHashMap(K, V).initForElements(allocator, n),
                 .allocator = allocator,

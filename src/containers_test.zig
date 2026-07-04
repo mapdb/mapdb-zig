@@ -171,6 +171,25 @@ test "ArrayList: marquee — f32 NaN bit-equality + signed-zero distinct + i64 s
     try testing.expectEqual(@as(i64, 4_000_000_000), big.sum());
 }
 
+test "ArrayList: sum wraps two's-complement on i64 overflow (D4)" {
+    // Java/Go originals wrap on overflow; Zig's default `+=` would trap (safe)
+    // or be UB (ReleaseFast). sum() must wrap: maxInt(i64) + 1 == minInt(i64).
+    var l = try arraylist.ArrayList(i64).of(
+        testing.allocator,
+        &[_]i64{ std.math.maxInt(i64), 1 },
+    );
+    defer l.deinit();
+    try testing.expectEqual(@as(i64, std.math.minInt(i64)), l.sum());
+
+    // Symmetric underflow: minInt(i64) + (-1) == maxInt(i64).
+    var u = try arraylist.ArrayList(i64).of(
+        testing.allocator,
+        &[_]i64{ std.math.minInt(i64), -1 },
+    );
+    defer u.deinit();
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), u.sum());
+}
+
 test "HashSet: parameterized add/contains/remove/set-ops" {
     inline for (type_axis) |T| {
         const s = samples(T);
