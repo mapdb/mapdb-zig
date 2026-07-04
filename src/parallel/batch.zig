@@ -221,6 +221,17 @@ fn callMap(transform: anytype, arg: anytype) blk: {
 /// Returns, in input order, the elements of `data` satisfying `predicate`.
 /// Caller owns the returned slice and must free it with `allocator`.
 /// `predicate` is invoked as `callPred(predicate, *const T) bool`.
+///
+/// Thread-safety: worker threads do **no** allocation — only the calling
+/// thread allocates (the per-section count array and the single result
+/// buffer). So, unlike the rest of this module, `filter` places **no**
+/// thread-safety requirement on `allocator`: an `ArenaAllocator`,
+/// `FixedBufferAllocator`, or non-thread-safe GPA is safe here (F2). The work
+/// is two parallel passes: pass 1 counts matches per section, then pass 2
+/// writes each section's matches into its own disjoint sub-slice of the result.
+/// Because of the two passes, `predicate` is evaluated **twice per element**
+/// and must be a pure function of the element (no side effects, same answer
+/// both times).
 pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate: anytype, min_fork_size: usize, task_count: usize) ![]T {
     if (data.len == 0) return try allocator.alloc(T, 0);
 
@@ -235,59 +246,83 @@ pub fn filter(comptime T: type, allocator: Allocator, data: []const T, predicate
 
     const sections = nonEmptySectionCount(data.len, task_count);
 
-    const Part = std.ArrayListUnmanaged(T);
-    const Worker = struct {
-        fn run(in: []const T, pred: @TypeOf(predicate), alloc: Allocator, part: *Part, err: *?Allocator.Error) void {
+    // Pass 1 — count matches per section (no worker allocation).
+    const counts = try allocator.alloc(usize, sections);
+    defer allocator.free(counts);
+    const Counter = struct {
+        fn run(in: []const T, pred: @TypeOf(predicate), out: *usize) void {
+            var c: usize = 0;
             for (in) |*v| {
-                if (callPred(pred, v)) part.append(alloc, v.*) catch |e| {
-                    err.* = e;
-                    return;
-                };
+                if (callPred(pred, v)) c += 1;
+            }
+            out.* = c;
+        }
+    };
+    {
+        var threads_buf: [200]std.Thread = undefined;
+        var spawned: usize = 0;
+        var i: usize = 0;
+        while (i < sections) : (i += 1) {
+            const b = sectionBounds(data.len, i, sections);
+            const in = data[b.lo..b.hi];
+            if (i + 1 == sections) {
+                Counter.run(in, predicate, &counts[i]);
+                break;
+            }
+            if (std.Thread.spawn(.{}, Counter.run, .{ in, predicate, &counts[i] })) |t| {
+                threads_buf[spawned] = t;
+                spawned += 1;
+            } else |_| {
+                Counter.run(in, predicate, &counts[i]);
+            }
+        }
+        var j: usize = 0;
+        while (j < spawned) : (j += 1) threads_buf[j].join();
+    }
+
+    // Prefix offsets restore input order across sections; one allocation.
+    var total: usize = 0;
+    for (counts) |c| total += c;
+    const result = try allocator.alloc(T, total);
+    errdefer allocator.free(result);
+
+    // Pass 2 — each section fills its disjoint sub-slice (no worker allocation).
+    const Filler = struct {
+        fn run(in: []const T, pred: @TypeOf(predicate), out: []T) void {
+            var k: usize = 0;
+            for (in) |*v| {
+                if (callPred(pred, v)) {
+                    out[k] = v.*;
+                    k += 1;
+                }
             }
         }
     };
-
-    const parts = try allocator.alloc(Part, sections);
-    defer allocator.free(parts);
-    for (parts) |*p| p.* = .{};
-    defer for (parts) |*p| p.deinit(allocator);
-
-    const errors = try allocator.alloc(?Allocator.Error, sections);
-    defer allocator.free(errors);
-    for (errors) |*e| e.* = null;
-
-    var threads_buf: [200]std.Thread = undefined;
-    var spawned: usize = 0;
-    var i: usize = 0;
-    while (i < sections) : (i += 1) {
-        const b = sectionBounds(data.len, i, sections);
-        const in = data[b.lo..b.hi];
-        if (i + 1 == sections) {
-            Worker.run(in, predicate, allocator, &parts[i], &errors[i]);
-            break;
+    {
+        var threads_buf: [200]std.Thread = undefined;
+        var spawned: usize = 0;
+        var off: usize = 0;
+        var i: usize = 0;
+        while (i < sections) : (i += 1) {
+            const b = sectionBounds(data.len, i, sections);
+            const in = data[b.lo..b.hi];
+            const out = result[off .. off + counts[i]];
+            off += counts[i];
+            if (i + 1 == sections) {
+                Filler.run(in, predicate, out);
+                break;
+            }
+            if (std.Thread.spawn(.{}, Filler.run, .{ in, predicate, out })) |t| {
+                threads_buf[spawned] = t;
+                spawned += 1;
+            } else |_| {
+                Filler.run(in, predicate, out);
+            }
         }
-        if (std.Thread.spawn(.{}, Worker.run, .{ in, predicate, allocator, &parts[i], &errors[i] })) |t| {
-            threads_buf[spawned] = t;
-            spawned += 1;
-        } else |_| {
-            Worker.run(in, predicate, allocator, &parts[i], &errors[i]);
-        }
-    }
-    var j: usize = 0;
-    while (j < spawned) : (j += 1) threads_buf[j].join();
-    for (errors) |maybe_err| {
-        if (maybe_err) |err| return err;
+        var j: usize = 0;
+        while (j < spawned) : (j += 1) threads_buf[j].join();
     }
 
-    // Concatenate per-section results in section order to restore input order.
-    var total: usize = 0;
-    for (parts) |p| total += p.items.len;
-    const result = try allocator.alloc(T, total);
-    var off: usize = 0;
-    for (parts) |p| {
-        @memcpy(result[off .. off + p.items.len], p.items);
-        off += p.items.len;
-    }
     return result;
 }
 
@@ -482,6 +517,29 @@ test "parallel filter preserves input order and matches oracle" {
     const evens = try filter(i64, allocator, data, &isEven, 1, 8);
     defer allocator.free(evens);
 
+    try testing.expectEqual(@as(usize, n / 2), evens.len);
+    for (evens, 0..) |v, i| try testing.expectEqual(@as(i64, @intCast(i)) * 2, v);
+}
+
+test "parallel filter is safe with a non-thread-safe allocator (F2)" {
+    // The workers do no allocation, so a non-thread-safe allocator (here an
+    // arena) is sound even though multiple threads run concurrently. Before F2,
+    // every section appended through the same allocator from N threads at once.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const n: usize = 20_000;
+    const data = try a.alloc(i64, n);
+    for (data, 0..) |*d, i| d.* = @intCast(i);
+
+    const isEven = struct {
+        fn f(v: *const i64) bool {
+            return @rem(v.*, 2) == 0;
+        }
+    }.f;
+    // min_fork_size 1, task_count 8 forces the parallel multi-thread path.
+    const evens = try filter(i64, a, data, &isEven, 1, 8);
     try testing.expectEqual(@as(usize, n / 2), evens.len);
     for (evens, 0..) |v, i| try testing.expectEqual(@as(i64, @intCast(i)) * 2, v);
 }

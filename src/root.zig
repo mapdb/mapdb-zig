@@ -4,6 +4,40 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
+//! mapdb collections — ergonomic Eclipse-Collections-style primitive and object
+//! collections for Zig (a port of the MapDB/Eclipse Collections API surface).
+//!
+//! ## Ownership (shallow containers, move-out removal)
+//!
+//! Collections store keys/values **by value and never inspect them**. The
+//! collection owns only its backing storage (freed by `deinit`); any memory the
+//! stored bits reference is the caller's for the whole lifecycle. `get` returns
+//! a shallow copy (a read — never free it); `remove` and `put`-returning-an-old
+//! -value are ownership transfers (the caller disposes of what comes back);
+//! `clear`/`deinit` free structure only, so drain owning values first. Object
+//! collections add `getPtr`/`getConstPtr` borrowed accessors. Full contract:
+//! `src/object/object.zig` module doc and
+//! `todo/fable-zig/fable-review-01-ownership-model.md`.
+//!
+//! ## Concurrency contract
+//!
+//! 1. **All collections are single-threaded.** Any concurrent use — including
+//!    one writer with any reader, and including borrowed slices/iterators
+//!    obtained before another thread mutates — is undefined behavior.
+//!    Read-only sharing of a collection that no thread mutates is allowed
+//!    (exception: `BoundedLruMap.get` mutates recency, so it is a writer).
+//! 2. `Synchronized(C)` wraps any collection in an `RwLock` guard for coarse
+//!    locking; borrowed views obtained through a guard are valid only until the
+//!    guard is released.
+//! 3. `ShardedHashMap(K, V)` is a genuinely concurrent map (per-shard RwLock).
+//!    It never returns interior pointers; callback accessors run under a shard
+//!    lock and must not reenter the map; iteration is weakly consistent;
+//!    `deinit` requires external quiescence.
+//! 4. Any allocator given to a concurrent collection must be thread-safe.
+//!    (`parallel.filter` is the exception — its workers never allocate.)
+//!
+//! See `todo/fable-zig/fable-review-02-concurrent-map-memory.md`.
+
 pub const hash_table = @import("hash_table.zig");
 pub const hash = @import("hash.zig");
 pub const bloom = @import("bloom.zig");
