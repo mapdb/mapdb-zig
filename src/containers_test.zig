@@ -293,6 +293,27 @@ test "TreeSet: parameterized sorted ops + min/max + ceiling/floor" {
     }
 }
 
+test "TreeBag: iterative teardown frees a large tree without recursion (Step 10)" {
+    // Like the TreeSet teardown test: the treap-backed bag's destroySubtree is
+    // now an O(1)-stack rotate-to-leaf walk; a large tree torn down by clear()
+    // and deinit must free every wrapping bag node exactly once (leak-checked).
+    const a = testing.allocator;
+    var tb = bag.TreeBag(i32).init(a);
+    defer tb.deinit();
+    var i: i32 = 0;
+    while (i < 20_000) : (i += 1) try tb.add(@rem(i, 5_000)); // 5k distinct, counts up to 4
+    try testing.expectEqual(@as(usize, 20_000), tb.len());
+
+    tb.clear();
+    try testing.expectEqual(@as(usize, 0), tb.len());
+    try testing.expect(tb.isEmpty());
+
+    i = 0;
+    while (i < 8_000) : (i += 1) try tb.add(i);
+    try testing.expectEqual(@as(usize, 8_000), tb.len());
+    try testing.expectEqual(@as(usize, 1), tb.occurrencesOf(7_999));
+}
+
 test "HashBag/TreeBag: parameterized count semantics" {
     inline for (type_axis) |T| {
         const s = samples(T);

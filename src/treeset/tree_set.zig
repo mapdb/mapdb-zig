@@ -71,11 +71,25 @@ pub fn TreeSet(comptime T: type) type {
             self.node_count = 0;
         }
 
-        fn destroySubtree(node_opt: ?*TreapType.Node, allocator: Allocator) void {
-            const node = node_opt orelse return;
-            destroySubtree(node.children[0], allocator);
-            destroySubtree(node.children[1], allocator);
-            allocator.destroy(node);
+        fn destroySubtree(root_node: ?*TreapType.Node, allocator: Allocator) void {
+            // Iterative teardown (no recursion). A treap's depth is only
+            // *expected* O(log n) — priorities are randomized with no
+            // deterministic bound — so recursing here risks a stack overflow on
+            // a large or unluckily-deep set. Repeatedly right-rotate the left
+            // child to the root until the root has no left child, then peel that
+            // root and descend right. O(n) time, O(1) stack: each edge is
+            // rotated at most once.
+            var root = root_node;
+            while (root) |node| {
+                if (node.children[0]) |left| {
+                    node.children[0] = left.children[1];
+                    left.children[1] = node;
+                    root = left;
+                } else {
+                    root = node.children[1];
+                    allocator.destroy(node);
+                }
+            }
         }
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
@@ -859,6 +873,29 @@ test "TreeSet deinit twice is safe (D10)" {
     s.deinit();
     try std.testing.expectEqual(@as(usize, 0), s.len());
     s.deinit(); // must not double-free
+}
+
+test "TreeSet: iterative teardown frees a large tree without recursion (Step 10)" {
+    // Exercises the O(1)-stack destroySubtree over many nodes: build a large
+    // treap, then let deinit tear it down. The leak-checking allocator confirms
+    // every node is freed exactly once via the rotate-to-leaf walk. (Also clears
+    // and reuses to cover the clear() teardown path.)
+    const a = std.testing.allocator;
+    var s = TreeSet(i32).init(a);
+    defer s.deinit();
+    var i: i32 = 0;
+    while (i < 20_000) : (i += 1) _ = try s.add(i);
+    try std.testing.expectEqual(@as(usize, 20_000), s.len());
+
+    s.clear(); // iterative teardown via clear() + root reset
+    try std.testing.expectEqual(@as(usize, 0), s.len());
+    try std.testing.expect(s.isEmpty());
+
+    // Reusable after clear; deinit then tears down the rebuilt tree.
+    i = 0;
+    while (i < 5_000) : (i += 1) _ = try s.add(i * 2);
+    try std.testing.expectEqual(@as(usize, 5_000), s.len());
+    try std.testing.expect(s.contains(9_998));
 }
 
 test "TreeSet: {f} dispatch renders {1, 2, 3} in sorted order" {

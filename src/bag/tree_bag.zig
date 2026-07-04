@@ -80,11 +80,24 @@ pub fn TreeBag(comptime T: type) type {
             destroySubtree(self.treap.root, self.allocator);
         }
 
-        fn destroySubtree(node_opt: ?*TreapType.Node, allocator: Allocator) void {
-            const node = node_opt orelse return;
-            destroySubtree(node.children[0], allocator);
-            destroySubtree(node.children[1], allocator);
-            allocator.destroy(bagNodeFromTreapNode(node));
+        fn destroySubtree(root_node: ?*TreapType.Node, allocator: Allocator) void {
+            // Iterative teardown (no recursion): treap depth is only *expected*
+            // O(log n), so recursion risks a stack overflow on a large set.
+            // Right-rotate the left child to the root until the root has no left
+            // child, peel it, descend right. O(n) time, O(1) stack (each edge
+            // rotated at most once). Traversal uses the intrusive treap links;
+            // the freed allocation is the wrapping bag node.
+            var root = root_node;
+            while (root) |node| {
+                if (node.children[0]) |left| {
+                    node.children[0] = left.children[1];
+                    left.children[1] = node;
+                    root = left;
+                } else {
+                    root = node.children[1];
+                    allocator.destroy(bagNodeFromTreapNode(node));
+                }
+            }
         }
 
         // ---- Data pump (bulk import) ----
