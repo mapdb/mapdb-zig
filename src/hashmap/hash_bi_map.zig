@@ -36,13 +36,11 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Allocator.Error!Self {
-            var forward = try OpenHashMap(K, V).init(allocator);
-            errdefer forward.deinit();
-            const reverse = try OpenHashMap(V, K).init(allocator);
+        /// Infallible: both backing tables allocate lazily on first `put`.
+        pub fn init(allocator: Allocator) Self {
             return .{
-                .forward = forward,
-                .reverse = reverse,
+                .forward = OpenHashMap(K, V).init(allocator),
+                .reverse = OpenHashMap(V, K).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -77,7 +75,7 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             policy: DupPolicy,
         ) BulkError!Self {
             std.debug.assert(keys.len == vals.len);
-            var self = try init(allocator);
+            var self = init(allocator);
             errdefer self.deinit();
             try self.forward.ensureCapacity(keys.len);
             try self.reverse.ensureCapacity(keys.len);
@@ -241,7 +239,7 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// Returns a new BiMap with keys and values swapped (value->key becomes key->value).
         /// The caller owns the returned map and must call deinit() on it.
         pub fn inverse(self: *const Self) Allocator.Error!HashBiMap(V, K) {
-            var result = try HashBiMap(V, K).init(self.allocator);
+            var result = HashBiMap(V, K).init(self.allocator);
             errdefer result.deinit();
             for (0..self.forward.capacity) |i| {
                 if (self.forward.entries[i].occupied) {

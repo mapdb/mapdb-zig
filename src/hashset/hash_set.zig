@@ -30,9 +30,10 @@ pub fn HashSet(comptime T: type) type {
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Allocator.Error!Self {
+        /// Infallible: the backing table is allocated lazily on first `add`.
+        pub fn init(allocator: Allocator) Self {
             return .{
-                .inner = try OpenHashSet(T).init(allocator),
+                .inner = OpenHashSet(T).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -42,7 +43,7 @@ pub fn HashSet(comptime T: type) type {
         }
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var set = try init(allocator);
+            var set = init(allocator);
             errdefer set.deinit();
             for (values) |val| _ = try set.add(val);
             return set;
@@ -264,7 +265,7 @@ pub fn HashSet(comptime T: type) type {
         // ---- Set Operations ----
 
         pub fn setUnion(self: *const Self, other: *const Self) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
@@ -282,7 +283,7 @@ pub fn HashSet(comptime T: type) type {
         }
 
         pub fn intersect(self: *const Self, other: *const Self) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
@@ -294,7 +295,7 @@ pub fn HashSet(comptime T: type) type {
         }
 
         pub fn difference(self: *const Self, other: *const Self) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
@@ -306,7 +307,7 @@ pub fn HashSet(comptime T: type) type {
         }
 
         pub fn symmetricDifference(self: *const Self, other: *const Self) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     const value = self.inner.entries[i].key;

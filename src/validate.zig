@@ -109,10 +109,10 @@ fn parseCollectionKind(name: []const u8) ?CollectionKind {
 
 fn initCollection(kind: CollectionKind, allocator: Allocator) !Collection {
     return switch (kind) {
-        .hash_map => .{ .hash_map = try I32I32HashMap.init(allocator) },
+        .hash_map => .{ .hash_map = I32I32HashMap.init(allocator) },
         .array_list => .{ .array_list = I32ArrayList.init(allocator) },
-        .hash_set => .{ .hash_set = try I32HashSet.init(allocator) },
-        .hash_bag => .{ .hash_bag = try I32HashBag.init(allocator) },
+        .hash_set => .{ .hash_set = I32HashSet.init(allocator) },
+        .hash_bag => .{ .hash_bag = I32HashBag.init(allocator) },
         .tree_set => .{ .tree_set = I32TreeSet.init(allocator) },
         .tree_map => .{ .tree_map = I32I32TreeMap.init(allocator) },
         .array_stack => .{ .array_stack = I32ArrayStack.init(allocator) },
@@ -203,7 +203,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
     } else if (std.mem.eql(u8, op_name, "add")) {
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
-            .array_list => |*l| try l.add(value),
+            .array_list => |*l| try l.push(value),
             .hash_set => |*s| _ = try s.add(value),
             .hash_bag => |*b| try b.add(value),
             .tree_set => |*s| _ = try s.add(value),
@@ -3478,7 +3478,7 @@ fn runF32HashMap(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var m = try F32I32HashMap.init(allocator);
+    var m = F32I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
         const obj = op.object;
@@ -3557,7 +3557,7 @@ fn runF32HashSet(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var set = try F32HashSet.init(allocator);
+    var set = F32HashSet.init(allocator);
     defer set.deinit();
     for (operations.items) |op| {
         const obj = op.object;
@@ -3675,7 +3675,7 @@ fn runF32ArrayList(
         const obj = op.object;
         const op_name = obj.get("op").?.string;
         if (std.mem.eql(u8, op_name, "add")) {
-            try list.add(parseF32Value(obj.get("value").?));
+            try list.push(parseF32Value(obj.get("value").?));
         } else if (std.mem.eql(u8, op_name, "clear")) {
             list.clear();
         }
@@ -3704,7 +3704,7 @@ fn runF32ArrayList(
             // original element order is preserved for any later assertions.
             var sorted_list = F32ArrayList.init(allocator);
             defer sorted_list.deinit();
-            for (values) |v| try sorted_list.add(v);
+            for (values) |v| try sorted_list.push(v);
             sorted_list.sort();
             const buf = sorted_list.slice();
             try vw.writeAll("[");
@@ -3745,7 +3745,7 @@ fn runI64HashMap(
     writer: anytype,
 ) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    var m = try I64I32HashMap.init(allocator);
+    var m = I64I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
         const obj = op.object;

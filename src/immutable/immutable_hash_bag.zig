@@ -61,7 +61,7 @@ pub fn ImmutableHashBag(comptime T: type) type {
         const Mutable = MutableType(T);
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var mutable = try Mutable.init(allocator);
+            var mutable = Mutable.init(allocator);
             defer mutable.deinit();
             for (values) |val| try mutable.add(val);
             const result = try fromMutable(allocator, &mutable);
@@ -69,7 +69,7 @@ pub fn ImmutableHashBag(comptime T: type) type {
         }
 
         pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
-            var counts = try OpenHashMap(T, usize).init(allocator);
+            var counts = OpenHashMap(T, usize).init(allocator);
             errdefer counts.deinit();
             for (0..mutable.counts.capacity) |i| {
                 if (mutable.counts.entries[i].occupied) {
@@ -156,7 +156,7 @@ pub fn ImmutableHashBag(comptime T: type) type {
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
-            var mutable = try Mutable.init(self.allocator);
+            var mutable = Mutable.init(self.allocator);
             errdefer mutable.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {

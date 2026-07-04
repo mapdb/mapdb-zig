@@ -130,7 +130,7 @@ test "PriorityQueue.iterator yields internal heap-array order (== slice)" {
 
 test "HashSet.iterator yields every element exactly once (arbitrary order)" {
     const a = testing.allocator;
-    var set = try hashset.I32HashSet.init(a);
+    var set = hashset.I32HashSet.init(a);
     defer set.deinit();
     const elems = [_]i32{ 7, 11, 13, 17, 19 };
     for (elems) |e| _ = try set.add(e);
@@ -149,7 +149,7 @@ test "HashSet.iterator yields every element exactly once (arbitrary order)" {
 
 test "HashMap.iterator yields every entry exactly once (arbitrary order)" {
     const a = testing.allocator;
-    var map = try hashmap.I32I64HashMap.init(a);
+    var map = hashmap.I32I64HashMap.init(a);
     defer map.deinit();
     _ = try map.put(1, 100);
     _ = try map.put(2, 200);
@@ -173,7 +173,7 @@ test "HashMap.iterator yields every entry exactly once (arbitrary order)" {
 
 test "HashBiMap.iterator yields forward entries exactly once" {
     const a = testing.allocator;
-    var m = try hashmap.I32I64HashBiMap.init(a);
+    var m = hashmap.I32I64HashBiMap.init(a);
     defer m.deinit();
     _ = try m.put(1, 10);
     _ = try m.put(2, 20);
@@ -189,7 +189,7 @@ test "HashBiMap.iterator yields forward entries exactly once" {
 
 test "HashBag.iterator yields each element repeated by occurrence count" {
     const a = testing.allocator;
-    var b = try bag.I32HashBag.init(a);
+    var b = bag.I32HashBag.init(a);
     defer b.deinit();
     try b.add(5);
     try b.add(5);
@@ -340,7 +340,7 @@ test "ImmutableHashSet.iterator yields every element once" {
 
 test "ImmutableHashMap.iterator yields every entry once" {
     const a = testing.allocator;
-    var mut = try hashmap.I32I64HashMap.init(a);
+    var mut = hashmap.I32I64HashMap.init(a);
     defer mut.deinit();
     _ = try mut.put(1, 10);
     _ = try mut.put(2, 20);

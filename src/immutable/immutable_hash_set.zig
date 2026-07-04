@@ -68,7 +68,7 @@ pub fn ImmutableHashSet(comptime T: type) type {
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             // Deduplicate via the production set.
-            var mutable = try Mutable.init(allocator);
+            var mutable = Mutable.init(allocator);
             defer mutable.deinit();
             for (values) |val| _ = try mutable.add(val);
             // Snapshot to owned slice.

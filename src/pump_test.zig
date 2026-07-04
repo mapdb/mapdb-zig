@@ -383,7 +383,7 @@ test "HashMap.bulkLoad: equals incremental put-loop" {
     var pumped = try HashMap(i32, i64).bulkLoad(a, &keys, &vals, .err);
     defer pumped.deinit();
 
-    var incremental = try HashMap(i32, i64).init(a);
+    var incremental = HashMap(i32, i64).init(a);
     defer incremental.deinit();
     for (keys, vals) |k, v| _ = try incremental.put(k, v);
 
@@ -429,7 +429,7 @@ test "HashMap.bulkLoadExact: collision-heavy layout matches pre-sized put-loop" 
     var pumped = try HashMap(i32, i64).bulkLoadExact(a, &keys, &vals, keys.len, .err);
     defer pumped.deinit();
 
-    var incremental = try HashMap(i32, i64).init(a);
+    var incremental = HashMap(i32, i64).init(a);
     defer incremental.deinit();
     try incremental.ensureTotalCapacity(keys.len);
     for (keys, vals) |k, v| _ = try incremental.put(k, v);
@@ -525,7 +525,7 @@ test "HashSet.bulkLoadExact: collision-heavy layout matches pre-sized add-loop" 
     var pumped = try HashSet(i32).bulkLoadExact(a, &vals, vals.len, .err);
     defer pumped.deinit();
 
-    var incremental = try HashSet(i32).init(a);
+    var incremental = HashSet(i32).init(a);
     defer incremental.deinit();
     try incremental.ensureTotalCapacity(vals.len);
     for (vals) |v| _ = try incremental.add(v);
@@ -547,7 +547,7 @@ test "HashBag.bulkLoad: flat values count; equals incremental" {
     const vals = [_]i32{ 1, 2, 1, 3, 1, 2 };
     var pumped = try HashBag(i32).bulkLoad(a, &vals);
     defer pumped.deinit();
-    var incremental = try HashBag(i32).init(a);
+    var incremental = HashBag(i32).init(a);
     defer incremental.deinit();
     for (vals) |v| try incremental.add(v);
     try testing.expect(pumped.eql(&incremental));
@@ -727,7 +727,7 @@ test "HashMap.bulkLoadExact: large equals incremental" {
     }
     var pumped = try HashMap(i32, i64).bulkLoadExact(a, &keys, &vals, n, .err);
     defer pumped.deinit();
-    var incremental = try HashMap(i32, i64).init(a);
+    var incremental = HashMap(i32, i64).init(a);
     defer incremental.deinit();
     for (keys, vals) |k, v| _ = try incremental.put(k, v);
     try testing.expect(pumped.eql(&incremental));

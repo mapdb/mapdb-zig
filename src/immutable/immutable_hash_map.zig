@@ -51,7 +51,7 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         const Mutable = MutableType(K, V);
 
         pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
-            var inner = try OpenHashMap(K, V).init(allocator);
+            var inner = OpenHashMap(K, V).init(allocator);
             errdefer inner.deinit();
             for (0..mutable.inner.capacity) |i| {
                 if (mutable.inner.entries[i].occupied) {
@@ -118,7 +118,7 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
-            var mutable = try Mutable.init(self.allocator);
+            var mutable = Mutable.init(self.allocator);
             errdefer mutable.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {

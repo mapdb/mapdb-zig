@@ -98,11 +98,10 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
             const n = std.math.ceilPowerOfTwo(usize, @max(1, requested_shards)) catch return error.OutOfMemory;
             const shards = try allocator.alignedAlloc(Shard, .fromByteUnits(CACHE_LINE), n);
             errdefer allocator.free(shards);
-            var made: usize = 0;
-            errdefer for (shards[0..made]) |*s| s.map.deinit();
+            // Map.init is infallible (lazy table alloc), so no partial-shard
+            // rollback is needed once the shard array itself is allocated.
             for (shards) |*s| {
-                s.* = .{ .map = try Map.init(allocator) };
-                made += 1;
+                s.* = .{ .map = Map.init(allocator) };
             }
             return .{
                 .shards = shards,

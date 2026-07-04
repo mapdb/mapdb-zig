@@ -208,7 +208,7 @@ test "ArrayList: sum over wide unsigned compiles and folds low 64 bits (D4)" {
 test "HashSet: parameterized add/contains/remove/set-ops" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var set = try hashset.HashSet(T).init(testing.allocator);
+        var set = hashset.HashSet(T).init(testing.allocator);
         defer set.deinit();
         try testing.expect(try set.add(s[0]));
         try testing.expect(!(try set.add(s[0])));
@@ -293,7 +293,7 @@ test "TreeSet: parameterized sorted ops + min/max + ceiling/floor" {
 test "HashBag/TreeBag: parameterized count semantics" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var hb = try bag.HashBag(T).init(testing.allocator);
+        var hb = bag.HashBag(T).init(testing.allocator);
         defer hb.deinit();
         try hb.add(s[0]);
         try hb.add(s[0]);
@@ -448,11 +448,8 @@ test "F3 OOM: HashSet.setUnion no partial-result leak" {
     while (idx < 256) : (idx += 1) {
         var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
         const a = fa.allocator();
-        var s1 = hashset.HashSet(i32).init(a) catch continue;
-        var s2 = hashset.HashSet(i32).init(a) catch {
-            s1.deinit();
-            continue;
-        };
+        var s1 = hashset.HashSet(i32).init(a);
+        var s2 = hashset.HashSet(i32).init(a);
         var built = true;
         for ([_]i32{ 1, 2, 3, 4 }) |v| {
             _ = s1.add(v) catch {
@@ -506,7 +503,7 @@ test "F4 OOM: TreeSet.rangeValues no scratch-list leak" {
 }
 
 test "F4 OOM: HashBag.toSlice no scratch-list leak" {
-    var b = try bag.HashBag(i32).init(testing.allocator);
+    var b = bag.HashBag(i32).init(testing.allocator);
     defer b.deinit();
     for ([_]i32{ 1, 1, 2, 3, 3, 3, 4 }) |v| try b.add(v);
     var idx: usize = 0;
@@ -583,7 +580,7 @@ test "ArrayDeque: {f} dispatch renders [1, 2]" {
 }
 
 test "HashBag: {f} dispatch renders {5x2}" {
-    var hb = try bag.HashBag(i32).init(testing.allocator);
+    var hb = bag.HashBag(i32).init(testing.allocator);
     defer hb.deinit();
     try hb.add(5);
     try hb.add(5);

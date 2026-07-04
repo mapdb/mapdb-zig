@@ -126,7 +126,7 @@ test "I32Interval: ordinary len() is exact (cap does not perturb small ranges)" 
 // ── Bug 3: addToValue wraps at the value width ──────────────────────────
 
 test "I32I32HashMap.addToValue wraps i32 MAX + 1 to i32 MIN" {
-    var m = try I32I32HashMap.init(testing.allocator);
+    var m = I32I32HashMap.init(testing.allocator);
     defer m.deinit();
     _ = try m.put(7, std.math.maxInt(i32));
     const result = m.addToValue(7, 1);
@@ -135,7 +135,7 @@ test "I32I32HashMap.addToValue wraps i32 MAX + 1 to i32 MIN" {
 }
 
 test "I32I32HashMap.addToValue wraps i32 MIN - 1 to i32 MAX" {
-    var m = try I32I32HashMap.init(testing.allocator);
+    var m = I32I32HashMap.init(testing.allocator);
     defer m.deinit();
     _ = try m.put(9, std.math.minInt(i32));
     const result = m.addToValue(9, -1);
@@ -147,11 +147,13 @@ test "I32I32HashMap.addToValue wraps i32 MIN - 1 to i32 MAX" {
 // Capacity 16 at 0.75 load factor = 12 entries. The 12th distinct insert must
 // trigger a resize (strictly below 0.75), so capacity must have grown.
 test "I32I32HashMap: 12th insert into capacity-16 grows (strictly < 0.75)" {
-    var m = try I32I32HashMap.init(testing.allocator);
+    var m = I32I32HashMap.init(testing.allocator);
     defer m.deinit();
-    try testing.expectEqual(@as(usize, 16), m.inner.capacity);
+    // Lazy init: no table until the first insert (capacity 0), which grows to
+    // DEFAULT_CAPACITY (16).
+    try testing.expectEqual(@as(usize, 0), m.inner.capacity);
 
-    // Insert 11 distinct keys — should stay at capacity 16 (11/16 < 0.75).
+    // Insert 11 distinct keys — first grows 0→16, then stays at 16 (11/16 < 0.75).
     var k: i32 = 0;
     while (k < 11) : (k += 1) {
         _ = try m.put(k, k);

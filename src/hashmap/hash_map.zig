@@ -70,9 +70,10 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         // ---- Construction / Destruction ----
 
-        pub fn init(allocator: Allocator) Allocator.Error!Self {
+        /// Infallible: the backing table is allocated lazily on first `put`.
+        pub fn init(allocator: Allocator) Self {
             return .{
-                .inner = try OpenHashMap(K, V).init(allocator),
+                .inner = OpenHashMap(K, V).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -330,7 +331,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         // ---- Functional Operations ----
 
         pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
@@ -342,7 +343,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {

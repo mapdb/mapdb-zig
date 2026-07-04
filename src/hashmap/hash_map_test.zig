@@ -86,7 +86,7 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const M = HashMap(K, V);
-            var m = try M.init(std.testing.allocator);
+            var m = M.init(std.testing.allocator);
             defer m.deinit();
 
             const ks = samples(K);
@@ -160,7 +160,7 @@ test "HashBiMap: parameterized forward+reverse round-trip over full axis" {
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const B = HashBiMap(K, V);
-            var m = try B.init(std.testing.allocator);
+            var m = B.init(std.testing.allocator);
             defer m.deinit();
 
             const ks = samples(K);
@@ -201,7 +201,7 @@ test "HashBiMap: parameterized forward+reverse round-trip over full axis" {
 // ---------------------------------------------------------------------------
 
 test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
-    var m = try agg.I32I32HashMap.init(std.testing.allocator);
+    var m = agg.I32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 10);
     _ = try m.put(2, 20);
@@ -215,7 +215,7 @@ test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
 }
 
 test "F32I32HashMap: NaN key and +/-0 key distinctness" {
-    var m = try agg.F32I32HashMap.init(std.testing.allocator);
+    var m = agg.F32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
 
     const nan = std.math.nan(f32);
@@ -232,9 +232,9 @@ test "F32I32HashMap: NaN key and +/-0 key distinctness" {
 }
 
 test "F32F32HashMap: eql uses bit equality for float values" {
-    var a = try agg.F32F32HashMap.init(std.testing.allocator);
+    var a = agg.F32F32HashMap.init(std.testing.allocator);
     defer a.deinit();
-    var b = try agg.F32F32HashMap.init(std.testing.allocator);
+    var b = agg.F32F32HashMap.init(std.testing.allocator);
     defer b.deinit();
     const nan = std.math.nan(f32);
     _ = try a.put(1.0, nan);
@@ -242,10 +242,10 @@ test "F32F32HashMap: eql uses bit equality for float values" {
     // identical NaN bits => equal
     try std.testing.expect(a.eql(&b));
 
-    var c = try agg.F32F32HashMap.init(std.testing.allocator);
+    var c = agg.F32F32HashMap.init(std.testing.allocator);
     defer c.deinit();
     _ = try c.put(1.0, 0.0);
-    var d = try agg.F32F32HashMap.init(std.testing.allocator);
+    var d = agg.F32F32HashMap.init(std.testing.allocator);
     defer d.deinit();
     _ = try d.put(1.0, -0.0);
     // +0.0 vs -0.0 differ in bits => not equal
@@ -253,7 +253,7 @@ test "F32F32HashMap: eql uses bit equality for float values" {
 }
 
 test "I64I32HashMap: high-bit-fold spread {1, 2^32+1} do not collide" {
-    var m = try agg.I64I32HashMap.init(std.testing.allocator);
+    var m = agg.I64I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     const a: i64 = 1;
     const b: i64 = (@as(i64, 1) << 32) + 1; // 2^32 + 1, differs from `a` only in the high 32 bits
@@ -265,7 +265,7 @@ test "I64I32HashMap: high-bit-fold spread {1, 2^32+1} do not collide" {
 }
 
 test "I32F64HashMap: float-value sumOfValues and addToValue add (not wrap)" {
-    var m = try agg.I32F64HashMap.init(std.testing.allocator);
+    var m = agg.I32F64HashMap.init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 1.5);
     _ = try m.put(2, 2.5);
@@ -274,7 +274,7 @@ test "I32F64HashMap: float-value sumOfValues and addToValue add (not wrap)" {
 }
 
 test "I32I32HashBiMap: inverse returns swapped-type map" {
-    var m = try agg.I32I32HashBiMap.init(std.testing.allocator);
+    var m = agg.I32I32HashBiMap.init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 100);
     var inv = try m.inverse();
@@ -286,7 +286,7 @@ test "I32I32HashBiMap: inverse returns swapped-type map" {
 }
 
 test "I32F32HashBiMap: inverse returns F32I32HashBiMap (transposed type)" {
-    var m = try agg.I32F32HashBiMap.init(std.testing.allocator);
+    var m = agg.I32F32HashBiMap.init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(7, 1.25);
     var inv = try m.inverse();
@@ -314,7 +314,7 @@ test "HashMap.initWithCapacity(N) holds N elements without rehash (D2)" {
 // ---------------------------------------------------------------------------
 
 test "I32I32HashMap: {f} dispatch renders {1=10}" {
-    var m = try agg.I32I32HashMap.init(std.testing.allocator);
+    var m = agg.I32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 10);
     const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{m});
@@ -323,7 +323,7 @@ test "I32I32HashMap: {f} dispatch renders {1=10}" {
 }
 
 test "I32I32HashBiMap: {f} dispatch renders {1<->2}" {
-    var m = try HashBiMap(i32, i32).init(std.testing.allocator);
+    var m = HashBiMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 2);
     const out = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{m});

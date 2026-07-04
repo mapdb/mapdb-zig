@@ -84,8 +84,16 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         capacity: usize,
         alloc: Allocator,
 
-        pub fn init(alloc: Allocator) Allocator.Error!Self {
-            return initCapacity(alloc, DEFAULT_CAPACITY);
+        /// Infallible: starts empty with zero capacity and no allocation. The
+        /// backing table is allocated lazily on the first `put` (see `resize`'s
+        /// `@max(DEFAULT_CAPACITY, ...)` grow-from-zero path).
+        pub fn init(alloc: Allocator) Self {
+            return .{
+                .entries = &.{},
+                .size = 0,
+                .capacity = 0,
+                .alloc = alloc,
+            };
         }
 
         /// Allocate a table of `nextPow2(max(requested, 16))` **slots**. Note
@@ -119,7 +127,9 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.alloc.free(self.entries);
+            // A never-grown map holds the empty `&.{}` sentinel (capacity 0);
+            // skip the free so the allocator never sees a bogus zero-length ptr.
+            if (self.capacity != 0) self.alloc.free(self.entries);
             self.* = undefined;
         }
 
@@ -130,12 +140,15 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         inline fn needsResize(self: *const Self) bool {
             // Strictly below 0.75: grow once (size+1)/capacity would reach 0.75,
             // i.e. use >= so the 12th insert into a capacity-16 table resizes.
-            // Consistent with ensureCapacity's strict form below.
+            // Consistent with ensureCapacity's strict form below. Also true at
+            // capacity 0 (lazy-alloc start), forcing the first put to grow.
             return (self.size + 1) * 4 >= self.capacity * 3;
         }
 
         fn resize(self: *Self) Allocator.Error!void {
-            try self.growTo(self.capacity * 2);
+            // Growing from the lazy zero-capacity start must land on
+            // DEFAULT_CAPACITY, not `0 * 2 == 0`.
+            try self.growTo(@max(DEFAULT_CAPACITY, self.capacity * 2));
         }
 
         /// Rehash all entries into a freshly allocated buffer of size `new_cap`.
@@ -356,8 +369,16 @@ pub fn OpenHashSet(comptime K: type) type {
         capacity: usize,
         alloc: Allocator,
 
-        pub fn init(alloc: Allocator) Allocator.Error!Self {
-            return initCapacity(alloc, DEFAULT_CAPACITY);
+        /// Infallible: starts empty with zero capacity and no allocation. The
+        /// backing table is allocated lazily on the first `add` (see `resize`'s
+        /// `@max(DEFAULT_CAPACITY, ...)` grow-from-zero path).
+        pub fn init(alloc: Allocator) Self {
+            return .{
+                .entries = &.{},
+                .size = 0,
+                .capacity = 0,
+                .alloc = alloc,
+            };
         }
 
         /// Allocate a table of `nextPow2(max(requested, 16))` **slots** — a slot
@@ -389,7 +410,9 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.alloc.free(self.entries);
+            // A never-grown set holds the empty `&.{}` sentinel (capacity 0);
+            // skip the free so the allocator never sees a bogus zero-length ptr.
+            if (self.capacity != 0) self.alloc.free(self.entries);
             self.* = undefined;
         }
 
@@ -400,12 +423,15 @@ pub fn OpenHashSet(comptime K: type) type {
         inline fn needsResize(self: *const Self) bool {
             // Strictly below 0.75: grow once (size+1)/capacity would reach 0.75,
             // i.e. use >= so the 12th insert into a capacity-16 table resizes.
-            // Consistent with ensureCapacity's strict form below.
+            // Consistent with ensureCapacity's strict form below. Also true at
+            // capacity 0 (lazy-alloc start), forcing the first add to grow.
             return (self.size + 1) * 4 >= self.capacity * 3;
         }
 
         fn resize(self: *Self) Allocator.Error!void {
-            try self.growTo(self.capacity * 2);
+            // Growing from the lazy zero-capacity start must land on
+            // DEFAULT_CAPACITY, not `0 * 2 == 0`.
+            try self.growTo(@max(DEFAULT_CAPACITY, self.capacity * 2));
         }
 
         fn growTo(self: *Self, new_cap: usize) Allocator.Error!void {
@@ -586,7 +612,7 @@ fn valEql(comptime V: type, a: V, b: V) bool {
 // ---------------------------------------------------------------------------
 
 test "map: insert, get, remove" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     try std.testing.expectEqual(@as(?i32, null), try m.put(1, 10));
     try std.testing.expectEqual(@as(?i32, null), try m.put(2, 20));
@@ -600,7 +626,7 @@ test "map: insert, get, remove" {
 }
 
 test "map: resize" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..200) |i| {
         _ = try m.put(@intCast(i), @intCast(i * 10));
@@ -612,7 +638,7 @@ test "map: resize" {
 }
 
 test "map: delete heavy" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..50000) |i| {
         _ = try m.put(@intCast(i), @intCast(i));
@@ -627,7 +653,7 @@ test "map: delete heavy" {
 }
 
 test "map: float keys" {
-    var m = try OpenHashMap(f32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(f32, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1.5, 10);
     _ = try m.put(2.5, 20);
@@ -636,7 +662,7 @@ test "map: float keys" {
 }
 
 test "map: bool keys" {
-    var m = try OpenHashMap(bool, i32).init(std.testing.allocator);
+    var m = OpenHashMap(bool, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(true, 1);
     _ = try m.put(false, 0);
@@ -645,7 +671,7 @@ test "map: bool keys" {
 }
 
 test "set: add, remove, contains" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator);
+    var s = OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     try std.testing.expect(try s.add(1));
     try std.testing.expect(try s.add(2));
@@ -658,7 +684,7 @@ test "set: add, remove, contains" {
 }
 
 test "set: resize" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator);
+    var s = OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     for (0..200) |i| {
         _ = try s.add(@intCast(i));
@@ -670,7 +696,7 @@ test "set: resize" {
 }
 
 test "map: getPtr" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     _ = try m.put(1, 10);
     if (m.getPtr(1)) |ptr| {
@@ -680,7 +706,7 @@ test "map: getPtr" {
 }
 
 test "map: ensureCapacity grows and subsequent puts do not resize" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     try m.ensureCapacity(1000);
     const reserved_cap = m.capacity;
@@ -697,11 +723,24 @@ test "map: ensureCapacity grows and subsequent puts do not resize" {
 }
 
 test "map: ensureCapacity is idempotent when capacity already sufficient" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
-    const initial_cap = m.capacity;
+    // Lazy init starts at capacity 0, so first establish a real capacity, then
+    // confirm a smaller request leaves it untouched.
+    try m.ensureCapacity(100);
+    const cap = m.capacity;
     try m.ensureCapacity(1);
-    try std.testing.expectEqual(initial_cap, m.capacity);
+    try std.testing.expectEqual(cap, m.capacity);
+}
+
+test "map: lazy init allocates nothing until first insert" {
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), m.len());
+    try std.testing.expectEqual(@as(usize, 0), m.capacity);
+    _ = try m.put(1, 10);
+    try std.testing.expect(m.capacity >= DEFAULT_CAPACITY);
+    try std.testing.expectEqual(@as(?i32, 10), m.get(1));
 }
 
 test "map: ensureCapacity propagates allocator errors" {
@@ -711,7 +750,7 @@ test "map: ensureCapacity propagates allocator errors" {
 }
 
 test "map: ensureCapacity on populated map preserves entries" {
-    var m = try OpenHashMap(i32, i32).init(std.testing.allocator);
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
     defer m.deinit();
     for (0..10) |i| {
         _ = try m.put(@intCast(i), @intCast(i));
@@ -725,7 +764,7 @@ test "map: ensureCapacity on populated map preserves entries" {
 }
 
 test "set: ensureCapacity grows and subsequent adds do not resize" {
-    var s = try OpenHashSet(i32).init(std.testing.allocator);
+    var s = OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
     try s.ensureCapacity(500);
     const reserved_cap = s.capacity;
@@ -775,7 +814,7 @@ test "hashKey: i64 high-32-bit family stores/reads through production map" {
     // Same family, but observed through the real OpenHashMap: every key must
     // insert and read back independently (correctness held even before the
     // fold; this guards the fold change against a placement regression).
-    var map = try OpenHashMap(i64, i32).init(std.testing.allocator);
+    var map = OpenHashMap(i64, i32).init(std.testing.allocator);
     defer map.deinit();
     var i: usize = 0;
     while (i < 64) : (i += 1) {
@@ -795,7 +834,7 @@ test "hashKey: wide unsigned keys near maxInt(u64) don't trap (D1)" {
     // is a safety panic (Debug/ReleaseSafe) / UB (ReleaseFast) for any key
     // above maxInt(i64). Keys clustered near maxInt(u64) must hash and round-trip
     // through the production map without trapping.
-    var map = try OpenHashMap(u64, i32).init(std.testing.allocator);
+    var map = OpenHashMap(u64, i32).init(std.testing.allocator);
     defer map.deinit();
     const keys = [_]u64{
         std.math.maxInt(u64),

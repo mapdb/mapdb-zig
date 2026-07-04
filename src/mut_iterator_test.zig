@@ -136,7 +136,7 @@ test "ArrayDeque.mutIterator: writes through *T are observed front-to-back" {
 
 test "HashMap.mutIterator: value writes observed via get(); keys unaffected" {
     const a = testing.allocator;
-    var map = try hashmap.I32I64HashMap.init(a);
+    var map = hashmap.I32I64HashMap.init(a);
     defer map.deinit();
     _ = try map.put(1, 100);
     _ = try map.put(2, 200);
@@ -162,7 +162,7 @@ test "HashMap.mutIterator: value writes observed via get(); keys unaffected" {
 
 test "HashMap(f64 value).mutIterator: NaN-payload value writes keep raw bits" {
     const a = testing.allocator;
-    var map = try hashmap.I32F64HashMap.init(a);
+    var map = hashmap.I32F64HashMap.init(a);
     defer map.deinit();
     _ = try map.put(7, 1.0);
     _ = try map.put(8, 2.0);

@@ -129,7 +129,7 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
             const vs = samples(V);
             const distinct: usize = if (K == bool) 1 else 2;
 
-            var mm = try M.init(std.testing.allocator);
+            var mm = M.init(std.testing.allocator);
             _ = try mm.put(ks[0], vs[0]);
             if (distinct == 2) _ = try mm.put(ks[1], vs[1]);
 
@@ -148,7 +148,7 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
             try std.testing.expectEqual(vs[0], im.getOrDefault(ks[0], vs[1]));
 
             // eql against an identical snapshot.
-            var mm2 = try M.init(std.testing.allocator);
+            var mm2 = M.init(std.testing.allocator);
             _ = try mm2.put(ks[0], vs[0]);
             if (distinct == 2) _ = try mm2.put(ks[1], vs[1]);
             var im2 = try ImmutableHashMap(K, V).fromMutable(std.testing.allocator, &mm2);
@@ -209,7 +209,7 @@ test "ImmutableHashSet: parameterized dedup / contains / fromMutable independenc
         const vs = samples(T);
         const distinct: usize = if (T == bool) 2 else 3;
 
-        var ms = try S.init(std.testing.allocator);
+        var ms = S.init(std.testing.allocator);
         for (vs) |v| _ = try ms.add(v);
         var is = try ImmutableHashSet(T).fromMutable(std.testing.allocator, &ms);
         defer is.deinit();
@@ -324,14 +324,14 @@ test "ImmutablePriorityQueue: parameterized heap order + persistence" {
 // ---------------------------------------------------------------------------
 
 test "ImmutableF32F32HashMap: eql uses bit equality for float values (NaN, ±0)" {
-    var a = try hashmap.F32F32HashMap.init(std.testing.allocator);
+    var a = hashmap.F32F32HashMap.init(std.testing.allocator);
     defer a.deinit();
     const nan = std.math.nan(f32);
     _ = try a.put(1.0, nan);
     var ia = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &a);
     defer ia.deinit();
 
-    var b = try hashmap.F32F32HashMap.init(std.testing.allocator);
+    var b = hashmap.F32F32HashMap.init(std.testing.allocator);
     defer b.deinit();
     _ = try b.put(1.0, nan);
     var ib = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &b);
@@ -339,13 +339,13 @@ test "ImmutableF32F32HashMap: eql uses bit equality for float values (NaN, ±0)"
     // identical NaN bits => equal
     try std.testing.expect(ia.eql(&ib));
 
-    var c = try hashmap.F32F32HashMap.init(std.testing.allocator);
+    var c = hashmap.F32F32HashMap.init(std.testing.allocator);
     defer c.deinit();
     _ = try c.put(1.0, 0.0);
     var ic = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &c);
     defer ic.deinit();
 
-    var d = try hashmap.F32F32HashMap.init(std.testing.allocator);
+    var d = hashmap.F32F32HashMap.init(std.testing.allocator);
     defer d.deinit();
     _ = try d.put(1.0, -0.0);
     var id = try ImmutableHashMap(f32, f32).fromMutable(std.testing.allocator, &d);
@@ -355,7 +355,7 @@ test "ImmutableF32F32HashMap: eql uses bit equality for float values (NaN, ±0)"
 }
 
 test "ImmutableF32HashMap key: NaN and ±0 distinctness survives snapshot" {
-    var m = try hashmap.F32I32HashMap.init(std.testing.allocator);
+    var m = hashmap.F32I32HashMap.init(std.testing.allocator);
     defer m.deinit();
     const nan = std.math.nan(f32);
     _ = try m.put(nan, 1);

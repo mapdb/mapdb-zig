@@ -31,9 +31,10 @@ pub fn HashBag(comptime T: type) type {
         /// (value, count) pair returned by `topOccurrences`.
         pub const OccurrenceEntry = struct { value: T, count: usize };
 
-        pub fn init(allocator: Allocator) Allocator.Error!Self {
+        /// Infallible: the backing count table is allocated lazily on first add.
+        pub fn init(allocator: Allocator) Self {
             return .{
-                .counts = try OpenHashMap(T, usize).init(allocator),
+                .counts = OpenHashMap(T, usize).init(allocator),
                 .size = 0,
                 .allocator = allocator,
             };
@@ -44,7 +45,7 @@ pub fn HashBag(comptime T: type) type {
         }
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var bag = try init(allocator);
+            var bag = init(allocator);
             for (values) |val| {
                 try bag.add(val);
             }
@@ -63,7 +64,7 @@ pub fn HashBag(comptime T: type) type {
         /// pre-sized for up to `values.len` distinct values (an upper bound) in
         /// one allocation. O(n). On any error nothing leaks.
         pub fn bulkLoad(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var self = try init(allocator);
+            var self = init(allocator);
             errdefer self.deinit();
             try self.ensureUnusedCapacity(values.len);
             for (values) |val| try self.add(val);
@@ -76,7 +77,7 @@ pub fn HashBag(comptime T: type) type {
         /// O(distinct). On any error nothing leaks.
         pub fn bulkLoadCounts(allocator: Allocator, values: []const T, counts: []const usize) BulkError!Self {
             std.debug.assert(values.len == counts.len);
-            var self = try init(allocator);
+            var self = init(allocator);
             errdefer self.deinit();
             try self.ensureUnusedCapacity(values.len);
             for (values, counts) |val, c| {
