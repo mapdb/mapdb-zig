@@ -30,6 +30,7 @@ const deque = @import("deque/deque.zig");
 const priority_queue = @import("priority_queue/priority_queue.zig");
 const treeset = @import("treeset/treeset.zig");
 const bag = @import("bag/bag.zig");
+const multimap = @import("multimap/multimap.zig");
 
 // ---------------------------------------------------------------------------
 // Force-compile every method on every instantiation of every family.
@@ -348,4 +349,180 @@ test "TreeBag: f32 -0.0 / +0.0 distinct, NaN bit-equal in eql" {
     try testing.expectEqual(@as(usize, 2), b.sizeDistinct());
     try testing.expectEqual(@as(usize, 1), b.occurrencesOf(-0.0));
     try testing.expectEqual(@as(usize, 1), b.occurrencesOf(0.0));
+}
+
+// ---------------------------------------------------------------------------
+// F3/F4 regression: result-builder and slice-materializer methods must not
+// leak their partial result when a mid-build allocation fails. Each sweep
+// drives `std.testing.FailingAllocator` with a rising `fail_index`; on error
+// we assert `error.OutOfMemory`, on success we deinit the result and stop.
+// The `testing.allocator` leak check at test end is the real assertion — a
+// missing `errdefer` shows up there as a leak, failing the test.
+// ---------------------------------------------------------------------------
+
+fn f34_alwaysTrue(_: *anyopaque, _: i32) bool {
+    return true;
+}
+
+// F3 builder using an explicit allocator param: `of` builds directly with the
+// failing allocator, so it *is* the method under test.
+test "F3 OOM: HashSet.of no partial-result leak" {
+    var ctx: u8 = 0;
+    _ = &ctx;
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        if (hashset.HashSet(i32).of(fa.allocator(), &[_]i32{ 1, 2, 3, 4, 5, 6, 7, 8 })) |res| {
+            var r = res;
+            r.deinit();
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+        }
+    }
+}
+
+test "F3 OOM: TreeSet.of no partial-result leak" {
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        if (treeset.TreeSet(i32).of(fa.allocator(), &[_]i32{ 5, 3, 8, 1, 9, 2, 7, 4 })) |res| {
+            var r = res;
+            r.deinit();
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+        }
+    }
+}
+
+// F3 predicate method using `self.allocator`: the source must share the failing
+// allocator so the result allocation can fail. Low fail_index values fail while
+// building the source (skipped); higher ones fail mid-`select`.
+test "F3 OOM: ArrayList.select no partial-result leak" {
+    var ctx: u8 = 0;
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        const a = fa.allocator();
+        var src = arraylist.ArrayList(i32).init(a);
+        var built = true;
+        for ([_]i32{ 1, 2, 3, 4, 5, 6 }) |v| {
+            src.push(v) catch {
+                built = false;
+                break;
+            };
+        }
+        if (!built) {
+            src.deinit();
+            continue;
+        }
+        if (src.select(@ptrCast(&ctx), f34_alwaysTrue)) |res| {
+            var r = res;
+            r.deinit();
+            src.deinit();
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            src.deinit();
+        }
+    }
+}
+
+// F3 set-algebra method using `self.allocator`.
+test "F3 OOM: HashSet.setUnion no partial-result leak" {
+    var idx: usize = 0;
+    while (idx < 256) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        const a = fa.allocator();
+        var s1 = hashset.HashSet(i32).init(a) catch continue;
+        var s2 = hashset.HashSet(i32).init(a) catch {
+            s1.deinit();
+            continue;
+        };
+        var built = true;
+        for ([_]i32{ 1, 2, 3, 4 }) |v| {
+            _ = s1.add(v) catch {
+                built = false;
+                break;
+            };
+        }
+        if (built) {
+            for ([_]i32{ 3, 4, 5, 6 }) |v| {
+                _ = s2.add(v) catch {
+                    built = false;
+                    break;
+                };
+            }
+        }
+        if (!built) {
+            s1.deinit();
+            s2.deinit();
+            continue;
+        }
+        if (s1.setUnion(&s2)) |res| {
+            var r = res;
+            r.deinit();
+            s1.deinit();
+            s2.deinit();
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            s1.deinit();
+            s2.deinit();
+        }
+    }
+}
+
+// F4 materializer with explicit allocator param: source built on the leak-checked
+// allocator, only the materialization runs on the failing allocator.
+test "F4 OOM: TreeSet.rangeValues no scratch-list leak" {
+    var src = treeset.TreeSet(i32).init(testing.allocator);
+    defer src.deinit();
+    for ([_]i32{ 1, 2, 3, 4, 5, 6, 7, 8 }) |v| _ = try src.add(v);
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        const slice = src.rangeValues(1, 8, fa.allocator()) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        testing.allocator.free(slice);
+        break;
+    }
+}
+
+test "F4 OOM: HashBag.toSlice no scratch-list leak" {
+    var b = try bag.HashBag(i32).init(testing.allocator);
+    defer b.deinit();
+    for ([_]i32{ 1, 1, 2, 3, 3, 3, 4 }) |v| try b.add(v);
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        const slice = b.toSlice(fa.allocator()) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        testing.allocator.free(slice);
+        break;
+    }
+}
+
+test "F4 OOM: ListMultimap.valuesToSlice no scratch-list leak" {
+    var mm = multimap.ListMultimap(i32, i32).init(testing.allocator);
+    defer mm.deinit();
+    try mm.put(1, 10);
+    try mm.put(1, 11);
+    try mm.put(2, 20);
+    try mm.put(3, 30);
+    var idx: usize = 0;
+    while (idx < 128) : (idx += 1) {
+        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
+        const slice = mm.valuesToSlice(fa.allocator()) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        testing.allocator.free(slice);
+        break;
+    }
 }

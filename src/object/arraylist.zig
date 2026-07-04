@@ -128,6 +128,7 @@ pub fn ArrayList(comptime T: type) type {
 
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
+            errdefer result.deinit();
             for (self.inner.items) |item| {
                 if (predicate(ctx, item)) {
                     try result.push(item);
@@ -138,6 +139,7 @@ pub fn ArrayList(comptime T: type) type {
 
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
+            errdefer result.deinit();
             for (self.inner.items) |item| {
                 if (!predicate(ctx, item)) {
                     try result.push(item);

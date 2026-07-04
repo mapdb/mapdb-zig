@@ -175,6 +175,7 @@ pub fn ArrayStack(comptime T: type) type {
         /// Returns a new stack with only elements satisfying the predicate.
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.items.items) |item| {
                 if (predicate(ctx, item)) try result.push(item);
             }
@@ -184,6 +185,7 @@ pub fn ArrayStack(comptime T: type) type {
         /// Returns a new stack with elements NOT satisfying the predicate.
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.items.items) |item| {
                 if (!predicate(ctx, item)) try result.push(item);
             }

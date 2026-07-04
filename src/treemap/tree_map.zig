@@ -269,6 +269,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
         /// `spec/features/rank-select.md`.
         pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.keys.items, self.vals.items) |k, val| {
                 if (predicate(ctx, k, val)) _ = try result.put(k, val);
             }
@@ -277,6 +278,7 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
 
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.keys.items, self.vals.items) |k, val| {
                 if (!predicate(ctx, k, val)) _ = try result.put(k, val);
             }

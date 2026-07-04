@@ -199,6 +199,7 @@ pub const BitSet = struct {
     /// Returns indices of all set bits, ascending. Caller frees.
     pub fn toOwnedSlice(self: *const BitSet, allocator: Allocator) Allocator.Error![]usize {
         var out = std.ArrayListUnmanaged(usize){};
+        errdefer out.deinit(allocator);
         try out.ensureTotalCapacity(allocator, self.cardinality());
         var b = self.nextSetBit(0);
         while (b) |bit| {

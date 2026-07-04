@@ -335,6 +335,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
+            errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     if (predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))
@@ -346,6 +347,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = try init(self.allocator);
+            errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
                     if (!predicate(ctx, self.inner.entries[i].key, self.inner.entries[i].value))

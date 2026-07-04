@@ -120,6 +120,7 @@ pub fn LinkedHashSet(comptime T: type) type {
         /// Returns a new set containing elements in either self or other.
         pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             for (self.inner.keys()) |k| {
                 _ = try result.add(k);
             }
@@ -132,6 +133,7 @@ pub fn LinkedHashSet(comptime T: type) type {
         /// Returns a new set containing elements in both self and other.
         pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             for (self.inner.keys()) |k| {
                 if (other.contains(k)) {
                     _ = try result.add(k);
@@ -143,6 +145,7 @@ pub fn LinkedHashSet(comptime T: type) type {
         /// Returns a new set containing elements in self but not in other.
         pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             for (self.inner.keys()) |k| {
                 if (!other.contains(k)) {
                     _ = try result.add(k);

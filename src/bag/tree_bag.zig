@@ -314,6 +314,7 @@ pub fn TreeBag(comptime T: type) type {
         /// Returns a new bag with only elements satisfying the predicate (preserving counts).
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
                 if (predicate(ctx, treap_node.key)) {
@@ -326,6 +327,7 @@ pub fn TreeBag(comptime T: type) type {
         /// Returns a new bag with elements NOT satisfying the predicate.
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
                 if (!predicate(ctx, treap_node.key)) {
@@ -365,6 +367,7 @@ pub fn TreeBag(comptime T: type) type {
         /// Returns all elements (with duplicates) as an allocated slice, in sorted order.
         pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf = std.ArrayListUnmanaged(T){};
+            errdefer buf.deinit(allocator);
             try buf.ensureTotalCapacity(allocator, self.total_size);
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {

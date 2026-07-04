@@ -190,6 +190,7 @@ pub fn ArrayList(comptime T: type) type {
         /// Returns a new list with only elements satisfying the predicate.
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.items.items) |item| {
                 if (predicate(ctx, item)) try result.push(item);
             }
@@ -199,6 +200,7 @@ pub fn ArrayList(comptime T: type) type {
         /// Returns a new list with elements NOT satisfying the predicate.
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.items.items) |item| {
                 if (!predicate(ctx, item)) try result.push(item);
             }
@@ -318,6 +320,7 @@ pub fn ArrayList(comptime T: type) type {
         /// Returns a new list with elements in reverse order.
         pub fn reversed(self: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var i = self.items.items.len;
             while (i > 0) {
                 i -= 1;
@@ -398,6 +401,7 @@ pub fn ArrayList(comptime T: type) type {
         /// Returns a new list with duplicate elements removed (preserving first occurrence order).
         pub fn distinct(self: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             for (self.items.items) |item| {
                 if (!result.contains(item)) try result.push(item);
             }

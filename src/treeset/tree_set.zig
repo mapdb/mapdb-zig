@@ -80,6 +80,7 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var set = init(allocator);
+            errdefer set.deinit();
             for (values) |val| {
                 _ = try set.add(val);
             }
@@ -311,6 +312,7 @@ pub fn TreeSet(comptime T: type) type {
         /// host both a predicate `select` and the order-statistic `select`.
         pub fn selectWhere(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
                 if (predicate(ctx, node.key)) _ = try result.add(node.key);
@@ -320,6 +322,7 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, T) bool) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
                 if (!predicate(ctx, node.key)) _ = try result.add(node.key);
@@ -372,6 +375,7 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn setUnion(self: *const Self, other: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it1 = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it1.next()) |node| _ = try result.add(node.key);
             var it2 = TreapType.InorderIterator{ .current = other.treap.getMin() };
@@ -381,6 +385,7 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn intersect(self: *const Self, other: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
                 if (other.contains(node.key)) _ = try result.add(node.key);
@@ -390,6 +395,7 @@ pub fn TreeSet(comptime T: type) type {
 
         pub fn difference(self: *const Self, other: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
+            errdefer result.deinit();
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |node| {
                 if (!other.contains(node.key)) _ = try result.add(node.key);
@@ -442,6 +448,7 @@ pub fn TreeSet(comptime T: type) type {
         /// Returns all elements in [from, to] inclusive. Caller must free.
         pub fn rangeValues(self: *const Self, from: T, to: T, allocator: Allocator) Allocator.Error![]T {
             var result = std.ArrayListUnmanaged(T){};
+            errdefer result.deinit(allocator);
             var it = TreapType.InorderIterator{ .current = self.ceilingNode(from) };
             while (it.next()) |node| {
                 if (orderFn(node.key, to) == .gt) break;

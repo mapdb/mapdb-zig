@@ -346,6 +346,7 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         /// Returns a new multimap containing only pairs that satisfy the predicate.
         pub fn select(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
+            errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
@@ -359,6 +360,7 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         /// Returns a new multimap containing only pairs that do not satisfy the predicate.
         pub fn reject(self: *const Self, ctx: *anyopaque, predicate: *const fn (ctx: *anyopaque, K, V) bool) Allocator.Error!Self {
             var result = Self.init(self.allocator);
+            errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 const key = keyFromStored(entry.key_ptr.*);
@@ -423,6 +425,7 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         /// Returns all unique keys as a slice. Caller must free.
         pub fn uniqueKeys(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             var result = std.ArrayListUnmanaged(K){};
+            errdefer result.deinit(allocator);
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 try result.append(allocator, keyFromStored(entry.key_ptr.*));
@@ -433,6 +436,7 @@ pub fn ListMultimap(comptime K: type, comptime V: type) type {
         /// Returns all values as a slice. Caller must free.
         pub fn valuesToSlice(self: *const Self, allocator: Allocator) Allocator.Error![]V {
             var result = std.ArrayListUnmanaged(V){};
+            errdefer result.deinit(allocator);
             try result.ensureTotalCapacity(allocator, self.total_size);
             var it = self.inner.iterator();
             while (it.next()) |entry| {

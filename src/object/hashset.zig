@@ -123,6 +123,7 @@ pub fn HashSet(comptime T: type) type {
         /// Returns a new set containing elements in either self or other.
         pub fn setUnion(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 _ = try result.add(entry.key_ptr.*);
@@ -137,6 +138,7 @@ pub fn HashSet(comptime T: type) type {
         /// Returns a new set containing elements in both self and other.
         pub fn intersect(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 if (other.contains(entry.key_ptr.*)) {
@@ -149,6 +151,7 @@ pub fn HashSet(comptime T: type) type {
         /// Returns a new set containing elements in self but not in other.
         pub fn difference(self: *const Self, other: *const Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self.init(allocator);
+            errdefer result.deinit();
             var it = self.inner.iterator();
             while (it.next()) |entry| {
                 if (!other.contains(entry.key_ptr.*)) {
