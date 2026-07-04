@@ -4,22 +4,24 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
-//! Measurement gate for the three "measure-first" deferred fable-review items.
+//! Measurement gate / regression guard for the deferred fable-review perf items.
 //! Run: `zig build bench-deferred` (ReleaseFast).
 //!
-//! Each item claims a hot-path cost; this probe measures the *current* state so
-//! the rewrite decision is data-driven rather than speculative:
+//! Each item claimed a hot-path cost; this probe measures the state so the
+//! rewrite decision is data-driven. D9 and D13 are now IMPLEMENTED, so their
+//! sections read as before/after regression guards; D3 remains a measure-first
+//! gate (its rewrite is library-wide and not yet taken).
 //!
 //!   D3  hashmap table: `MapEntry{key, value, occupied: bool}` interleaves the
 //!       occupancy flag, forcing per-slot padding. Measured at comptime as
 //!       current bytes/slot vs a structure-of-arrays (SoA) layout with a
-//!       1-bit-per-slot occupancy bitset.
-//!   D9  TreeSet reservation: `ensureUnusedCapacity` only *probes* (alloc+free);
-//!       real inserts each do one `allocator.create(Node)`. Measured as
-//!       allocation count for N inserts (a node pool would batch these).
-//!   D13 RangeSet mutation: `add` rebuilds the whole ranges list + allocates a
-//!       fresh backing array *every call*, so `addAll` is O(n^2) time + O(n)
-//!       allocations. Measured as time/alloc scaling across N.
+//!       1-bit-per-slot occupancy bitset. [still deferred — library-wide rewrite]
+//!   D9  TreeSet nodes: now drawn from a `std.heap.MemoryPool` — N inserts cost a
+//!       few geometric arena blocks, not one `allocator.create(Node)` each.
+//!       Guard: `alloc_calls` is a small block count, not N. [DONE]
+//!   D13 RangeSet mutation: `add`/`remove` binary-search the affected run and
+//!       splice in place, replacing the rebuild-fresh-backing-every-call path
+//!       (was O(n^2) addAll + O(n) allocs). Guard: append is flat + alloc≈1. [DONE]
 
 const std = @import("std");
 const root = @import("mapdb_collections");
@@ -141,10 +143,16 @@ fn benchD3() void {
     std.debug.print("  (>=1.33x per live entry: table holds ~1.33+ slots/entry at/below 0.75 load)\n", .{});
 }
 
-// ---- D9: TreeSet per-insert allocation count -------------------------------
+// ---- D9: TreeSet per-insert allocation count (IMPLEMENTED — regression guard)
+//
+// D9 is done: `TreeSet` nodes now come from a per-set `std.heap.MemoryPool`, so
+// N inserts cost a handful of geometric arena-block allocations instead of one
+// `allocator.create(Node)` each. This bench flipped from a measure-first gate
+// into a regression guard — the pre-fix signature was `alloc_calls == N`
+// (1.00/insert); post-fix it is a single-digit block count independent of N.
 
 fn benchD9(base: std.mem.Allocator) !void {
-    std.debug.print("\n=== D9: TreeSet allocation behavior (N inserts) ===\n", .{});
+    std.debug.print("\n=== D9: TreeSet allocation behavior (post-pool regression guard) ===\n", .{});
     const Ns = [_]usize{ 10_000, 100_000 };
     for (Ns) |N| {
         var counter = CountingAllocator{ .child = base };
@@ -167,7 +175,9 @@ fn benchD9(base: std.mem.Allocator) !void {
             .{ N, allocs_after_insert, @as(f64, @floatFromInt(allocs_after_insert)) / @as(f64, @floatFromInt(N)), @as(f64, @floatFromInt(elapsed)) / 1e6, counter.peak_bytes / 1024 },
         );
     }
-    std.debug.print("  (~1 alloc/insert today → a node pool would batch these into O(log N) growth allocs)\n", .{});
+    std.debug.print("  post-fix signal: alloc_calls is a small block count (not N) — pool batches nodes into\n", .{});
+    std.debug.print("  geometric arena blocks; freed nodes recycle through the free list. peak is modestly\n", .{});
+    std.debug.print("  higher (arena block rounding) in exchange for ~10x fewer allocations + faster inserts.\n", .{});
 }
 
 // ---- D13: RangeSet mutation scaling (IMPLEMENTED — regression guard) --------

@@ -52,44 +52,33 @@ pub fn TreeSet(comptime T: type) type {
 
         const TreapType = std.Treap(T, orderFn);
 
+        /// Per-set node pool (D9). Treap nodes are fixed-size and churned one at
+        /// a time, so a `MemoryPool` batches their backing into geometric arena
+        /// blocks (O(log n) underlying allocations for n inserts, not one per
+        /// insert) and recycles freed nodes through its free list. `deinit`/
+        /// `clear` release every node in one arena teardown instead of an
+        /// O(n) node-by-node walk.
+        const NodePool = std.heap.MemoryPool(TreapType.Node);
+
         treap: TreapType = .{},
         allocator: Allocator,
         node_count: usize = 0,
+        pool: NodePool,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .allocator = allocator };
+            return .{ .allocator = allocator, .pool = NodePool.init(allocator) };
         }
 
         pub fn deinit(self: *Self) void {
-            destroySubtree(self.treap.root, self.allocator);
-            // Leave no dangling root: after freeing the nodes, a second deinit
-            // (or any read) would otherwise walk freed memory / double-free
-            // (D10). Reset to the empty-tree state, mirroring clear().
+            // `reset(.free_all)` releases every node's backing (the whole arena)
+            // and leaves the pool VALID and empty — so, like the D10 root reset
+            // below, a redundant second deinit is a harmless no-op rather than a
+            // double-free (`pool.deinit()` would poison the pool to undefined).
+            _ = self.pool.reset(.free_all);
             self.treap.root = null;
             self.node_count = 0;
-        }
-
-        fn destroySubtree(root_node: ?*TreapType.Node, allocator: Allocator) void {
-            // Iterative teardown (no recursion). A treap's depth is only
-            // *expected* O(log n) — priorities are randomized with no
-            // deterministic bound — so recursing here risks a stack overflow on
-            // a large or unluckily-deep set. Repeatedly right-rotate the left
-            // child to the root until the root has no left child, then peel that
-            // root and descend right. O(n) time, O(1) stack: each edge is
-            // rotated at most once.
-            var root = root_node;
-            while (root) |node| {
-                if (node.children[0]) |left| {
-                    node.children[0] = left.children[1];
-                    left.children[1] = node;
-                    root = left;
-                } else {
-                    root = node.children[1];
-                    allocator.destroy(node);
-                }
-            }
         }
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
@@ -208,7 +197,7 @@ pub fn TreeSet(comptime T: type) type {
         pub fn add(self: *Self, value: T) Allocator.Error!bool {
             var entry = self.treap.getEntryFor(value);
             if (entry.node != null) return false;
-            const node = try self.allocator.create(TreapType.Node);
+            const node = try self.pool.create();
             entry.set(node);
             self.node_count += 1;
             return true;
@@ -219,7 +208,7 @@ pub fn TreeSet(comptime T: type) type {
             var entry = self.treap.getEntryFor(value);
             const node = entry.node orelse return false;
             entry.set(null);
-            self.allocator.destroy(node);
+            self.pool.destroy(node); // recycled onto the pool free list
             self.node_count -= 1;
             return true;
         }
@@ -243,18 +232,21 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            destroySubtree(self.treap.root, self.allocator);
+            // Batch-free every node's backing (whole arena) and reset the tree;
+            // the pool stays valid and reusable for subsequent inserts.
+            _ = self.pool.reset(.free_all);
             self.treap.root = null;
             self.node_count = 0;
         }
 
         // ---- Fallible capacity reservation ----
 
-        /// Probes that the allocator can serve `additional` node allocations.
-        /// Returns `error.OutOfMemory` if the allocator fails.
+        /// Pre-allocates `additional` nodes onto the pool free list, so that many
+        /// subsequent `add`s draw from the pool without hitting the child
+        /// allocator — a genuine reservation, unlike the pre-D9 alloc+free probe.
+        /// Returns `error.OutOfMemory` if the allocator cannot serve them.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const probe = try self.allocator.alloc(TreapType.Node, additional);
-            self.allocator.free(probe);
+            try self.pool.preheat(additional);
         }
 
         /// Probes that the allocator can serve enough nodes for `new_capacity`
@@ -875,11 +867,11 @@ test "TreeSet deinit twice is safe (D10)" {
     s.deinit(); // must not double-free
 }
 
-test "TreeSet: iterative teardown frees a large tree without recursion (Step 10)" {
-    // Exercises the O(1)-stack destroySubtree over many nodes: build a large
-    // treap, then let deinit tear it down. The leak-checking allocator confirms
-    // every node is freed exactly once via the rotate-to-leaf walk. (Also clears
-    // and reuses to cover the clear() teardown path.)
+test "TreeSet: bulk pool teardown frees a large tree (Step 10 / D9)" {
+    // Build a large treap, then let deinit tear it down. Node backing lives in
+    // the D9 MemoryPool, so teardown is a single arena free (no per-node walk,
+    // no recursion — stack-safe by construction); the leak-checking allocator
+    // confirms nothing leaks. (Also clears and reuses to cover clear().)
     const a = std.testing.allocator;
     var s = TreeSet(i32).init(a);
     defer s.deinit();
@@ -896,6 +888,73 @@ test "TreeSet: iterative teardown frees a large tree without recursion (Step 10)
     while (i < 5_000) : (i += 1) _ = try s.add(i * 2);
     try std.testing.expectEqual(@as(usize, 5_000), s.len());
     try std.testing.expect(s.contains(9_998));
+}
+
+test "TreeSet D9: ensureUnusedCapacity reserves, then adds succeed (+ OOM propagates)" {
+    var s = TreeSet(i32).init(std.testing.allocator);
+    defer s.deinit();
+    try s.ensureUnusedCapacity(1000); // preheats 1000 pooled nodes
+    var i: i32 = 0;
+    while (i < 1000) : (i += 1) try std.testing.expect(try s.add(i));
+    try std.testing.expectEqual(@as(usize, 1000), s.len());
+    // Reservation propagates allocator failure rather than trapping.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var s2 = TreeSet(i32).init(failing.allocator());
+    defer s2.deinit();
+    try std.testing.expectError(error.OutOfMemory, s2.ensureUnusedCapacity(8));
+}
+
+test "TreeSet D9: remove recycles nodes; churn stays correct and leak-free" {
+    // The pool reuses freed node memory across remove→add. Hammer add/remove so
+    // the free list is exercised, and verify the surviving set is exactly right
+    // (the leak-checking allocator also asserts the arena frees cleanly).
+    var s = TreeSet(i32).init(std.testing.allocator);
+    defer s.deinit();
+    var round: i32 = 0;
+    while (round < 50) : (round += 1) {
+        var i: i32 = 0;
+        while (i < 500) : (i += 1) _ = try s.add(i);
+        // Remove the evens back out (recycles ~half the nodes each round).
+        i = 0;
+        while (i < 500) : (i += 2) _ = s.remove(i);
+    }
+    try std.testing.expectEqual(@as(usize, 250), s.len()); // odds 1,3,…,499
+    try std.testing.expect(s.contains(1) and s.contains(499));
+    try std.testing.expect(!s.contains(0) and !s.contains(498));
+    // Ordered read-back is exactly the odds.
+    const v = try s.toSlice(std.testing.allocator);
+    defer std.testing.allocator.free(v);
+    try std.testing.expectEqual(@as(usize, 250), v.len);
+    for (v, 0..) |got, idx| try std.testing.expectEqual(@as(i32, @intCast(idx * 2 + 1)), got);
+}
+
+test "TreeSet D9: preheat then clear then add (reservation dropped, pool reusable)" {
+    var s = TreeSet(i32).init(std.testing.allocator);
+    defer s.deinit();
+    try s.ensureUnusedCapacity(100); // 100 nodes preheated onto the free list
+    s.clear(); // reset(.free_all) releases them; pool stays valid
+    _ = try s.add(1);
+    _ = try s.add(2);
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    try std.testing.expect(s.contains(1) and s.contains(2));
+}
+
+test "TreeSet D9: preheat then move-by-value then use and deinit" {
+    // The pool (with its preheated free list) travels with the struct on a
+    // by-value move; the moved-from slot is replaced with a fresh empty set so
+    // only the moved copy owns the arena. Exercises reserve → move → use →
+    // deinit with the leak-checking allocator.
+    var s = TreeSet(i32).init(std.testing.allocator);
+    try s.ensureUnusedCapacity(64);
+    _ = try s.add(5);
+    var moved = s; // move: arena + free_list transfer to `moved`
+    s = TreeSet(i32).init(std.testing.allocator); // old slot: fresh, no double-free
+    defer moved.deinit();
+    defer s.deinit();
+    try std.testing.expect(moved.contains(5));
+    _ = try moved.add(6); // draws from the preheated pool post-move
+    try std.testing.expect(moved.contains(6));
+    try std.testing.expectEqual(@as(usize, 2), moved.len());
 }
 
 test "TreeSet: {f} dispatch renders {1, 2, 3} in sorted order" {

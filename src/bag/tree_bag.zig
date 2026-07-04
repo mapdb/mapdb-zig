@@ -65,45 +65,33 @@ pub fn TreeBag(comptime T: type) type {
             return @fieldParentPtr("treap_node", treap_node);
         }
 
+        /// Per-bag node pool (D9), mirroring `TreeSet`. `BagNode`s are fixed-size
+        /// and churned one at a time, so a `MemoryPool` batches their backing
+        /// into geometric arena blocks (O(log n) underlying allocations, not one
+        /// per distinct insert) and recycles freed nodes; `deinit`/`clear`
+        /// release everything in one arena teardown.
+        const NodePool = std.heap.MemoryPool(BagNode);
+
         treap: TreapType = .{},
         allocator: Allocator,
         total_size: usize = 0,
         distinct_count: usize = 0,
+        pool: NodePool,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .allocator = allocator };
+            return .{ .allocator = allocator, .pool = NodePool.init(allocator) };
         }
 
         pub fn deinit(self: *Self) void {
-            destroySubtree(self.treap.root, self.allocator);
-            // Leave no dangling root: mirror TreeSet's D10 fix so a redundant
-            // deinit (or any post-deinit read) is a safe no-op instead of
-            // walking freed memory / double-freeing.
+            // `reset(.free_all)` frees every node's backing and leaves the pool
+            // valid+empty, so — like the D10 root reset — a redundant second
+            // deinit is a harmless no-op, not a double-free.
+            _ = self.pool.reset(.free_all);
             self.treap.root = null;
             self.total_size = 0;
             self.distinct_count = 0;
-        }
-
-        fn destroySubtree(root_node: ?*TreapType.Node, allocator: Allocator) void {
-            // Iterative teardown (no recursion): treap depth is only *expected*
-            // O(log n), so recursion risks a stack overflow on a large set.
-            // Right-rotate the left child to the root until the root has no left
-            // child, peel it, descend right. O(n) time, O(1) stack (each edge
-            // rotated at most once). Traversal uses the intrusive treap links;
-            // the freed allocation is the wrapping bag node.
-            var root = root_node;
-            while (root) |node| {
-                if (node.children[0]) |left| {
-                    node.children[0] = left.children[1];
-                    left.children[1] = node;
-                    root = left;
-                } else {
-                    root = node.children[1];
-                    allocator.destroy(bagNodeFromTreapNode(node));
-                }
-            }
         }
 
         // ---- Data pump (bulk import) ----
@@ -169,7 +157,7 @@ pub fn TreeBag(comptime T: type) type {
             if (entry.node) |treap_node| {
                 bagNodeFromTreapNode(treap_node).occ += occ;
             } else {
-                const bag_node = try self.allocator.create(BagNode);
+                const bag_node = try self.pool.create();
                 bag_node.occ = occ;
                 entry.set(&bag_node.treap_node);
                 self.distinct_count += 1;
@@ -190,7 +178,7 @@ pub fn TreeBag(comptime T: type) type {
             bag_node.occ -= 1;
             if (bag_node.occ == 0) {
                 entry.set(null);
-                self.allocator.destroy(bag_node);
+                self.pool.destroy(bag_node); // recycled onto the pool free list
                 self.distinct_count -= 1;
             }
             self.total_size -= 1;
@@ -204,7 +192,7 @@ pub fn TreeBag(comptime T: type) type {
             const bag_node = bagNodeFromTreapNode(treap_node);
             self.total_size -= bag_node.occ;
             entry.set(null);
-            self.allocator.destroy(bag_node);
+            self.pool.destroy(bag_node); // recycled onto the pool free list
             self.distinct_count -= 1;
             return true;
         }
@@ -250,7 +238,8 @@ pub fn TreeBag(comptime T: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            destroySubtree(self.treap.root, self.allocator);
+            // Batch-free every node's backing and reset; pool stays reusable.
+            _ = self.pool.reset(.free_all);
             self.treap.root = null;
             self.total_size = 0;
             self.distinct_count = 0;
@@ -258,11 +247,11 @@ pub fn TreeBag(comptime T: type) type {
 
         // ---- Fallible capacity reservation ----
 
-        /// Probes that the allocator can serve `additional` node allocations.
-        /// Returns `error.OutOfMemory` if the allocator fails.
+        /// Pre-allocates `additional` `BagNode`s onto the pool free list — a
+        /// genuine reservation (subsequent distinct inserts draw from the pool),
+        /// replacing the pre-D9 alloc+free probe. `error.OutOfMemory` on failure.
         pub fn ensureUnusedCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const probe = try self.allocator.alloc(BagNode, additional);
-            self.allocator.free(probe);
+            try self.pool.preheat(additional);
         }
 
         /// Probes that the allocator can serve enough nodes for `new_capacity`
@@ -441,4 +430,58 @@ pub fn TreeBag(comptime T: type) type {
             return true;
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// D9 node-pool tests (mirror TreeSet): reservation, OOM propagation, and
+// remove/re-add recycle correctness under churn (leak-checked).
+// ---------------------------------------------------------------------------
+
+test "TreeBag D9: ensureUnusedCapacity reserves distinct nodes (+ OOM propagates)" {
+    var b = TreeBag(i32).init(std.testing.allocator);
+    defer b.deinit();
+    try b.ensureUnusedCapacity(500); // preheats 500 pooled BagNodes
+    var i: i32 = 0;
+    while (i < 500) : (i += 1) try b.add(i);
+    try std.testing.expectEqual(@as(usize, 500), b.sizeDistinct());
+    try std.testing.expectEqual(@as(usize, 500), b.totalSize());
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var b2 = TreeBag(i32).init(failing.allocator());
+    defer b2.deinit();
+    try std.testing.expectError(error.OutOfMemory, b2.ensureUnusedCapacity(8));
+}
+
+test "TreeBag D9: preheat then clear then add (reservation dropped, pool reusable)" {
+    var b = TreeBag(i32).init(std.testing.allocator);
+    defer b.deinit();
+    try b.ensureUnusedCapacity(100);
+    b.clear();
+    try b.add(1);
+    try b.add(1);
+    try b.add(2);
+    try std.testing.expectEqual(@as(usize, 2), b.sizeDistinct());
+    try std.testing.expectEqual(@as(usize, 3), b.totalSize());
+    try std.testing.expectEqual(@as(usize, 2), b.occurrencesOf(1));
+}
+
+test "TreeBag D9: removeAll recycles nodes; counts stay correct under churn" {
+    var b = TreeBag(i32).init(std.testing.allocator);
+    defer b.deinit();
+    const rounds = 40;
+    var round: i32 = 0;
+    while (round < rounds) : (round += 1) {
+        // Add one occurrence of every value; odds are never removed (their occ
+        // accumulates), evens are fully removed each round so their BagNode is
+        // freed and then recreated next round — exercising the pool free list.
+        var i: i32 = 0;
+        while (i < 300) : (i += 1) _ = try b.add(i);
+        i = 0;
+        while (i < 300) : (i += 2) _ = b.removeAll(i); // free+recycle even nodes
+    }
+    try std.testing.expectEqual(@as(usize, 150), b.sizeDistinct()); // odds only
+    try std.testing.expectEqual(@as(usize, 150 * rounds), b.totalSize()); // occ=rounds each
+    try std.testing.expectEqual(@as(usize, rounds), b.occurrencesOf(1));
+    try std.testing.expectEqual(@as(usize, 0), b.occurrencesOf(0));
+    try std.testing.expect(b.contains(299) and !b.contains(298));
 }
