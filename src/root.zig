@@ -79,6 +79,10 @@ pub const treemap = @import("treemap/treemap.zig");
 pub const treeset = @import("treeset/treeset.zig");
 pub const tuple = @import("tuple/tuple.zig");
 
+// Concurrency tiers (see the //! contract above and doc 02).
+pub const concurrent = @import("concurrent/concurrent.zig");
+pub const Synchronized = concurrent.Synchronized;
+
 pub const I32ArrayList = @import("arraylist/arraylist.zig").I32ArrayList;
 pub const I32HashSet = @import("hashset/hashset.zig").I32HashSet;
 pub const I32HashBag = @import("bag/bag.zig").I32HashBag;
