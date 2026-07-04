@@ -202,7 +202,7 @@ pub fn HashBag(comptime T: type) type {
 
         // ---- Iteration ----
 
-        const InnerEntry = @import("../hash_table.zig").MapEntry(T, usize);
+        const InnerMap = OpenHashMap(T, usize);
 
         /// Pull-based iterator yielding each element by value, repeated once per
         /// occurrence (matching `forEach`), in arbitrary (hash-table) order.
@@ -210,7 +210,7 @@ pub fn HashBag(comptime T: type) type {
         /// tracking how many occurrences of the current value remain to be
         /// yielded. The iterator borrows the bag; do not mutate while iterating.
         pub const Iterator = struct {
-            entries: []const InnerEntry,
+            counts: *const InnerMap,
             index: usize = 0,
             remaining: usize = 0,
             current: T = undefined,
@@ -220,13 +220,13 @@ pub fn HashBag(comptime T: type) type {
                     self.remaining -= 1;
                     return self.current;
                 }
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.counts.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied and e.value > 0) {
-                        self.current = e.key;
-                        self.remaining = e.value - 1;
-                        return e.key;
+                    if (self.counts.isOccupied(i) and self.counts.values[i] > 0) {
+                        self.current = self.counts.keys[i];
+                        self.remaining = self.counts.values[i] - 1;
+                        return self.counts.keys[i];
                     }
                 }
                 return null;
@@ -243,14 +243,14 @@ pub fn HashBag(comptime T: type) type {
         /// would corrupt that map. Remove occurrences of the old element and add
         /// the new one instead.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.counts.entries };
+            return .{ .counts = &self.counts };
         }
 
         /// Calls f(context, value, count) for each distinct value.
         pub fn forEachWithOccurrences(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T, usize) void) void {
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    f(context, self.counts.entries[i].key, self.counts.entries[i].value);
+                if (self.counts.isOccupied(i)) {
+                    f(context, self.counts.keys[i], self.counts.values[i]);
                 }
             }
         }
@@ -262,8 +262,8 @@ pub fn HashBag(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    if (predicate(context, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                if (self.counts.isOccupied(i)) {
+                    if (predicate(context, self.counts.keys[i])) try result.addOccurrences(self.counts.keys[i], self.counts.values[i]);
                 }
             }
             return result;
@@ -274,8 +274,8 @@ pub fn HashBag(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    if (!predicate(context, self.counts.entries[i].key)) try result.addOccurrences(self.counts.entries[i].key, self.counts.entries[i].value);
+                if (self.counts.isOccupied(i)) {
+                    if (!predicate(context, self.counts.keys[i])) try result.addOccurrences(self.counts.keys[i], self.counts.values[i]);
                 }
             }
             return result;
@@ -284,8 +284,8 @@ pub fn HashBag(comptime T: type) type {
         /// Returns the first distinct value satisfying the predicate, or null.
         pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    if (predicate(context, self.counts.entries[i].key)) return self.counts.entries[i].key;
+                if (self.counts.isOccupied(i)) {
+                    if (predicate(context, self.counts.keys[i])) return self.counts.keys[i];
                 }
             }
             return null;
@@ -297,8 +297,8 @@ pub fn HashBag(comptime T: type) type {
 
         pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    if (!predicate(context, self.counts.entries[i].key)) return false;
+                if (self.counts.isOccupied(i)) {
+                    if (!predicate(context, self.counts.keys[i])) return false;
                 }
             }
             return true;
@@ -315,9 +315,9 @@ pub fn HashBag(comptime T: type) type {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             errdefer buf.deinit(allocator);
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
+                if (self.counts.isOccupied(i)) {
                     var j: usize = 0;
-                    while (j < self.counts.entries[i].value) : (j += 1) try buf.append(allocator, self.counts.entries[i].key);
+                    while (j < self.counts.values[i]) : (j += 1) try buf.append(allocator, self.counts.keys[i]);
                 }
             }
             return buf.toOwnedSlice(allocator);
@@ -358,8 +358,8 @@ pub fn HashBag(comptime T: type) type {
             const Entry = OccurrenceEntry;
             var buf: std.ArrayListUnmanaged(Entry) = .empty;
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    try buf.append(allocator, .{ .value = self.counts.entries[i].key, .count = self.counts.entries[i].value });
+                if (self.counts.isOccupied(i)) {
+                    try buf.append(allocator, .{ .value = self.counts.keys[i], .count = self.counts.values[i] });
                 }
             }
             // Sort by count descending
@@ -382,11 +382,11 @@ pub fn HashBag(comptime T: type) type {
             try writer.writeAll("{");
             var first = true;
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
+                if (self.counts.isOccupied(i)) {
                     if (!first) try writer.writeAll(", ");
-                    try writer.print("{any}", .{self.counts.entries[i].key});
+                    try writer.print("{any}", .{self.counts.keys[i]});
                     try writer.writeAll("x");
-                    try writer.print("{any}", .{self.counts.entries[i].value});
+                    try writer.print("{any}", .{self.counts.values[i]});
                     first = false;
                 }
             }
@@ -399,8 +399,8 @@ pub fn HashBag(comptime T: type) type {
             if (self.size != other.size) return false;
             if (self.counts.len() != other.counts.len()) return false;
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
-                    if (other.occurrencesOf(self.counts.entries[i].key) != self.counts.entries[i].value) return false;
+                if (self.counts.isOccupied(i)) {
+                    if (other.occurrencesOf(self.counts.keys[i]) != self.counts.values[i]) return false;
                 }
             }
             return true;

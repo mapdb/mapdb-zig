@@ -356,11 +356,11 @@ fn expectHashMapSlotsEqual(
     incremental: *const HashMap(i32, i64),
 ) !void {
     try testing.expectEqual(pumped.inner.capacity, incremental.inner.capacity);
-    for (pumped.inner.entries, incremental.inner.entries) |a, b| {
-        try testing.expectEqual(a.occupied, b.occupied);
-        if (a.occupied) {
-            try testing.expectEqual(a.key, b.key);
-            try testing.expectEqual(a.value, b.value);
+    for (0..pumped.inner.capacity) |i| {
+        try testing.expectEqual(pumped.inner.isOccupied(i), incremental.inner.isOccupied(i));
+        if (pumped.inner.isOccupied(i)) {
+            try testing.expectEqual(pumped.inner.keys[i], incremental.inner.keys[i]);
+            try testing.expectEqual(pumped.inner.values[i], incremental.inner.values[i]);
         }
     }
 }
@@ -370,9 +370,9 @@ fn expectHashSetSlotsEqual(
     incremental: *const HashSet(i32),
 ) !void {
     try testing.expectEqual(pumped.inner.capacity, incremental.inner.capacity);
-    for (pumped.inner.entries, incremental.inner.entries) |a, b| {
-        try testing.expectEqual(a.occupied, b.occupied);
-        if (a.occupied) try testing.expectEqual(a.key, b.key);
+    for (0..pumped.inner.capacity) |i| {
+        try testing.expectEqual(pumped.inner.isOccupied(i), incremental.inner.isOccupied(i));
+        if (pumped.inner.isOccupied(i)) try testing.expectEqual(pumped.inner.keys[i], incremental.inner.keys[i]);
     }
 }
 
@@ -437,8 +437,12 @@ test "HashMap.bulkLoadExact: collision-heavy layout matches pre-sized put-loop" 
     try expectHashMapSlotsEqual(&pumped, &incremental);
 }
 
-test "HashMap.bulkLoadExact: one table allocation at exact zero-rehash size" {
-    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+test "HashMap.bulkLoadExact: fixed sizing allocs, zero mid-load rehash" {
+    // SoA (D3): the one pre-sizing does exactly 3 allocations (keys, values,
+    // occupancy bitset); the insert loop must add ZERO more (no mid-load
+    // rehash). fail_index=3 lets the 3 sizing allocs through and fails a 4th —
+    // which never happens, so bulkLoadExact succeeds and capacity stays 32.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 3 });
     const keys = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
     const vals = [_]i64{ 0, 160, 320, 480, 640, 800, 960, 1120, 10, 170, 330, 490 };
     var m = try HashMap(i32, i64).bulkLoadExact(failing.allocator(), &keys, &vals, keys.len, .err);
@@ -533,8 +537,11 @@ test "HashSet.bulkLoadExact: collision-heavy layout matches pre-sized add-loop" 
     try expectHashSetSlotsEqual(&pumped, &incremental);
 }
 
-test "HashSet.bulkLoadExact: one table allocation at exact zero-rehash size" {
-    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+test "HashSet.bulkLoadExact: fixed sizing allocs, zero mid-load rehash" {
+    // SoA (D3): the pre-sizing does exactly 2 allocations (keys, occupancy
+    // bitset — no values array for a set); the insert loop adds ZERO more.
+    // fail_index=2 lets the 2 sizing allocs through and would fail a 3rd.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 2 });
     const vals = [_]i32{ 0, 16, 32, 48, 64, 80, 96, 112, 1, 17, 33, 49 };
     var s = try HashSet(i32).bulkLoadExact(failing.allocator(), &vals, vals.len, .err);
     defer s.deinit();

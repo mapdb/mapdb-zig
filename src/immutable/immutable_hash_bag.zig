@@ -72,8 +72,8 @@ pub fn ImmutableHashBag(comptime T: type) type {
             var counts = OpenHashMap(T, usize).init(allocator);
             errdefer counts.deinit();
             for (0..mutable.counts.capacity) |i| {
-                if (mutable.counts.entries[i].occupied) {
-                    _ = try counts.put(mutable.counts.entries[i].key, mutable.counts.entries[i].value);
+                if (mutable.counts.isOccupied(i)) {
+                    _ = try counts.put(mutable.counts.keys[i], mutable.counts.values[i]);
                 }
             }
             return .{
@@ -119,14 +119,14 @@ pub fn ImmutableHashBag(comptime T: type) type {
             return &[_]T{};
         }
 
-        const InnerEntry = @import("../hash_table.zig").MapEntry(T, usize);
+        const InnerMap = OpenHashMap(T, usize);
 
         /// Pull-based iterator yielding each element by value, repeated once per
         /// occurrence (matching the mutable `HashBag` iterator), in arbitrary
         /// (hash-table) order. Non-allocating: walks the inner snapshot
         /// count-map's occupied slots directly, tracking remaining occurrences.
         pub const Iterator = struct {
-            entries: []const InnerEntry,
+            counts: *const InnerMap,
             index: usize = 0,
             remaining: usize = 0,
             current: T = undefined,
@@ -136,13 +136,13 @@ pub fn ImmutableHashBag(comptime T: type) type {
                     self.remaining -= 1;
                     return self.current;
                 }
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.counts.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied and e.value > 0) {
-                        self.current = e.key;
-                        self.remaining = e.value - 1;
-                        return e.key;
+                    if (self.counts.isOccupied(i) and self.counts.values[i] > 0) {
+                        self.current = self.counts.keys[i];
+                        self.remaining = self.counts.values[i] - 1;
+                        return self.counts.keys[i];
                     }
                 }
                 return null;
@@ -152,17 +152,17 @@ pub fn ImmutableHashBag(comptime T: type) type {
         /// Returns a pull-based iterator yielding each element repeated by its
         /// occurrence count, in arbitrary order. Non-allocating.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.counts.entries };
+            return .{ .counts = &self.counts };
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
             var mutable = Mutable.init(self.allocator);
             errdefer mutable.deinit();
             for (0..self.counts.capacity) |i| {
-                if (self.counts.entries[i].occupied) {
+                if (self.counts.isOccupied(i)) {
                     var j: usize = 0;
-                    while (j < self.counts.entries[i].value) : (j += 1) {
-                        try mutable.add(self.counts.entries[i].key);
+                    while (j < self.counts.values[i]) : (j += 1) {
+                        try mutable.add(self.counts.keys[i]);
                     }
                 }
             }

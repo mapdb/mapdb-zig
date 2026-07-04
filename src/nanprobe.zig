@@ -79,8 +79,8 @@ fn probeMapNegZero(allocator: std.mem.Allocator, stdout: anytype) !void {
     // Which zero is stored? Walk entries until we find an occupied one.
     var first_key: f32 = 0.0;
     for (0..m.inner.capacity) |i| {
-        if (m.inner.entries[i].occupied) {
-            first_key = m.inner.entries[i].key;
+        if (m.inner.isOccupied(i)) {
+            first_key = m.inner.keys[i];
             break;
         }
     }

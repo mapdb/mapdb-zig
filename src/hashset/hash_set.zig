@@ -147,20 +147,20 @@ pub fn HashSet(comptime T: type) type {
 
         // ---- Iteration ----
 
-        const Entry = @import("../hash_table.zig").SetEntry(T);
+        const InnerSet = OpenHashSet(T);
 
         /// Pull-based iterator yielding each element by value in arbitrary
         /// (hash-table) order. Non-allocating: walks the inner table's occupied
         /// slots directly. The iterator borrows the set; do not mutate while iterating.
         pub const Iterator = struct {
-            entries: []const Entry,
+            set: *const InnerSet,
             index: usize = 0,
 
             pub fn next(self: *Iterator) ?T {
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.set.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied) return e.key;
+                    if (self.set.isOccupied(i)) return self.set.keys[i];
                 }
                 return null;
             }
@@ -175,7 +175,7 @@ pub fn HashSet(comptime T: type) type {
         /// the wrong bucket and silently corrupt the set. Remove the old element
         /// and add the new one instead.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.inner.entries };
+            return .{ .set = &self.inner };
         }
 
         // ---- Functional Operations ----
@@ -185,8 +185,8 @@ pub fn HashSet(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (predicate(context, value)) _ = try result.add(value);
                 }
             }
@@ -198,8 +198,8 @@ pub fn HashSet(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (!predicate(context, value)) _ = try result.add(value);
                 }
             }
@@ -209,8 +209,8 @@ pub fn HashSet(comptime T: type) type {
         /// Returns the first element satisfying the predicate, or null.
         pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) ?T {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (predicate(context, value)) return value;
                 }
             }
@@ -220,8 +220,8 @@ pub fn HashSet(comptime T: type) type {
         /// Returns true if any element satisfies the predicate.
         pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (predicate(context, value)) return true;
                 }
             }
@@ -231,8 +231,8 @@ pub fn HashSet(comptime T: type) type {
         /// Returns true if all elements satisfy the predicate.
         pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (!predicate(context, value)) return false;
                 }
             }
@@ -242,8 +242,8 @@ pub fn HashSet(comptime T: type) type {
         /// Returns true if no element satisfies the predicate.
         pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (predicate(context, value)) return false;
                 }
             }
@@ -254,8 +254,8 @@ pub fn HashSet(comptime T: type) type {
         pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (predicate(context, value)) c += 1;
                 }
             }
@@ -268,14 +268,14 @@ pub fn HashSet(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     _ = try result.add(value);
                 }
             }
             for (0..other.inner.capacity) |i| {
-                if (other.inner.entries[i].occupied) {
-                    const value = other.inner.entries[i].key;
+                if (other.inner.isOccupied(i)) {
+                    const value = other.inner.keys[i];
                     _ = try result.add(value);
                 }
             }
@@ -286,8 +286,8 @@ pub fn HashSet(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (other.contains(value)) _ = try result.add(value);
                 }
             }
@@ -298,8 +298,8 @@ pub fn HashSet(comptime T: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (!other.contains(value)) _ = try result.add(value);
                 }
             }
@@ -309,14 +309,14 @@ pub fn HashSet(comptime T: type) type {
         pub fn symmetricDifference(self: *const Self, other: *const Self) Allocator.Error!Self {
             var result = init(self.allocator);
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (!other.contains(value)) _ = try result.add(value);
                 }
             }
             for (0..other.inner.capacity) |i| {
-                if (other.inner.entries[i].occupied) {
-                    const value = other.inner.entries[i].key;
+                if (other.inner.isOccupied(i)) {
+                    const value = other.inner.keys[i];
                     if (!self.contains(value)) _ = try result.add(value);
                 }
             }
@@ -329,8 +329,8 @@ pub fn HashSet(comptime T: type) type {
         pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     try buf.append(allocator, value);
                 }
             }
@@ -375,9 +375,9 @@ pub fn HashSet(comptime T: type) type {
             try writer.writeAll("{");
             var first = true;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
+                if (self.inner.isOccupied(i)) {
                     if (!first) try writer.writeAll(", ");
-                    try writer.print("{any}", .{self.inner.entries[i].key});
+                    try writer.print("{any}", .{self.inner.keys[i]});
                     first = false;
                 }
             }
@@ -389,8 +389,8 @@ pub fn HashSet(comptime T: type) type {
         pub fn eql(self: *const Self, other: *const Self) bool {
             if (self.len() != other.len()) return false;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const value = self.inner.entries[i].key;
+                if (self.inner.isOccupied(i)) {
+                    const value = self.inner.keys[i];
                     if (!other.contains(value)) return false;
                 }
             }

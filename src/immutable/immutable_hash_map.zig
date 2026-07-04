@@ -54,8 +54,8 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
             var inner = OpenHashMap(K, V).init(allocator);
             errdefer inner.deinit();
             for (0..mutable.inner.capacity) |i| {
-                if (mutable.inner.entries[i].occupied) {
-                    _ = try inner.put(mutable.inner.entries[i].key, mutable.inner.entries[i].value);
+                if (mutable.inner.isOccupied(i)) {
+                    _ = try inner.put(mutable.inner.keys[i], mutable.inner.values[i]);
                 }
             }
             return .{ .inner = inner, .allocator = allocator };
@@ -92,20 +92,20 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         /// An entry yielded by `Iterator` — key and value by value.
         pub const IterEntry = struct { key: K, value: V };
 
-        const InnerEntry = @import("../hash_table.zig").MapEntry(K, V);
+        const InnerMap = OpenHashMap(K, V);
 
         /// Pull-based iterator yielding `{ key, value }` entries in arbitrary
         /// (hash-table) order. Non-allocating: walks the inner snapshot table's
         /// occupied slots directly.
         pub const Iterator = struct {
-            entries: []const InnerEntry,
+            map: *const InnerMap,
             index: usize = 0,
 
             pub fn next(self: *Iterator) ?IterEntry {
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.map.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied) return .{ .key = e.key, .value = e.value };
+                    if (self.map.isOccupied(i)) return .{ .key = self.map.keys[i], .value = self.map.values[i] };
                 }
                 return null;
             }
@@ -114,15 +114,15 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         /// Returns a pull-based iterator over `{ key, value }` entries in
         /// arbitrary order. Non-allocating.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.inner.entries };
+            return .{ .map = &self.inner };
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
             var mutable = Mutable.init(self.allocator);
             errdefer mutable.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    _ = try mutable.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.isOccupied(i)) {
+                    _ = try mutable.put(self.inner.keys[i], self.inner.values[i]);
                 }
             }
             return mutable;
@@ -131,13 +131,13 @@ pub fn ImmutableHashMap(comptime K: type, comptime V: type) type {
         pub fn eql(self: *const Self, other: *const Self) bool {
             if (self.len() != other.len()) return false;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const other_val = other.get(self.inner.entries[i].key) orelse return false;
+                if (self.inner.isOccupied(i)) {
+                    const other_val = other.get(self.inner.keys[i]) orelse return false;
                     if (@typeInfo(V) == .float) {
                         const Bits = std.meta.Int(.unsigned, @bitSizeOf(V));
-                        if (!(@as(Bits, @bitCast(self.inner.entries[i].value)) == @as(Bits, @bitCast(other_val)))) return false;
+                        if (!(@as(Bits, @bitCast(self.inner.values[i])) == @as(Bits, @bitCast(other_val)))) return false;
                     } else {
-                        if (!(self.inner.entries[i].value == other_val)) return false;
+                        if (!(self.inner.values[i] == other_val)) return false;
                     }
                 }
             }

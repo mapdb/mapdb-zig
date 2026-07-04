@@ -256,20 +256,20 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// An entry yielded by `Iterator` — key and value by value.
         pub const IterEntry = struct { key: K, value: V };
 
-        const InnerEntry = @import("../hash_table.zig").MapEntry(K, V);
+        const InnerMap = OpenHashMap(K, V);
 
         /// Pull-based iterator yielding `{ key, value }` entries in arbitrary
         /// (hash-table) order. Non-allocating: walks the inner table's occupied
         /// slots directly. The iterator borrows the map; do not mutate while iterating.
         pub const Iterator = struct {
-            entries: []const InnerEntry,
+            map: *const InnerMap,
             index: usize = 0,
 
             pub fn next(self: *Iterator) ?IterEntry {
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.map.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied) return .{ .key = e.key, .value = e.value };
+                    if (self.map.isOccupied(i)) return .{ .key = self.map.keys[i], .value = self.map.values[i] };
                 }
                 return null;
             }
@@ -278,7 +278,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// Returns a pull-based iterator over `{ key, value }` entries in
         /// arbitrary order. Non-allocating.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.inner.entries };
+            return .{ .map = &self.inner };
         }
 
         /// An entry yielded by `MutIterator` — the key by value, the value as a
@@ -298,15 +298,15 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// invalidates the iterator. `iterator()` remains the canonical
         /// immutable, value-yielding iterator.
         pub const MutIterator = struct {
-            entries: []InnerEntry,
+            map: *InnerMap,
             index: usize = 0,
 
             pub fn next(self: *MutIterator) ?MutEntry {
-                while (self.index < self.entries.len) {
+                while (self.index < self.map.capacity) {
                     const i = self.index;
                     self.index += 1;
-                    if (self.entries[i].occupied) {
-                        return .{ .key = self.entries[i].key, .value_ptr = &self.entries[i].value };
+                    if (self.map.isOccupied(i)) {
+                        return .{ .key = self.map.keys[i], .value_ptr = &self.map.values[i] };
                     }
                 }
                 return null;
@@ -317,7 +317,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         /// entries in arbitrary order (additive; see `MutIterator`).
         /// Non-allocating.
         pub fn mutIterator(self: *Self) MutIterator {
-            return .{ .entries = self.inner.entries };
+            return .{ .map = &self.inner };
         }
 
         pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
@@ -334,9 +334,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    if (predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
-                        _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.isOccupied(i)) {
+                    if (predicate(context, self.inner.keys[i], self.inner.values[i]))
+                        _ = try result.put(self.inner.keys[i], self.inner.values[i]);
                 }
             }
             return result;
@@ -346,9 +346,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    if (!predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
-                        _ = try result.put(self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.isOccupied(i)) {
+                    if (!predicate(context, self.inner.keys[i], self.inner.values[i]))
+                        _ = try result.put(self.inner.keys[i], self.inner.values[i]);
                 }
             }
             return result;
@@ -356,9 +356,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         pub fn detect(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) ?struct { key: K, value: V } {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    if (predicate(context, self.inner.entries[i].key, self.inner.entries[i].value))
-                        return .{ .key = self.inner.entries[i].key, .value = self.inner.entries[i].value };
+                if (self.inner.isOccupied(i)) {
+                    if (predicate(context, self.inner.keys[i], self.inner.values[i]))
+                        return .{ .key = self.inner.keys[i], .value = self.inner.values[i] };
                 }
             }
             return null;
@@ -366,21 +366,21 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         pub fn anySatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return true;
+                if (self.inner.isOccupied(i) and predicate(context, self.inner.keys[i], self.inner.values[i])) return true;
             }
             return false;
         }
 
         pub fn allSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and !predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.isOccupied(i) and !predicate(context, self.inner.keys[i], self.inner.values[i])) return false;
             }
             return true;
         }
 
         pub fn noneSatisfy(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) bool {
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) return false;
+                if (self.inner.isOccupied(i) and predicate(context, self.inner.keys[i], self.inner.values[i])) return false;
             }
             return true;
         }
@@ -388,7 +388,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
             var c: usize = 0;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied and predicate(context, self.inner.entries[i].key, self.inner.entries[i].value)) c += 1;
+                if (self.inner.isOccupied(i) and predicate(context, self.inner.keys[i], self.inner.values[i])) c += 1;
             }
             return c;
         }
@@ -396,7 +396,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         pub fn injectInto(self: *const Self, context: anytype, initial: V, comptime f: fn (@TypeOf(context), V, K, V) V) V {
             var acc = initial;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) acc = f(context, acc, self.inner.entries[i].key, self.inner.entries[i].value);
+                if (self.inner.isOccupied(i)) acc = f(context, acc, self.inner.keys[i], self.inner.values[i]);
             }
             return acc;
         }
@@ -429,13 +429,13 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
                 if (@typeInfo(V) == .float) {
                     var total: V = 0;
                     for (0..self.inner.capacity) |i| {
-                        if (self.inner.entries[i].occupied) total += self.inner.entries[i].value;
+                        if (self.inner.isOccupied(i)) total += self.inner.values[i];
                     }
                     return total;
                 } else {
                     var total: i64 = 0;
                     for (0..self.inner.capacity) |i| {
-                        if (self.inner.entries[i].occupied) total += @as(i64, @intCast(self.inner.entries[i].value));
+                        if (self.inner.isOccupied(i)) total += @as(i64, @intCast(self.inner.values[i]));
                     }
                     return total;
                 }
@@ -498,11 +498,11 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             try writer.writeAll("{");
             var first = true;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
+                if (self.inner.isOccupied(i)) {
                     if (!first) try writer.writeAll(", ");
-                    try writer.print("{any}", .{self.inner.entries[i].key});
+                    try writer.print("{any}", .{self.inner.keys[i]});
                     try writer.writeAll("=");
-                    try writer.print("{any}", .{self.inner.entries[i].value});
+                    try writer.print("{any}", .{self.inner.values[i]});
                     first = false;
                 }
             }
@@ -514,13 +514,13 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         pub fn eql(self: *const Self, other: *const Self) bool {
             if (self.len() != other.len()) return false;
             for (0..self.inner.capacity) |i| {
-                if (self.inner.entries[i].occupied) {
-                    const other_val = other.get(self.inner.entries[i].key) orelse return false;
+                if (self.inner.isOccupied(i)) {
+                    const other_val = other.get(self.inner.keys[i]) orelse return false;
                     if (@typeInfo(V) == .float) {
                         const Bits = std.meta.Int(.unsigned, @bitSizeOf(V));
-                        if (!(@as(Bits, @bitCast(self.inner.entries[i].value)) == @as(Bits, @bitCast(other_val)))) return false;
+                        if (!(@as(Bits, @bitCast(self.inner.values[i])) == @as(Bits, @bitCast(other_val)))) return false;
                     } else {
-                        if (!(self.inner.entries[i].value == other_val)) return false;
+                        if (!(self.inner.values[i] == other_val)) return false;
                     }
                 }
             }

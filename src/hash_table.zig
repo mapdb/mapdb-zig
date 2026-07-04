@@ -6,13 +6,46 @@
 
 // Open-addressing hash table with linear probing and Robin Hood backward-shift deletion.
 //
-// Uses interleaved Entry structs for cache locality — key, value, and occupied
-// flag sit in the same cache line, minimizing memory loads per probe.
+// Structure-of-arrays layout (D3): keys and values live in separate dense
+// arrays and occupancy is a 1-bit-per-slot word bitset, rather than an
+// array of `{key, value, occupied: bool}` structs. This drops the per-slot
+// padding the interleaved `bool` forced (and the key/value cross-alignment
+// padding), saving ~24-33% of table memory across the instantiated K/V types.
+// Wrappers iterate via the `keys`/`values`/`isOccupied(i)` surface.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const DEFAULT_CAPACITY: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Occupancy bitset (D3)
+//
+// The table stores keys and values as separate dense arrays (structure of
+// arrays) with occupancy tracked in a word-backed bitset — 1 bit/slot instead
+// of an interleaved `bool` per entry, which the old array-of-structs layout
+// padded out to whole bytes plus per-slot key/value cross-alignment padding.
+// ---------------------------------------------------------------------------
+
+const word_bits = @bitSizeOf(usize);
+const Log2Word = std.math.Log2Int(usize);
+
+/// Number of `usize` words needed to hold `cap` occupancy bits.
+inline fn wordsFor(cap: usize) usize {
+    return (cap + word_bits - 1) / word_bits;
+}
+
+inline fn bitGet(words: []const usize, i: usize) bool {
+    return (words[i / word_bits] >> @as(Log2Word, @intCast(i % word_bits))) & 1 != 0;
+}
+
+inline fn bitSet(words: []usize, i: usize) void {
+    words[i / word_bits] |= @as(usize, 1) << @as(Log2Word, @intCast(i % word_bits));
+}
+
+inline fn bitClear(words: []usize, i: usize) void {
+    words[i / word_bits] &= ~(@as(usize, 1) << @as(Log2Word, @intCast(i % word_bits)));
+}
 
 /// 64-bit hash of a primitive key (int/float/bool). Public so concurrent
 /// wrappers (e.g. `ShardedHashMap`) can route by the well-mixed HIGH bits while
@@ -65,6 +98,11 @@ fn keyEql(comptime K: type, a: K, b: K) bool {
 // OpenHashMap
 // ---------------------------------------------------------------------------
 
+/// The **retired** array-of-structs entry layout: key, value and an
+/// interleaved occupancy `bool` per slot. `OpenHashMap` no longer stores these
+/// (it is structure-of-arrays now, see below); the type is kept only as the
+/// reference footprint that `bench_deferred.zig` compares the live SoA layout
+/// against (D3). Wrappers must use the `keys`/`values`/`isOccupied` surface.
 pub fn MapEntry(comptime K: type, comptime V: type) type {
     return struct {
         key: K,
@@ -74,22 +112,36 @@ pub fn MapEntry(comptime K: type, comptime V: type) type {
 }
 
 pub fn OpenHashMap(comptime K: type, comptime V: type) type {
-    const Entry = MapEntry(K, V);
-
     return struct {
         const Self = @This();
 
-        entries: []Entry,
+        // Structure-of-arrays (D3): keys and values are separate dense arrays
+        // indexed by slot; occupancy is a 1-bit-per-slot word bitset. All three
+        // share the same slot index `i ∈ [0, capacity)`. `keys[i]`/`values[i]`
+        // are meaningful ONLY when `isOccupied(i)` — unoccupied slots hold
+        // undefined key/value (never read without the occupancy guard).
+        keys: []K,
+        values: []V,
+        occupied: []usize,
         size: usize,
         capacity: usize,
         alloc: Allocator,
+
+        /// Whether slot `i` holds a live entry. The occupied-slot accessor for
+        /// wrappers iterating the table directly (`keys[i]`/`values[i]` are only
+        /// valid when this is true).
+        pub inline fn isOccupied(self: *const Self, i: usize) bool {
+            return bitGet(self.occupied, i);
+        }
 
         /// Infallible: starts empty with zero capacity and no allocation. The
         /// backing table is allocated lazily on the first `put` (see `resize`'s
         /// `@max(DEFAULT_CAPACITY, ...)` grow-from-zero path).
         pub fn init(alloc: Allocator) Self {
             return .{
-                .entries = &.{},
+                .keys = &.{},
+                .values = &.{},
+                .occupied = &.{},
                 .size = 0,
                 .capacity = 0,
                 .alloc = alloc,
@@ -114,12 +166,17 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         fn initAtLeast(alloc: Allocator, cap: usize) Allocator.Error!Self {
-            const entries = try alloc.alloc(Entry, cap);
-            for (entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
-            }
+            const keys = try alloc.alloc(K, cap);
+            errdefer alloc.free(keys);
+            const values = try alloc.alloc(V, cap);
+            errdefer alloc.free(values);
+            const occupied = try alloc.alloc(usize, wordsFor(cap));
+            @memset(occupied, 0);
+            // keys/values left undefined: read only through the occupancy guard.
             return .{
-                .entries = entries,
+                .keys = keys,
+                .values = values,
+                .occupied = occupied,
                 .size = 0,
                 .capacity = cap,
                 .alloc = alloc,
@@ -127,9 +184,13 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            // A never-grown map holds the empty `&.{}` sentinel (capacity 0);
+            // A never-grown map holds the empty `&.{}` sentinels (capacity 0);
             // skip the free so the allocator never sees a bogus zero-length ptr.
-            if (self.capacity != 0) self.alloc.free(self.entries);
+            if (self.capacity != 0) {
+                self.alloc.free(self.keys);
+                self.alloc.free(self.values);
+                self.alloc.free(self.occupied);
+            }
             self.* = undefined;
         }
 
@@ -151,27 +212,39 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             try self.growTo(@max(DEFAULT_CAPACITY, self.capacity * 2));
         }
 
-        /// Rehash all entries into a freshly allocated buffer of size `new_cap`.
+        /// Rehash all entries into freshly allocated buffers of size `new_cap`.
         /// Caller must guarantee `new_cap` is a power of two and fits every live
         /// entry under the 0.75 load factor. No-op if `new_cap <= self.capacity`.
         fn growTo(self: *Self, new_cap: usize) Allocator.Error!void {
             if (new_cap <= self.capacity) return;
-            const old = self.entries;
+            const old_keys = self.keys;
+            const old_values = self.values;
+            const old_occupied = self.occupied;
             const old_cap = self.capacity;
 
-            self.entries = try self.alloc.alloc(Entry, new_cap);
-            for (self.entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
-            }
+            const new_keys = try self.alloc.alloc(K, new_cap);
+            errdefer self.alloc.free(new_keys);
+            const new_values = try self.alloc.alloc(V, new_cap);
+            errdefer self.alloc.free(new_values);
+            const new_occupied = try self.alloc.alloc(usize, wordsFor(new_cap));
+            @memset(new_occupied, 0);
+
+            self.keys = new_keys;
+            self.values = new_values;
+            self.occupied = new_occupied;
             self.capacity = new_cap;
             self.size = 0;
 
             for (0..old_cap) |i| {
-                if (old[i].occupied) {
-                    self.insertNoResize(old[i].key, old[i].value);
+                if (bitGet(old_occupied, i)) {
+                    self.insertNoResize(old_keys[i], old_values[i]);
                 }
             }
-            self.alloc.free(old);
+            if (old_cap != 0) {
+                self.alloc.free(old_keys);
+                self.alloc.free(old_values);
+                self.alloc.free(old_occupied);
+            }
         }
 
         /// Infallible insertion used by growTo for rehashing into a buffer that
@@ -180,8 +253,10 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, key) & m));
             while (true) {
-                if (!self.entries[idx].occupied) {
-                    self.entries[idx] = .{ .key = key, .value = value, .occupied = true };
+                if (!self.isOccupied(idx)) {
+                    self.keys[idx] = key;
+                    self.values[idx] = value;
+                    bitSet(self.occupied, idx);
                     self.size += 1;
                     return;
                 }
@@ -212,13 +287,15 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var gap = deleted;
             var idx = (deleted + 1) & m;
-            while (self.entries[idx].occupied) {
-                const ideal = @as(usize, @intCast(hashKey(K, self.entries[idx].key) & m));
+            while (self.isOccupied(idx)) {
+                const ideal = @as(usize, @intCast(hashKey(K, self.keys[idx]) & m));
                 const dist_current = (idx -% ideal) & m;
                 const dist_gap = (gap -% ideal) & m;
                 if (dist_current > dist_gap) {
-                    self.entries[gap] = self.entries[idx];
-                    self.entries[idx] = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
+                    self.keys[gap] = self.keys[idx];
+                    self.values[gap] = self.values[idx];
+                    bitSet(self.occupied, gap);
+                    bitClear(self.occupied, idx);
                     gap = idx;
                 }
                 idx = (idx + 1) & m;
@@ -231,14 +308,16 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, key) & m));
             while (true) {
-                if (!self.entries[idx].occupied) {
-                    self.entries[idx] = .{ .key = key, .value = value, .occupied = true };
+                if (!self.isOccupied(idx)) {
+                    self.keys[idx] = key;
+                    self.values[idx] = value;
+                    bitSet(self.occupied, idx);
                     self.size += 1;
                     return null;
                 }
-                if (keyEql(K, self.entries[idx].key, key)) {
-                    const old = self.entries[idx].value;
-                    self.entries[idx].value = value;
+                if (keyEql(K, self.keys[idx], key)) {
+                    const old = self.values[idx];
+                    self.values[idx] = value;
                     return old;
                 }
                 idx = (idx + 1) & m;
@@ -250,8 +329,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, key) & m));
             while (true) {
-                if (!self.entries[idx].occupied) return null;
-                if (keyEql(K, self.entries[idx].key, key)) return self.entries[idx].value;
+                if (!self.isOccupied(idx)) return null;
+                if (keyEql(K, self.keys[idx], key)) return self.values[idx];
                 idx = (idx + 1) & m;
             }
         }
@@ -261,8 +340,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, key) & m));
             while (true) {
-                if (!self.entries[idx].occupied) return null;
-                if (keyEql(K, self.entries[idx].key, key)) return &self.entries[idx].value;
+                if (!self.isOccupied(idx)) return null;
+                if (keyEql(K, self.keys[idx], key)) return &self.values[idx];
                 idx = (idx + 1) & m;
             }
         }
@@ -272,10 +351,10 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, key) & m));
             while (true) {
-                if (!self.entries[idx].occupied) return null;
-                if (keyEql(K, self.entries[idx].key, key)) {
-                    const old = self.entries[idx].value;
-                    self.entries[idx] = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
+                if (!self.isOccupied(idx)) return null;
+                if (keyEql(K, self.keys[idx], key)) {
+                    const old = self.values[idx];
+                    bitClear(self.occupied, idx);
                     self.size -= 1;
                     self.rehashFrom(idx);
                     return old;
@@ -290,7 +369,7 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
 
         pub fn containsValue(self: *const Self, value: V) bool {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied and valEql(V, self.entries[i].value, value)) return true;
+                if (self.isOccupied(i) and valEql(V, self.values[i], value)) return true;
             }
             return false;
         }
@@ -303,21 +382,19 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            for (self.entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .value = defaultVal(V), .occupied = false };
-            }
+            @memset(self.occupied, 0);
             self.size = 0;
         }
 
         pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(context, self.entries[i].key);
+                if (self.isOccupied(i)) f(context, self.keys[i]);
             }
         }
 
         pub fn forEachValue(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), V) void) void {
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) f(context, self.entries[i].value);
+                if (self.isOccupied(i)) f(context, self.values[i]);
             }
         }
 
@@ -325,8 +402,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const result = try allocator.alloc(K, self.size);
             var idx: usize = 0;
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) {
-                    result[idx] = self.entries[i].key;
+                if (self.isOccupied(i)) {
+                    result[idx] = self.keys[i];
                     idx += 1;
                 }
             }
@@ -337,8 +414,8 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
             const result = try allocator.alloc(V, self.size);
             var idx: usize = 0;
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) {
-                    result[idx] = self.entries[i].value;
+                if (self.isOccupied(i)) {
+                    result[idx] = self.values[i];
                     idx += 1;
                 }
             }
@@ -351,6 +428,9 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
 // OpenHashSet
 // ---------------------------------------------------------------------------
 
+/// The **retired** array-of-structs set-entry layout (key + interleaved
+/// occupancy `bool`). Kept only as the reference footprint for the D3 bench;
+/// `OpenHashSet` is structure-of-arrays now. Wrappers use `keys`/`isOccupied`.
 pub fn SetEntry(comptime K: type) type {
     return struct {
         key: K,
@@ -359,22 +439,29 @@ pub fn SetEntry(comptime K: type) type {
 }
 
 pub fn OpenHashSet(comptime K: type) type {
-    const Entry = SetEntry(K);
-
     return struct {
         const Self = @This();
 
-        entries: []Entry,
+        // Structure-of-arrays (D3): a dense `keys` array plus a 1-bit-per-slot
+        // occupancy bitset. `keys[i]` is meaningful only when `isOccupied(i)`.
+        keys: []K,
+        occupied: []usize,
         size: usize,
         capacity: usize,
         alloc: Allocator,
+
+        /// Whether slot `i` holds a live element (`keys[i]` valid iff true).
+        pub inline fn isOccupied(self: *const Self, i: usize) bool {
+            return bitGet(self.occupied, i);
+        }
 
         /// Infallible: starts empty with zero capacity and no allocation. The
         /// backing table is allocated lazily on the first `add` (see `resize`'s
         /// `@max(DEFAULT_CAPACITY, ...)` grow-from-zero path).
         pub fn init(alloc: Allocator) Self {
             return .{
-                .entries = &.{},
+                .keys = &.{},
+                .occupied = &.{},
                 .size = 0,
                 .capacity = 0,
                 .alloc = alloc,
@@ -397,12 +484,13 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         fn initAtLeast(alloc: Allocator, cap: usize) Allocator.Error!Self {
-            const entries = try alloc.alloc(Entry, cap);
-            for (entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .occupied = false };
-            }
+            const keys = try alloc.alloc(K, cap);
+            errdefer alloc.free(keys);
+            const occupied = try alloc.alloc(usize, wordsFor(cap));
+            @memset(occupied, 0);
             return .{
-                .entries = entries,
+                .keys = keys,
+                .occupied = occupied,
                 .size = 0,
                 .capacity = cap,
                 .alloc = alloc,
@@ -410,9 +498,12 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            // A never-grown set holds the empty `&.{}` sentinel (capacity 0);
+            // A never-grown set holds the empty `&.{}` sentinels (capacity 0);
             // skip the free so the allocator never sees a bogus zero-length ptr.
-            if (self.capacity != 0) self.alloc.free(self.entries);
+            if (self.capacity != 0) {
+                self.alloc.free(self.keys);
+                self.alloc.free(self.occupied);
+            }
             self.* = undefined;
         }
 
@@ -436,26 +527,35 @@ pub fn OpenHashSet(comptime K: type) type {
 
         fn growTo(self: *Self, new_cap: usize) Allocator.Error!void {
             if (new_cap <= self.capacity) return;
-            const old = self.entries;
+            const old_keys = self.keys;
+            const old_occupied = self.occupied;
             const old_cap = self.capacity;
-            self.entries = try self.alloc.alloc(Entry, new_cap);
-            for (self.entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .occupied = false };
-            }
+
+            const new_keys = try self.alloc.alloc(K, new_cap);
+            errdefer self.alloc.free(new_keys);
+            const new_occupied = try self.alloc.alloc(usize, wordsFor(new_cap));
+            @memset(new_occupied, 0);
+
+            self.keys = new_keys;
+            self.occupied = new_occupied;
             self.capacity = new_cap;
             self.size = 0;
             for (0..old_cap) |i| {
-                if (old[i].occupied) self.insertNoResize(old[i].key);
+                if (bitGet(old_occupied, i)) self.insertNoResize(old_keys[i]);
             }
-            self.alloc.free(old);
+            if (old_cap != 0) {
+                self.alloc.free(old_keys);
+                self.alloc.free(old_occupied);
+            }
         }
 
         fn insertNoResize(self: *Self, value: K) void {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, value) & m));
             while (true) {
-                if (!self.entries[idx].occupied) {
-                    self.entries[idx] = .{ .key = value, .occupied = true };
+                if (!self.isOccupied(idx)) {
+                    self.keys[idx] = value;
+                    bitSet(self.occupied, idx);
                     self.size += 1;
                     return;
                 }
@@ -479,13 +579,14 @@ pub fn OpenHashSet(comptime K: type) type {
             const m = self.mask();
             var gap = deleted;
             var idx = (deleted + 1) & m;
-            while (self.entries[idx].occupied) {
-                const ideal = @as(usize, @intCast(hashKey(K, self.entries[idx].key) & m));
+            while (self.isOccupied(idx)) {
+                const ideal = @as(usize, @intCast(hashKey(K, self.keys[idx]) & m));
                 const dist_current = (idx -% ideal) & m;
                 const dist_gap = (gap -% ideal) & m;
                 if (dist_current > dist_gap) {
-                    self.entries[gap] = self.entries[idx];
-                    self.entries[idx] = .{ .key = defaultVal(K), .occupied = false };
+                    self.keys[gap] = self.keys[idx];
+                    bitSet(self.occupied, gap);
+                    bitClear(self.occupied, idx);
                     gap = idx;
                 }
                 idx = (idx + 1) & m;
@@ -498,12 +599,13 @@ pub fn OpenHashSet(comptime K: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, value) & m));
             while (true) {
-                if (!self.entries[idx].occupied) {
-                    self.entries[idx] = .{ .key = value, .occupied = true };
+                if (!self.isOccupied(idx)) {
+                    self.keys[idx] = value;
+                    bitSet(self.occupied, idx);
                     self.size += 1;
                     return true;
                 }
-                if (keyEql(K, self.entries[idx].key, value)) return false;
+                if (keyEql(K, self.keys[idx], value)) return false;
                 idx = (idx + 1) & m;
             }
         }
@@ -513,9 +615,9 @@ pub fn OpenHashSet(comptime K: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, value) & m));
             while (true) {
-                if (!self.entries[idx].occupied) return false;
-                if (keyEql(K, self.entries[idx].key, value)) {
-                    self.entries[idx] = .{ .key = defaultVal(K), .occupied = false };
+                if (!self.isOccupied(idx)) return false;
+                if (keyEql(K, self.keys[idx], value)) {
+                    bitClear(self.occupied, idx);
                     self.size -= 1;
                     self.rehashFrom(idx);
                     return true;
@@ -529,8 +631,8 @@ pub fn OpenHashSet(comptime K: type) type {
             const m = self.mask();
             var idx = @as(usize, @intCast(hashKey(K, value) & m));
             while (true) {
-                if (!self.entries[idx].occupied) return false;
-                if (keyEql(K, self.entries[idx].key, value)) return true;
+                if (!self.isOccupied(idx)) return false;
+                if (keyEql(K, self.keys[idx], value)) return true;
                 idx = (idx + 1) & m;
             }
         }
@@ -543,9 +645,7 @@ pub fn OpenHashSet(comptime K: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            for (self.entries) |*e| {
-                e.* = .{ .key = defaultVal(K), .occupied = false };
-            }
+            @memset(self.occupied, 0);
             self.size = 0;
         }
 
@@ -553,8 +653,8 @@ pub fn OpenHashSet(comptime K: type) type {
             const result = try allocator.alloc(K, self.size);
             var idx: usize = 0;
             for (0..self.capacity) |i| {
-                if (self.entries[i].occupied) {
-                    result[idx] = self.entries[i].key;
+                if (self.isOccupied(i)) {
+                    result[idx] = self.keys[i];
                     idx += 1;
                 }
             }
@@ -590,15 +690,6 @@ fn nextPow2(n: usize) usize {
         v |= v >> 32;
     }
     return v + 1;
-}
-
-fn defaultVal(comptime T: type) T {
-    return switch (@typeInfo(T)) {
-        .int, .comptime_int => 0,
-        .float, .comptime_float => 0.0,
-        .bool => false,
-        else => @as(T, 0),
-    };
 }
 
 fn valEql(comptime V: type, a: V, b: V) bool {
@@ -780,6 +871,51 @@ test "set: ensureCapacity propagates allocator errors" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const result = OpenHashSet(i32).initCapacity(failing.allocator(), 16);
     try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "map D3: occupancy bitset stays correct across word boundaries" {
+    // The occupancy bitset packs one bit per slot into usize words, so slot
+    // indices that cross word boundaries (64/128/...) must set/clear the right
+    // bit. Fill enough entries to span several words, delete a scattered subset
+    // (exercising Robin Hood backward-shift over the bitset), and verify every
+    // survivor reads back and every deleted key is gone.
+    var m = OpenHashMap(i32, i64).init(std.testing.allocator);
+    defer m.deinit();
+    const N: i32 = 500; // capacity grows past 512 slots => 8+ bitset words
+    var i: i32 = 0;
+    while (i < N) : (i += 1) _ = try m.put(i, @as(i64, i) * 7);
+    try std.testing.expect(m.capacity >= 512);
+    // Delete every 3rd key.
+    i = 0;
+    while (i < N) : (i += 3) try std.testing.expectEqual(@as(?i64, @as(i64, i) * 7), m.remove(i));
+    // Survivors present with correct values; deleted absent.
+    i = 0;
+    while (i < N) : (i += 1) {
+        if (@rem(i, 3) == 0) {
+            try std.testing.expectEqual(@as(?i64, null), m.get(i));
+        } else {
+            try std.testing.expectEqual(@as(?i64, @as(i64, i) * 7), m.get(i));
+        }
+    }
+    const deleted: i32 = @divTrunc(N - 1, 3) + 1; // count of i in [0,N) with i%3==0
+    try std.testing.expectEqual(@as(usize, @intCast(N - deleted)), m.len());
+}
+
+test "set D3: clear zeroes occupancy without touching keys; reusable" {
+    var s = OpenHashSet(i32).init(std.testing.allocator);
+    defer s.deinit();
+    var i: i32 = 0;
+    while (i < 200) : (i += 1) _ = try s.add(i);
+    const cap_before = s.capacity;
+    s.clear();
+    try std.testing.expectEqual(@as(usize, 0), s.len());
+    try std.testing.expect(!s.contains(0) and !s.contains(199));
+    // Reuse after clear: same backing capacity, correct membership.
+    i = 0;
+    while (i < 50) : (i += 1) _ = try s.add(i * 2);
+    try std.testing.expectEqual(@as(usize, 50), s.len());
+    try std.testing.expectEqual(cap_before, s.capacity); // no realloc
+    try std.testing.expect(s.contains(98) and !s.contains(99));
 }
 
 test "hashKey: i64 high-32-bit family spreads across distinct buckets" {

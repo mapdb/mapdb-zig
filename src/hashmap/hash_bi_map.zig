@@ -194,21 +194,21 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// An entry yielded by `Iterator` — key and value by value.
         pub const IterEntry = struct { key: K, value: V };
 
-        const InnerEntry = @import("../hash_table.zig").MapEntry(K, V);
+        const InnerMap = OpenHashMap(K, V);
 
         /// Pull-based iterator yielding `{ key, value }` entries in arbitrary
         /// (hash-table) order, walking the forward map. Non-allocating: walks the
         /// inner table's occupied slots directly. The iterator borrows the bimap;
         /// do not mutate while iterating.
         pub const Iterator = struct {
-            entries: []const InnerEntry,
+            forward: *const InnerMap,
             index: usize = 0,
 
             pub fn next(self: *Iterator) ?IterEntry {
-                while (self.index < self.entries.len) {
-                    const e = self.entries[self.index];
+                while (self.index < self.forward.capacity) {
+                    const i = self.index;
                     self.index += 1;
-                    if (e.occupied) return .{ .key = e.key, .value = e.value };
+                    if (self.forward.isOccupied(i)) return .{ .key = self.forward.keys[i], .value = self.forward.values[i] };
                 }
                 return null;
             }
@@ -223,7 +223,7 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         /// would leave the inverse index pointing at a stale key and break the
         /// bijection. Use `put` (which maintains both directions) instead.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .entries = self.forward.entries };
+            return .{ .forward = &self.forward };
         }
 
         pub fn forEachKey(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), K) void) void {
@@ -242,8 +242,8 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             var result = HashBiMap(V, K).init(self.allocator);
             errdefer result.deinit();
             for (0..self.forward.capacity) |i| {
-                if (self.forward.entries[i].occupied) {
-                    _ = try result.put(self.forward.entries[i].value, self.forward.entries[i].key);
+                if (self.forward.isOccupied(i)) {
+                    _ = try result.put(self.forward.values[i], self.forward.keys[i]);
                 }
             }
             return result;
@@ -255,11 +255,11 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             try writer.writeAll("{");
             var first = true;
             for (0..self.forward.capacity) |i| {
-                if (self.forward.entries[i].occupied) {
+                if (self.forward.isOccupied(i)) {
                     if (!first) try writer.writeAll(", ");
-                    try writer.print("{any}", .{self.forward.entries[i].key});
+                    try writer.print("{any}", .{self.forward.keys[i]});
                     try writer.writeAll("<->");
-                    try writer.print("{any}", .{self.forward.entries[i].value});
+                    try writer.print("{any}", .{self.forward.values[i]});
                     first = false;
                 }
             }
@@ -271,9 +271,9 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
         pub fn eql(self: *const Self, other: *const Self) bool {
             if (self.len() != other.len()) return false;
             for (0..self.forward.capacity) |i| {
-                if (self.forward.entries[i].occupied) {
-                    const other_val = other.get(self.forward.entries[i].key) orelse return false;
-                    if (!bitsEqual(V, self.forward.entries[i].value, other_val)) return false;
+                if (self.forward.isOccupied(i)) {
+                    const other_val = other.get(self.forward.keys[i]) orelse return false;
+                    if (!bitsEqual(V, self.forward.values[i], other_val)) return false;
                 }
             }
             return true;

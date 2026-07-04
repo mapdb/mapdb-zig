@@ -4,18 +4,15 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
-//! Measurement gate / regression guard for the deferred fable-review perf items.
+//! Regression guard for the fable-review perf items D3 / D9 / D13 — all now
+//! IMPLEMENTED, so each section reads as a before/after guard.
 //! Run: `zig build bench-deferred` (ReleaseFast).
 //!
-//! Each item claimed a hot-path cost; this probe measures the state so the
-//! rewrite decision is data-driven. D9 and D13 are now IMPLEMENTED, so their
-//! sections read as before/after regression guards; D3 remains a measure-first
-//! gate (its rewrite is library-wide and not yet taken).
-//!
-//!   D3  hashmap table: `MapEntry{key, value, occupied: bool}` interleaves the
-//!       occupancy flag, forcing per-slot padding. Measured at comptime as
-//!       current bytes/slot vs a structure-of-arrays (SoA) layout with a
-//!       1-bit-per-slot occupancy bitset. [still deferred — library-wide rewrite]
+//!   D3  hashmap table: now structure-of-arrays — `keys[]` + `values[]` + a
+//!       1-bit-per-slot occupancy bitset, replacing the interleaved
+//!       `{key, value, occupied: bool}` array whose `bool` forced per-slot
+//!       padding. Guard: comptime bytes/slot of the retired AoS `MapEntry` vs
+//!       the live SoA layout. [DONE]
 //!   D9  TreeSet nodes: now drawn from a `std.heap.MemoryPool` — N inserts cost a
 //!       few geometric arena blocks, not one `allocator.create(Node)` each.
 //!       Guard: `alloc_calls` is a small block count, not N. [DONE]
@@ -127,9 +124,9 @@ fn reportFootprint(comptime name: []const u8, comptime K: type, comptime V: type
 }
 
 fn benchD3() void {
-    std.debug.print("\n=== D3: hashmap table footprint (current AoS vs proposed SoA) ===\n", .{});
-    std.debug.print("  AoS = struct{{key, value, occupied: bool}} (occupancy interleaved, padded)\n", .{});
-    std.debug.print("  SoA = keys[] + values[] + word-backed bitset (1 bit/slot for cap>=64)\n", .{});
+    std.debug.print("\n=== D3: hashmap table footprint (retired AoS vs LIVE SoA) ===\n", .{});
+    std.debug.print("  AoS = struct{{key, value, occupied: bool}} — RETIRED (kept only as MapEntry ref)\n", .{});
+    std.debug.print("  SoA = keys[] + values[] + word-backed bitset (1 bit/slot for cap>=64) — LIVE\n", .{});
     reportFootprint("i32/i32", i32, i32);
     reportFootprint("i64/i64", i64, i64);
     reportFootprint("i32/i64", i32, i64);

@@ -75,7 +75,7 @@ pub fn ImmutableHashSet(comptime T: type) type {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             errdefer buf.deinit(allocator);
             for (0..mutable.inner.capacity) |i| {
-                if (mutable.inner.entries[i].occupied) try buf.append(allocator, mutable.inner.entries[i].key);
+                if (mutable.inner.isOccupied(i)) try buf.append(allocator, mutable.inner.keys[i]);
             }
             const owned = try buf.toOwnedSlice(allocator);
             return .{ .items = owned, .allocator = allocator };
@@ -85,7 +85,7 @@ pub fn ImmutableHashSet(comptime T: type) type {
             var buf: std.ArrayListUnmanaged(T) = .empty;
             errdefer buf.deinit(allocator);
             for (0..mutable.inner.capacity) |i| {
-                if (mutable.inner.entries[i].occupied) try buf.append(allocator, mutable.inner.entries[i].key);
+                if (mutable.inner.isOccupied(i)) try buf.append(allocator, mutable.inner.keys[i]);
             }
             const owned = try buf.toOwnedSlice(allocator);
             return .{ .items = owned, .allocator = allocator };
