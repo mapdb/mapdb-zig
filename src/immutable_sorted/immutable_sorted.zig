@@ -162,7 +162,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
         /// strictly ascending (out-of-order), or if any key is duplicated.
         /// There is no last-wins/dedup and no silent sort — a caller who wants
         /// those sorts/dedups first. Empty and single-element input are valid.
-        pub fn fromSorted(allocator: Allocator, keys: []const K, values: []const V) !Self {
+        pub fn fromSorted(allocator: Allocator, keys: []const K, values: []const V) Allocator.Error!Self {
             if (keys.len != values.len) {
                 @panic("ImmutableSortedMap.fromSorted: keys/values length mismatch");
             }
@@ -342,7 +342,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
         /// All `(key, value)` entries in **ascending key order** — `keysSlice`
         /// zipped with `valuesSlice` (NOT value-sorted). Freshly allocated;
         /// caller frees. Mirrors the Rust `entries()` iterator.
-        pub fn entries(self: *const Self, allocator: Allocator) ![]Entry {
+        pub fn entries(self: *const Self, allocator: Allocator) Allocator.Error![]Entry {
             const out = try allocator.alloc(Entry, self.keys_buf.len);
             for (self.keys_buf, self.values_buf, 0..) |k, v, i| {
                 out[i] = .{ .key = k, .value = v };
@@ -353,7 +353,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
         // ── Iteration (descending) — required, not optional; caller-owned ─
 
         /// All keys, descending (freshly allocated; caller frees).
-        pub fn descendingKeys(self: *const Self, allocator: Allocator) ![]K {
+        pub fn descendingKeys(self: *const Self, allocator: Allocator) Allocator.Error![]K {
             const out = try allocator.alloc(K, self.keys_buf.len);
             for (self.keys_buf, 0..) |k, i| out[self.keys_buf.len - 1 - i] = k;
             return out;
@@ -361,7 +361,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
 
         /// All `(key, value)` entries, descending (freshly allocated; caller
         /// frees).
-        pub fn descendingEntries(self: *const Self, allocator: Allocator) ![]Entry {
+        pub fn descendingEntries(self: *const Self, allocator: Allocator) Allocator.Error![]Entry {
             const n = self.keys_buf.len;
             const out = try allocator.alloc(Entry, n);
             for (0..n) |i| out[n - 1 - i] = .{ .key = self.keys_buf[i], .value = self.values_buf[i] };
@@ -380,14 +380,14 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
 
         /// Keys whose key ∈ `range`, ascending (freshly allocated; caller
         /// frees).
-        pub fn rangeKeys(self: *const Self, range: Range(K), allocator: Allocator) ![]K {
+        pub fn rangeKeys(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
             const b = range.bracket(self.keys_buf);
             return allocator.dupe(K, self.keys_buf[b[0]..b[1]]);
         }
 
         /// `(key, value)` entries whose key ∈ `range`, ascending (freshly
         /// allocated; caller frees).
-        pub fn rangeEntries(self: *const Self, range: Range(K), allocator: Allocator) ![]Entry {
+        pub fn rangeEntries(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
             const b = range.bracket(self.keys_buf);
             const out = try allocator.alloc(Entry, b[1] - b[0]);
             for (b[0]..b[1], 0..) |src, dst| {
@@ -398,7 +398,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
 
         /// Keys whose key ∈ `range`, descending (freshly allocated; caller
         /// frees).
-        pub fn descendingRangeKeys(self: *const Self, range: Range(K), allocator: Allocator) ![]K {
+        pub fn descendingRangeKeys(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]K {
             const b = range.bracket(self.keys_buf);
             const n = b[1] - b[0];
             const out = try allocator.alloc(K, n);
@@ -408,7 +408,7 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
 
         /// `(key, value)` entries whose key ∈ `range`, descending (freshly
         /// allocated; caller frees).
-        pub fn descendingRangeEntries(self: *const Self, range: Range(K), allocator: Allocator) ![]Entry {
+        pub fn descendingRangeEntries(self: *const Self, range: Range(K), allocator: Allocator) Allocator.Error![]Entry {
             const b = range.bracket(self.keys_buf);
             const n = b[1] - b[0];
             const out = try allocator.alloc(Entry, n);
@@ -446,7 +446,7 @@ pub fn ImmutableSortedSet(comptime T: type) type {
         ///
         /// Traps (`@panic`) if the elements are not strictly ascending or
         /// contain a duplicate. Empty and single-element input are valid.
-        pub fn fromSorted(allocator: Allocator, elements: []const T) !Self {
+        pub fn fromSorted(allocator: Allocator, elements: []const T) Allocator.Error!Self {
             assertStrictlyAscending(T, elements);
             const copy = try allocator.dupe(T, elements);
             return .{ .elems_buf = copy, .allocator = allocator };
@@ -529,7 +529,7 @@ pub fn ImmutableSortedSet(comptime T: type) type {
         }
 
         /// All elements, descending (freshly allocated; caller frees).
-        pub fn descendingElements(self: *const Self, allocator: Allocator) ![]T {
+        pub fn descendingElements(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             const out = try allocator.alloc(T, self.elems_buf.len);
             for (self.elems_buf, 0..) |e, i| out[self.elems_buf.len - 1 - i] = e;
             return out;
@@ -538,13 +538,13 @@ pub fn ImmutableSortedSet(comptime T: type) type {
         /// Elements ∈ `range`, ascending. Bracketed by two binary searches from
         /// the range's cut semantics (overflow-safe at the signed extremes).
         /// Freshly allocated; caller frees.
-        pub fn rangeElements(self: *const Self, range: Range(T), allocator: Allocator) ![]T {
+        pub fn rangeElements(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error![]T {
             const b = range.bracket(self.elems_buf);
             return allocator.dupe(T, self.elems_buf[b[0]..b[1]]);
         }
 
         /// Elements ∈ `range`, descending (freshly allocated; caller frees).
-        pub fn descendingRangeElements(self: *const Self, range: Range(T), allocator: Allocator) ![]T {
+        pub fn descendingRangeElements(self: *const Self, range: Range(T), allocator: Allocator) Allocator.Error![]T {
             const b = range.bracket(self.elems_buf);
             const n = b[1] - b[0];
             const out = try allocator.alloc(T, n);
