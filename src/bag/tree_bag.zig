@@ -78,6 +78,12 @@ pub fn TreeBag(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             destroySubtree(self.treap.root, self.allocator);
+            // Leave no dangling root: mirror TreeSet's D10 fix so a redundant
+            // deinit (or any post-deinit read) is a safe no-op instead of
+            // walking freed memory / double-freeing.
+            self.treap.root = null;
+            self.total_size = 0;
+            self.distinct_count = 0;
         }
 
         fn destroySubtree(root_node: ?*TreapType.Node, allocator: Allocator) void {

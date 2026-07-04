@@ -314,6 +314,16 @@ test "TreeBag: iterative teardown frees a large tree without recursion (Step 10)
     try testing.expectEqual(@as(usize, 1), tb.occurrencesOf(7_999));
 }
 
+test "TreeBag deinit twice is safe (D10 parity with TreeSet)" {
+    var tb = bag.TreeBag(i32).init(testing.allocator);
+    try tb.add(1);
+    try tb.add(2);
+    try tb.add(2);
+    tb.deinit();
+    try testing.expectEqual(@as(usize, 0), tb.len());
+    tb.deinit(); // must not double-free (deinit nulls root + resets counts)
+}
+
 test "HashBag/TreeBag: parameterized count semantics" {
     inline for (type_axis) |T| {
         const s = samples(T);
