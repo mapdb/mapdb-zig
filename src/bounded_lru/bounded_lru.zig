@@ -933,6 +933,37 @@ test "getAt: read-time TTL miss on expired, hit refreshes, no removal" {
     try expectKeys(&m, a, &.{ 3, 2 });
 }
 
+test "getAt: expired miss does not perturb recency for a later expireEntries" {
+    const a = testing.allocator;
+    var log = TestLog{ .allocator = a };
+    defer log.deinit();
+    var m = Map.init(a, .{ .max_size = 10, .ttl = 10, .on_evict = TestLog.record, .on_evict_ctx = &log });
+    defer m.deinit();
+    _ = try m.putAt(1, 10, 0);
+    _ = try m.putAt(2, 20, 0);
+    _ = try m.putAt(3, 30, 0); // all expire_at 10; last_use order 1 < 2 < 3
+
+    // An expired getAt on the middle entry must NOT refresh its recency: if it
+    // did, expireEntries would emit 1, 3, 2 instead of 1, 2, 3.
+    try testing.expectEqual(@as(?i32, null), m.getAt(2, 10));
+    try testing.expectEqual(@as(usize, 3), try m.expireEntries(10));
+    try log.expect(&.{
+        .{ .key = 1, .value = 10, .cause = .expired },
+        .{ .key = 2, .value = 20, .cause = .expired },
+        .{ .key = 3, .value = 30, .cause = .expired },
+    });
+}
+
+test "getAt: NEVER (saturated) entry hits even at now == maxInt(u64)" {
+    const a = testing.allocator;
+    var m = Map.init(a, .{ .max_size = 10, .ttl = std.math.maxInt(u64) });
+    defer m.deinit();
+    _ = try m.putAt(1, 10, 5); // now+ttl saturates -> NEVER
+    // NEVER is excluded from the expiry predicate, so getAt hits at any tick.
+    try testing.expectEqual(@as(?i32, 10), m.getAt(1, std.math.maxInt(u64)));
+    try testing.expect(m.containsKey(1));
+}
+
 test "getOrDefaultAt: default on expired and on absent" {
     const a = testing.allocator;
     var m = Map.init(a, .{ .max_size = 10, .ttl = 10 });
