@@ -101,7 +101,7 @@ test "HashMap: parameterized put/get/remove/contains/size/clear/iterate over ful
 
             try std.testing.expectEqual(@as(?V, vs[0]), m.get(ks[0]));
             try std.testing.expect(m.containsKey(ks[0]));
-            try std.testing.expectEqual(@as(usize, distinct_keys), m.size());
+            try std.testing.expectEqual(@as(usize, distinct_keys), m.len());
             try std.testing.expectEqual(@as(usize, distinct_keys), m.len());
             try std.testing.expectEqual(vs[0], m.getOrDefault(ks[0], vs[1]));
 
@@ -207,7 +207,7 @@ test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
     _ = try m.put(2, 20);
     _ = try m.put(3, 30);
     try std.testing.expectEqual(@as(?i32, 10), m.get(1));
-    try std.testing.expectEqual(@as(usize, 3), m.size());
+    try std.testing.expectEqual(@as(usize, 3), m.len());
     try std.testing.expectEqual(@as(i64, 60), m.sumOfValues());
     try std.testing.expectEqual(@as(i32, 15), m.addToValue(1, 5));
     try std.testing.expectEqual(@as(?i32, 20), m.remove(2));
@@ -228,7 +228,7 @@ test "F32I32HashMap: NaN key and +/-0 key distinctness" {
     _ = try m.put(-0.0, 200);
     try std.testing.expectEqual(@as(?i32, 100), m.get(0.0));
     try std.testing.expectEqual(@as(?i32, 200), m.get(-0.0));
-    try std.testing.expectEqual(@as(usize, 3), m.size());
+    try std.testing.expectEqual(@as(usize, 3), m.len());
 }
 
 test "F32F32HashMap: eql uses bit equality for float values" {
@@ -259,7 +259,7 @@ test "I64I32HashMap: high-bit-fold spread {1, 2^32+1} do not collide" {
     const b: i64 = (@as(i64, 1) << 32) + 1; // 2^32 + 1, differs from `a` only in the high 32 bits
     _ = try m.put(a, 111);
     _ = try m.put(b, 222);
-    try std.testing.expectEqual(@as(usize, 2), m.size());
+    try std.testing.expectEqual(@as(usize, 2), m.len());
     try std.testing.expectEqual(@as(?i32, 111), m.get(a));
     try std.testing.expectEqual(@as(?i32, 222), m.get(b));
 }

@@ -66,7 +66,7 @@ pub fn ImmutableHashSet(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             // Deduplicate via the production set.
             var mutable = try Mutable.init(allocator);
             defer mutable.deinit();
@@ -139,7 +139,7 @@ pub fn ImmutableHashSet(comptime T: type) type {
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
-            return try Mutable.of(self.allocator, self.items);
+            return try Mutable.fromSlice(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

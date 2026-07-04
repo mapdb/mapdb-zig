@@ -78,7 +78,7 @@ pub fn TreeSet(comptime T: type) type {
             allocator.destroy(node);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var set = init(allocator);
             errdefer set.deinit();
             for (values) |val| {
@@ -221,11 +221,6 @@ pub fn TreeSet(comptime T: type) type {
         }
 
         pub fn len(self: *const Self) usize {
-            return self.node_count;
-        }
-
-        /// Alias for len() — matches Go/Java naming.
-        pub fn size(self: *const Self) usize {
             return self.node_count;
         }
 
@@ -862,7 +857,7 @@ test "TreeSet deinit twice is safe (D10)" {
     _ = try s.add(2);
     _ = try s.add(3);
     s.deinit();
-    try std.testing.expectEqual(@as(usize, 0), s.size());
+    try std.testing.expectEqual(@as(usize, 0), s.len());
     s.deinit(); // must not double-free
 }
 

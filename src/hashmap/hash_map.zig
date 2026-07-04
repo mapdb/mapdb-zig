@@ -170,10 +170,6 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return self.inner.len();
         }
 
-        pub fn size(self: *const Self) usize {
-            return self.inner.len();
-        }
-
         pub fn isEmpty(self: *const Self) bool {
             return self.inner.isEmpty();
         }

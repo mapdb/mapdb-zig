@@ -40,7 +40,7 @@ pub fn ArrayStack(comptime T: type) type {
             self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var stack = init(allocator);
             try stack.items.appendSlice(stack.allocator, values);
             return stack;
@@ -71,11 +71,6 @@ pub fn ArrayStack(comptime T: type) type {
 
         pub fn len(self: *const Self) usize {
             return self.items.items.len;
-        }
-
-        /// Alias for len() — matches Go/Java naming.
-        pub fn size(self: *const Self) usize {
-            return self.len();
         }
 
         pub fn isEmpty(self: *const Self) bool {

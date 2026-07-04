@@ -242,7 +242,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         }
 
         /// Returns the number of values for the given key.
-        pub fn getCount(self: *const Self, key: K) usize {
+        pub fn count(self: *const Self, key: K) usize {
             const map_key = mapKey(key);
             if (self.inner.getPtr(map_key)) |list_ptr| {
                 return list_ptr.items.len;
@@ -282,10 +282,6 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         }
 
         /// Returns the total number of values across all keys.
-        pub fn size(self: *const Self) usize {
-            return self.total_size;
-        }
-
         pub fn len(self: *const Self) usize {
             return self.total_size;
         }
@@ -428,7 +424,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         }
 
         /// Returns the number of key-value pairs that satisfy the predicate.
-        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
+        pub fn countWhere(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), K, V) bool) usize {
             var c: usize = 0;
             var it = self.inner.iterator();
             while (it.next()) |entry| {

@@ -605,7 +605,7 @@ test "ListMultimap.fromSortedKeys: grouped, value order preserved; equals put-lo
     try testing.expect(pumped.eql(&incremental));
     try testing.expectEqualSlices(i32, &[_]i32{ 10, 11 }, pumped.get(1));
     try testing.expectEqualSlices(i32, &[_]i32{ 30, 31, 32 }, pumped.get(3));
-    try testing.expectEqual(@as(usize, 6), pumped.size());
+    try testing.expectEqual(@as(usize, 6), pumped.len());
 }
 
 test "ListMultimap.fromSortedKeys: NotSorted on non-grouped/out-of-order keys" {
@@ -618,8 +618,8 @@ test "ListMultimap.bulkLoad: any order accumulates" {
     const a = testing.allocator;
     var m = try ListMultimap(i32, i32).bulkLoad(a, &[_]i32{ 3, 1, 3, 2 }, &[_]i32{ 30, 10, 31, 20 });
     defer m.deinit();
-    try testing.expectEqual(@as(usize, 2), m.getCount(3));
-    try testing.expectEqual(@as(usize, 4), m.size());
+    try testing.expectEqual(@as(usize, 2), m.count(3));
+    try testing.expectEqual(@as(usize, 4), m.len());
 }
 
 test "ListMultimap.fromSortedKeyValues: validates value order and preserves duplicates" {
@@ -627,7 +627,7 @@ test "ListMultimap.fromSortedKeyValues: validates value order and preserves dupl
     var m = try ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1, 2 }, &[_]i32{ 10, 10, 11, 20 });
     defer m.deinit();
     try testing.expectEqualSlices(i32, &[_]i32{ 10, 10, 11 }, m.get(1));
-    try testing.expectEqual(@as(usize, 4), m.size());
+    try testing.expectEqual(@as(usize, 4), m.len());
     try testing.expectError(error.NotSorted, ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 2, 1, 2 }));
     try testing.expectError(error.NotSorted, ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 2, 1 }, &[_]i32{ 10, 20, 30 }));
     try testing.expectError(error.NotSorted, ListMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 10, 10, 9 }));
@@ -639,9 +639,9 @@ test "SetMultimap.fromSortedKeys: dedupes values per key" {
     const vals = [_]i32{ 10, 10, 11, 20 };
     var pumped = try SetMultimap(i32, i32).fromSortedKeys(a, &keys, &vals);
     defer pumped.deinit();
-    try testing.expectEqual(@as(usize, 2), pumped.getCount(1)); // 10, 11 (dup 10 dropped)
-    try testing.expectEqual(@as(usize, 1), pumped.getCount(2));
-    try testing.expectEqual(@as(usize, 3), pumped.size());
+    try testing.expectEqual(@as(usize, 2), pumped.count(1)); // 10, 11 (dup 10 dropped)
+    try testing.expectEqual(@as(usize, 1), pumped.count(2));
+    try testing.expectEqual(@as(usize, 3), pumped.len());
 
     var incremental = SetMultimap(i32, i32).init(a);
     defer incremental.deinit();
@@ -658,8 +658,8 @@ test "SetMultimap.fromSortedKeyValues: validates value order and dedupes adjacen
     const a = testing.allocator;
     var m = try SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1, 2 }, &[_]i32{ 10, 10, 11, 20 });
     defer m.deinit();
-    try testing.expectEqual(@as(usize, 2), m.getCount(1));
-    try testing.expectEqual(@as(usize, 3), m.size());
+    try testing.expectEqual(@as(usize, 2), m.count(1));
+    try testing.expectEqual(@as(usize, 3), m.len());
     try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 2, 1, 2 }));
     try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 1, 1 }, &[_]i32{ 10, 10, 9 }));
     try testing.expectError(error.NotSorted, SetMultimap(i32, i32).fromSortedKeyValues(a, &[_]i32{ 1, 2, 1 }, &[_]i32{ 10, 20, 30 }));

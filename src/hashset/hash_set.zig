@@ -41,7 +41,7 @@ pub fn HashSet(comptime T: type) type {
             self.inner.deinit();
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var set = try init(allocator);
             errdefer set.deinit();
             for (values) |val| _ = try set.add(val);
@@ -118,11 +118,6 @@ pub fn HashSet(comptime T: type) type {
 
         pub fn len(self: *const Self) usize {
             return self.inner.len();
-        }
-
-        /// Alias for len() — matches Go/Java naming.
-        pub fn size(self: *const Self) usize {
-            return self.len();
         }
 
         pub fn isEmpty(self: *const Self) bool {

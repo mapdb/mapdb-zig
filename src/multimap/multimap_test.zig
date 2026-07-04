@@ -69,7 +69,7 @@ fn samples(comptime T: type) [2]T {
     };
 }
 
-test "ListMultimap: parameterized put/get/getCount/contains/remove/clear (list keeps dups)" {
+test "ListMultimap: parameterized put/get/count/contains/remove/clear (list keeps dups)" {
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const ks = samples(K);
@@ -85,9 +85,9 @@ test "ListMultimap: parameterized put/get/getCount/contains/remove/clear (list k
             try m.put(ks[1], vs[1]);
 
             // (k0,v0) appears twice, (k0,v1) once => 3 values under k0.
-            try std.testing.expectEqual(@as(usize, 3), m.getCount(ks[0]));
-            try std.testing.expectEqual(@as(usize, 1), m.getCount(ks[1]));
-            try std.testing.expectEqual(@as(usize, 4), m.size());
+            try std.testing.expectEqual(@as(usize, 3), m.count(ks[0]));
+            try std.testing.expectEqual(@as(usize, 1), m.count(ks[1]));
+            try std.testing.expectEqual(@as(usize, 4), m.len());
             try std.testing.expectEqual(@as(usize, 4), m.len());
             try std.testing.expectEqual(@as(usize, 2), m.keysCount());
             try std.testing.expect(!m.isEmpty());
@@ -101,17 +101,17 @@ test "ListMultimap: parameterized put/get/getCount/contains/remove/clear (list k
             const removed = m.removeAll(ks[0]);
             try std.testing.expectEqual(@as(usize, 3), removed);
             try std.testing.expect(!m.containsKey(ks[0]));
-            try std.testing.expectEqual(@as(usize, 1), m.size());
+            try std.testing.expectEqual(@as(usize, 1), m.len());
 
             m.clear();
             try std.testing.expect(m.isEmpty());
-            try std.testing.expectEqual(@as(usize, 0), m.size());
+            try std.testing.expectEqual(@as(usize, 0), m.len());
             try std.testing.expectEqual(@as(usize, 0), m.keysCount());
         }
     }
 }
 
-test "SetMultimap: parameterized put/get/getCount/contains/remove/clear (set dedups)" {
+test "SetMultimap: parameterized put/get/count/contains/remove/clear (set dedups)" {
     inline for (type_axis) |K| {
         inline for (type_axis) |V| {
             const ks = samples(K);
@@ -126,9 +126,9 @@ test "SetMultimap: parameterized put/get/getCount/contains/remove/clear (set ded
             try m.put(ks[0], vs[0]); // duplicate pair -> dropped
             try m.put(ks[1], vs[1]);
 
-            try std.testing.expectEqual(@as(usize, 2), m.getCount(ks[0]));
-            try std.testing.expectEqual(@as(usize, 1), m.getCount(ks[1]));
-            try std.testing.expectEqual(@as(usize, 3), m.size());
+            try std.testing.expectEqual(@as(usize, 2), m.count(ks[0]));
+            try std.testing.expectEqual(@as(usize, 1), m.count(ks[1]));
+            try std.testing.expectEqual(@as(usize, 3), m.len());
             try std.testing.expectEqual(@as(usize, 3), m.len());
             try std.testing.expectEqual(@as(usize, 2), m.keysCount());
             try std.testing.expect(!m.isEmpty());
@@ -142,11 +142,11 @@ test "SetMultimap: parameterized put/get/getCount/contains/remove/clear (set ded
             const removed = m.removeAll(ks[0]);
             try std.testing.expectEqual(@as(usize, 2), removed);
             try std.testing.expect(!m.containsKey(ks[0]));
-            try std.testing.expectEqual(@as(usize, 1), m.size());
+            try std.testing.expectEqual(@as(usize, 1), m.len());
 
             m.clear();
             try std.testing.expect(m.isEmpty());
-            try std.testing.expectEqual(@as(usize, 0), m.size());
+            try std.testing.expectEqual(@as(usize, 0), m.len());
             try std.testing.expectEqual(@as(usize, 0), m.keysCount());
         }
     }
@@ -165,9 +165,9 @@ test "ListMultimap(f32, i32) key: NaN and ±0 distinctness" {
     try m.put(-0.0, 200);
     // Three bit-distinct keys -> three distinct buckets.
     try std.testing.expectEqual(@as(usize, 3), m.keysCount());
-    try std.testing.expectEqual(@as(usize, 1), m.getCount(nan));
-    try std.testing.expectEqual(@as(usize, 1), m.getCount(0.0));
-    try std.testing.expectEqual(@as(usize, 1), m.getCount(-0.0));
+    try std.testing.expectEqual(@as(usize, 1), m.count(nan));
+    try std.testing.expectEqual(@as(usize, 1), m.count(0.0));
+    try std.testing.expectEqual(@as(usize, 1), m.count(-0.0));
     try std.testing.expectEqual(@as(i32, 1), m.get(nan)[0]);
     try std.testing.expectEqual(@as(i32, 100), m.get(0.0)[0]);
     try std.testing.expectEqual(@as(i32, 200), m.get(-0.0)[0]);
@@ -183,7 +183,7 @@ test "SetMultimap(i32, f32) value: bit-aware dedup keeps +0.0 and -0.0 distinct"
     try m.put(7, 0.0);
     try m.put(7, -0.0); // distinct bits -> kept
     try m.put(7, 0.0); // exact bit duplicate -> dropped
-    try std.testing.expectEqual(@as(usize, 2), m.getCount(7));
+    try std.testing.expectEqual(@as(usize, 2), m.count(7));
     try std.testing.expect(m.containsKeyValue(7, 0.0));
     try std.testing.expect(m.containsKeyValue(7, -0.0));
 
@@ -193,7 +193,7 @@ test "SetMultimap(i32, f32) value: bit-aware dedup keeps +0.0 and -0.0 distinct"
     defer n.deinit();
     try n.put(1, nan);
     try n.put(1, nan);
-    try std.testing.expectEqual(@as(usize, 1), n.getCount(1));
+    try std.testing.expectEqual(@as(usize, 1), n.count(1));
 }
 
 test "SetMultimap(f32, f32): float key and float value both bit-canonicalized" {
@@ -204,8 +204,8 @@ test "SetMultimap(f32, f32): float key and float value both bit-canonicalized" {
     try m.put(0.0, -0.0); // distinct value under existing key -> kept
     try m.put(0.0, 0.0); // bit-duplicate pair -> dropped
     try std.testing.expectEqual(@as(usize, 2), m.keysCount());
-    try std.testing.expectEqual(@as(usize, 2), m.getCount(0.0));
-    try std.testing.expectEqual(@as(usize, 1), m.getCount(-0.0));
+    try std.testing.expectEqual(@as(usize, 2), m.count(0.0));
+    try std.testing.expectEqual(@as(usize, 1), m.count(-0.0));
 }
 
 test "ListMultimap(i32, i32): eql, select/reject, fluent withKeyValue" {
@@ -214,7 +214,7 @@ test "ListMultimap(i32, i32): eql, select/reject, fluent withKeyValue" {
     _ = try a.withKeyValue(1, 1);
     _ = try a.withKeyValue(1, 2);
     _ = try a.withKeyValue(2, 3);
-    try std.testing.expectEqual(@as(usize, 3), a.size());
+    try std.testing.expectEqual(@as(usize, 3), a.len());
 
     var b = ListMultimap(i32, i32).init(std.testing.allocator);
     defer b.deinit();
@@ -229,14 +229,14 @@ test "ListMultimap(i32, i32): eql, select/reject, fluent withKeyValue" {
         }
     }.f);
     defer sel.deinit();
-    try std.testing.expectEqual(@as(usize, 2), sel.size());
+    try std.testing.expectEqual(@as(usize, 2), sel.len());
     var rej = try a.reject({}, struct {
         fn f(_: void, _: i32, v: i32) bool {
             return v > 1;
         }
     }.f);
     defer rej.deinit();
-    try std.testing.expectEqual(@as(usize, 1), rej.size());
+    try std.testing.expectEqual(@as(usize, 1), rej.len());
 }
 
 test "ListMultimap(i32, i32): ensureUnusedCapacity propagates allocator error" {
@@ -319,7 +319,7 @@ test "ListMultimap put rolls back new key on append OOM (F5)" {
         var it = m.inner.iterator();
         var summed: usize = 0;
         while (it.next()) |e| summed += e.value_ptr.items.len;
-        try std.testing.expectEqual(summed, m.size());
+        try std.testing.expectEqual(summed, m.len());
     }
 }
 
@@ -340,7 +340,7 @@ test "SetMultimap put rolls back new key on append OOM (F5)" {
         var it = m.inner.iterator();
         var summed: usize = 0;
         while (it.next()) |e| summed += e.value_ptr.items.len;
-        try std.testing.expectEqual(summed, m.size());
+        try std.testing.expectEqual(summed, m.len());
     }
 }
 

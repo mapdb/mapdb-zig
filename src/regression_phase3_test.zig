@@ -38,7 +38,7 @@ test "F32I32TreeMap: NaN + negatives keep keys findable (zig.md repro)" {
     try testing.expectEqual(@as(?i32, 300), m.get(-0.5));
     try testing.expectEqual(@as(?i32, 400), m.get(-1.0));
     try testing.expectEqual(@as(?i32, 100), m.get(nan));
-    try testing.expectEqual(@as(usize, 4), m.size());
+    try testing.expectEqual(@as(usize, 4), m.len());
 }
 
 test "F32I32TreeMap: brute-ish NaN/negative mix stays findable" {
@@ -59,7 +59,7 @@ test "F32I32TreeMap: brute-ish NaN/negative mix stays findable" {
         try testing.expect(got != null);
         try testing.expectEqual(@as(i32, @intCast(i)), got.?);
     }
-    try testing.expectEqual(keys.len, m.size());
+    try testing.expectEqual(keys.len, m.len());
 }
 
 // ── ±0 distinct and distinct NaN payloads distinct ──────────────────────
@@ -70,12 +70,12 @@ test "F32TreeSet: +0.0 and -0.0 are distinct keys" {
 
     try testing.expect(try s.add(0.0)); // newly inserted
     try testing.expect(try s.add(-0.0)); // distinct → newly inserted
-    try testing.expectEqual(@as(usize, 2), s.size());
+    try testing.expectEqual(@as(usize, 2), s.len());
     try testing.expect(s.contains(0.0));
     try testing.expect(s.contains(-0.0));
     // Re-adding the same signed zero is a no-op.
     try testing.expect(!(try s.add(0.0)));
-    try testing.expectEqual(@as(usize, 2), s.size());
+    try testing.expectEqual(@as(usize, 2), s.len());
 }
 
 test "F64TreeSet: distinct NaN payloads are distinct keys" {
@@ -89,11 +89,11 @@ test "F64TreeSet: distinct NaN payloads are distinct keys" {
 
     try testing.expect(try s.add(qnan));
     try testing.expect(try s.add(qnan2)); // different payload → distinct
-    try testing.expectEqual(@as(usize, 2), s.size());
+    try testing.expectEqual(@as(usize, 2), s.len());
     try testing.expect(s.contains(qnan));
     try testing.expect(s.contains(qnan2));
     try testing.expect(!(try s.add(qnan))); // same payload → no-op
-    try testing.expectEqual(@as(usize, 2), s.size());
+    try testing.expectEqual(@as(usize, 2), s.len());
 }
 
 test "F64I32TreeMap: ±0 distinct keys in a map" {
@@ -101,7 +101,7 @@ test "F64I32TreeMap: ±0 distinct keys in a map" {
     defer m.deinit();
     _ = try m.put(0.0, 1);
     _ = try m.put(-0.0, 2);
-    try testing.expectEqual(@as(usize, 2), m.size());
+    try testing.expectEqual(@as(usize, 2), m.len());
     try testing.expectEqual(@as(?i32, 1), m.get(0.0));
     try testing.expectEqual(@as(?i32, 2), m.get(-0.0));
 }

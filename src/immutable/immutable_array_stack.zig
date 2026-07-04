@@ -65,13 +65,13 @@ pub fn ImmutableArrayStack(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             const owned = try allocator.dupe(T, values);
             return .{ .items = owned, .allocator = allocator };
         }
 
         pub fn fromMutable(allocator: Allocator, mutable: *const Mutable) Allocator.Error!Self {
-            return try of(allocator, mutable.items.items);
+            return try fromSlice(allocator, mutable.items.items);
         }
 
         pub fn deinit(self: *Self) void {
@@ -145,7 +145,7 @@ pub fn ImmutableArrayStack(comptime T: type) type {
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
-            return try Mutable.of(self.allocator, self.items);
+            return try Mutable.fromSlice(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

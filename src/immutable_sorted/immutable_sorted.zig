@@ -186,11 +186,6 @@ pub fn ImmutableSortedMap(comptime K: type, comptime V: type) type {
             return self.keys_buf.len;
         }
 
-        /// Number of entries (spec alias for `len`).
-        pub fn size(self: *const Self) usize {
-            return self.keys_buf.len;
-        }
-
         /// Whether the map is empty.
         pub fn isEmpty(self: *const Self) bool {
             return self.keys_buf.len == 0;
@@ -465,11 +460,6 @@ pub fn ImmutableSortedSet(comptime T: type) type {
 
         /// Number of elements.
         pub fn len(self: *const Self) usize {
-            return self.elems_buf.len;
-        }
-
-        /// Number of elements (spec alias for `len`).
-        pub fn size(self: *const Self) usize {
             return self.elems_buf.len;
         }
 

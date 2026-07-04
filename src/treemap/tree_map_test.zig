@@ -73,7 +73,7 @@ test "TreeMap: parameterized put/get/containsKey/getOrDefault/remove/clear" {
             try std.testing.expectEqual(@as(?V, null), m.put(ks[0], vs[0]));
             try std.testing.expectEqual(@as(?V, null), m.put(ks[1], vs[1]));
             try std.testing.expectEqual(@as(usize, 2), m.len());
-            try std.testing.expectEqual(@as(usize, 2), m.size());
+            try std.testing.expectEqual(@as(usize, 2), m.len());
             try std.testing.expect(!m.isEmpty());
 
             // Overwrite returns old value.
@@ -146,7 +146,7 @@ test "TreeMap: parameterized functional ops, fluent API, eql" {
             defer a.deinit();
             _ = try a.withKeyValue(ks[0], vs[0]);
             _ = try a.withKeyValue(ks[1], vs[1]);
-            try std.testing.expectEqual(@as(usize, 2), a.size());
+            try std.testing.expectEqual(@as(usize, 2), a.len());
 
             // Insertion-order independence of eql (TreeMap is always sorted).
             var b = TreeMap(K, V).init(std.testing.allocator);

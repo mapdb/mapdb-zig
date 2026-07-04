@@ -64,7 +64,7 @@ pub fn PriorityQueue(comptime T: type) type {
             self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var q = init(allocator);
             try q.items.appendSlice(q.allocator, values);
             if (q.items.items.len > 1) {

@@ -96,7 +96,7 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
         try l.push(s[1]);
         try l.push(s[0]);
         try testing.expectEqual(@as(usize, 3), l.len());
-        try testing.expectEqual(@as(usize, 3), l.size());
+        try testing.expectEqual(@as(usize, 3), l.len());
         try testing.expect(l.contains(s[0]));
         try testing.expect(l.contains(s[1]));
         try testing.expectEqual(@as(?usize, 0), l.indexOf(s[0]));
@@ -108,7 +108,7 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
         try testing.expect(l.remove(s[0]));
         try testing.expectEqual(@as(usize, 2), l.len());
 
-        var l2 = try arraylist.ArrayList(T).of(testing.allocator, l.slice());
+        var l2 = try arraylist.ArrayList(T).fromSlice(testing.allocator, l.slice());
         defer l2.deinit();
         try testing.expect(l.eql(&l2));
     }
@@ -117,7 +117,7 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
 test "ArrayList: min/max/sort under canonical ordering" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var l = try arraylist.ArrayList(T).of(testing.allocator, &[_]T{ s[1], s[0] });
+        var l = try arraylist.ArrayList(T).fromSlice(testing.allocator, &[_]T{ s[1], s[0] });
         defer l.deinit();
         try testing.expectEqual(@as(?T, s[0]), l.min());
         try testing.expectEqual(@as(?T, s[1]), l.max());
@@ -131,24 +131,24 @@ test "ArrayList: min/max/sort under canonical ordering" {
 test "ArrayList: sum reduction type and value per element type" {
     // float: returns T, plain summation
     {
-        var l = try arraylist.ArrayList(f32).of(testing.allocator, &[_]f32{ 1.5, 2.5 });
+        var l = try arraylist.ArrayList(f32).fromSlice(testing.allocator, &[_]f32{ 1.5, 2.5 });
         defer l.deinit();
         try testing.expectEqual(@as(f32, 4.0), l.sum());
     }
     {
-        var l = try arraylist.ArrayList(f64).of(testing.allocator, &[_]f64{ 1.5, 2.5 });
+        var l = try arraylist.ArrayList(f64).fromSlice(testing.allocator, &[_]f64{ 1.5, 2.5 });
         defer l.deinit();
         try testing.expectEqual(@as(f64, 4.0), l.sum());
     }
     // bool: i64, count of trues
     {
-        var l = try arraylist.ArrayList(bool).of(testing.allocator, &[_]bool{ true, false, true });
+        var l = try arraylist.ArrayList(bool).fromSlice(testing.allocator, &[_]bool{ true, false, true });
         defer l.deinit();
         try testing.expectEqual(@as(i64, 2), l.sum());
     }
     // int widening: i64 accumulator (avoids i8 overflow)
     {
-        var l = try arraylist.ArrayList(i8).of(testing.allocator, &[_]i8{ 100, 100, 100 });
+        var l = try arraylist.ArrayList(i8).fromSlice(testing.allocator, &[_]i8{ 100, 100, 100 });
         defer l.deinit();
         try testing.expectEqual(@as(i64, 300), l.sum());
     }
@@ -167,7 +167,7 @@ test "ArrayList: marquee — f32 NaN bit-equality + signed-zero distinct + i64 s
     try testing.expect(!l.contains(0.0));
 
     // i64 sum-widening: values that would overflow i32 sum correctly.
-    var big = try arraylist.ArrayList(i32).of(testing.allocator, &[_]i32{ 2_000_000_000, 2_000_000_000 });
+    var big = try arraylist.ArrayList(i32).fromSlice(testing.allocator, &[_]i32{ 2_000_000_000, 2_000_000_000 });
     defer big.deinit();
     try testing.expectEqual(@as(i64, 4_000_000_000), big.sum());
 }
@@ -175,7 +175,7 @@ test "ArrayList: marquee — f32 NaN bit-equality + signed-zero distinct + i64 s
 test "ArrayList: sum wraps two's-complement on i64 overflow (D4)" {
     // Java/Go originals wrap on overflow; Zig's default `+=` would trap (safe)
     // or be UB (ReleaseFast). sum() must wrap: maxInt(i64) + 1 == minInt(i64).
-    var l = try arraylist.ArrayList(i64).of(
+    var l = try arraylist.ArrayList(i64).fromSlice(
         testing.allocator,
         &[_]i64{ std.math.maxInt(i64), 1 },
     );
@@ -183,7 +183,7 @@ test "ArrayList: sum wraps two's-complement on i64 overflow (D4)" {
     try testing.expectEqual(@as(i64, std.math.minInt(i64)), l.sum());
 
     // Symmetric underflow: minInt(i64) + (-1) == maxInt(i64).
-    var u = try arraylist.ArrayList(i64).of(
+    var u = try arraylist.ArrayList(i64).fromSlice(
         testing.allocator,
         &[_]i64{ std.math.minInt(i64), -1 },
     );
@@ -195,12 +195,12 @@ test "ArrayList: sum over wide unsigned compiles and folds low 64 bits (D4)" {
     // ArrayList(u128) is a legal generic instantiation; sum() must compile and
     // reduce wide-unsigned elements to their low 64 bits (two's-complement at
     // the i64 accumulator) rather than @intCast-trapping.
-    var l = try arraylist.ArrayList(u128).of(testing.allocator, &[_]u128{ 1, 2, 3 });
+    var l = try arraylist.ArrayList(u128).fromSlice(testing.allocator, &[_]u128{ 1, 2, 3 });
     defer l.deinit();
     try testing.expectEqual(@as(i64, 6), l.sum());
 
     // maxInt(u128) truncates to all-ones u64 => -1 as i64.
-    var w = try arraylist.ArrayList(u128).of(testing.allocator, &[_]u128{std.math.maxInt(u128)});
+    var w = try arraylist.ArrayList(u128).fromSlice(testing.allocator, &[_]u128{std.math.maxInt(u128)});
     defer w.deinit();
     try testing.expectEqual(@as(i64, -1), w.sum());
 }
@@ -218,9 +218,9 @@ test "HashSet: parameterized add/contains/remove/set-ops" {
         try testing.expect(set.remove(s[0]));
         try testing.expect(!set.contains(s[0]));
 
-        var a = try hashset.HashSet(T).of(testing.allocator, &[_]T{s[0]});
+        var a = try hashset.HashSet(T).fromSlice(testing.allocator, &[_]T{s[0]});
         defer a.deinit();
-        var b = try hashset.HashSet(T).of(testing.allocator, &[_]T{s[1]});
+        var b = try hashset.HashSet(T).fromSlice(testing.allocator, &[_]T{s[1]});
         defer b.deinit();
         var u = try a.setUnion(&b);
         defer u.deinit();
@@ -277,7 +277,7 @@ test "PriorityQueue: parameterized min-heap order + contains" {
 test "TreeSet: parameterized sorted ops + min/max + ceiling/floor" {
     inline for (type_axis) |T| {
         const s = samples(T);
-        var set = try treeset.TreeSet(T).of(testing.allocator, &[_]T{ s[1], s[0] });
+        var set = try treeset.TreeSet(T).fromSlice(testing.allocator, &[_]T{ s[1], s[0] });
         defer set.deinit();
         try testing.expectEqual(@as(?T, s[0]), set.min());
         try testing.expectEqual(@as(?T, s[1]), set.max());
@@ -346,7 +346,7 @@ test "TreeSet: f32 total order — NaN sorts to end, -0.0 and +0.0 distinct" {
 }
 
 test "PriorityQueue: f32 ordering pops ascending including negatives" {
-    var q = try priority_queue.PriorityQueue(f32).of(testing.allocator, &[_]f32{ 3.0, -1.0, 2.0, -5.0 });
+    var q = try priority_queue.PriorityQueue(f32).fromSlice(testing.allocator, &[_]f32{ 3.0, -1.0, 2.0, -5.0 });
     defer q.deinit();
     try testing.expectEqual(@as(?f32, -5.0), q.pop());
     try testing.expectEqual(@as(?f32, -1.0), q.pop());
@@ -386,7 +386,7 @@ test "F3 OOM: HashSet.of no partial-result leak" {
     var idx: usize = 0;
     while (idx < 128) : (idx += 1) {
         var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
-        if (hashset.HashSet(i32).of(fa.allocator(), &[_]i32{ 1, 2, 3, 4, 5, 6, 7, 8 })) |res| {
+        if (hashset.HashSet(i32).fromSlice(fa.allocator(), &[_]i32{ 1, 2, 3, 4, 5, 6, 7, 8 })) |res| {
             var r = res;
             r.deinit();
             break;
@@ -400,7 +400,7 @@ test "F3 OOM: TreeSet.of no partial-result leak" {
     var idx: usize = 0;
     while (idx < 128) : (idx += 1) {
         var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = idx });
-        if (treeset.TreeSet(i32).of(fa.allocator(), &[_]i32{ 5, 3, 8, 1, 9, 2, 7, 4 })) |res| {
+        if (treeset.TreeSet(i32).fromSlice(fa.allocator(), &[_]i32{ 5, 3, 8, 1, 9, 2, 7, 4 })) |res| {
             var r = res;
             r.deinit();
             break;
@@ -547,7 +547,7 @@ test "F4 OOM: ListMultimap.valuesToSlice no scratch-list leak" {
 // ---------------------------------------------------------------------------
 
 test "ArrayList: {f} dispatch renders [1, 2, 3]" {
-    var l = try arraylist.ArrayList(i32).of(testing.allocator, &[_]i32{ 1, 2, 3 });
+    var l = try arraylist.ArrayList(i32).fromSlice(testing.allocator, &[_]i32{ 1, 2, 3 });
     defer l.deinit();
     const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{l});
     defer testing.allocator.free(out);
@@ -555,7 +555,7 @@ test "ArrayList: {f} dispatch renders [1, 2, 3]" {
 }
 
 test "HashSet: {f} dispatch renders {7}" {
-    var set = try hashset.HashSet(i32).of(testing.allocator, &[_]i32{7});
+    var set = try hashset.HashSet(i32).fromSlice(testing.allocator, &[_]i32{7});
     defer set.deinit();
     const out = try std.fmt.allocPrint(testing.allocator, "{f}", .{set});
     defer testing.allocator.free(out);

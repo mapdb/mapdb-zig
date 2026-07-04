@@ -60,7 +60,7 @@ pub fn ImmutableHashBag(comptime T: type) type {
         const Self = @This();
         const Mutable = MutableType(T);
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var mutable = try Mutable.init(allocator);
             defer mutable.deinit();
             for (values) |val| try mutable.add(val);

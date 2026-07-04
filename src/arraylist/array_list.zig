@@ -72,7 +72,7 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         /// Create a list from a slice of values.
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var list = init(allocator);
             try list.items.appendSlice(list.allocator, values);
             return list;
@@ -146,24 +146,9 @@ pub fn ArrayList(comptime T: type) type {
             return self.items.items.len;
         }
 
-        /// Alias for len() — matches Go/Java naming.
-        pub fn size(self: *const Self) usize {
-            return self.len();
-        }
-
         /// Returns true if the list is empty.
         pub fn isEmpty(self: *const Self) bool {
             return self.items.items.len == 0;
-        }
-
-        /// Alias for push() — matches Go/Java Add naming.
-        pub fn add(self: *Self, value: T) Allocator.Error!void {
-            try self.push(value);
-        }
-
-        /// Alias for pushAll() — matches Go/Java AddAll naming.
-        pub fn addAll(self: *Self, values: []const T) Allocator.Error!void {
-            try self.pushAll(values);
         }
 
         /// Removes all elements.

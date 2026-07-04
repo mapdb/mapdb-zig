@@ -136,11 +136,6 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         }
 
         /// Current entry count (`0 ..= max_size`).
-        pub fn size(self: *const Self) usize {
-            return self.index.count();
-        }
-
-        /// Alias for `size` (Zig idiom).
         pub fn len(self: *const Self) usize {
             return self.index.count();
         }
@@ -279,8 +274,8 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
             // every op, so a new-key insert needs AT MOST ONE size eviction
             // when max_size >= 1 (spec §"At most one eviction per put"). An
             // `if` (not a loop) makes the one-eviction contract explicit.
-            std.debug.assert(self.size() <= self.max_size);
-            if (self.size() >= self.max_size) {
+            std.debug.assert(self.len() <= self.max_size);
+            if (self.len() >= self.max_size) {
                 const victim = self.head; // LRU end; valid since size() >= 1.
                 self.evictNode(victim, .size);
             }
@@ -391,7 +386,7 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         /// All keys in LRU order (least-recently-used first), caller-owned.
         /// A read-only snapshot: does NOT refresh recency and never evicts.
         pub fn keys(self: *const Self, allocator: Allocator) ![]K {
-            var out = try allocator.alloc(K, self.size());
+            var out = try allocator.alloc(K, self.len());
             var i: usize = 0;
             var cur = self.head;
             while (cur != NIL) : (i += 1) {
@@ -404,7 +399,7 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         /// All values in LRU order, parallel to `keys`. Caller-owned read-only
         /// snapshot.
         pub fn values(self: *const Self, allocator: Allocator) ![]V {
-            var out = try allocator.alloc(V, self.size());
+            var out = try allocator.alloc(V, self.len());
             var i: usize = 0;
             var cur = self.head;
             while (cur != NIL) : (i += 1) {
@@ -420,7 +415,7 @@ pub fn BoundedLruMap(comptime K: type, comptime V: type) type {
         /// All `(key, value)` entries in LRU order. Caller-owned read-only
         /// snapshot.
         pub fn entries(self: *const Self, allocator: Allocator) ![]Entry {
-            var out = try allocator.alloc(Entry, self.size());
+            var out = try allocator.alloc(Entry, self.len());
             var i: usize = 0;
             var cur = self.head;
             while (cur != NIL) : (i += 1) {
@@ -519,7 +514,7 @@ test "getOrDefault hit refreshes, miss does not" {
     _ = try m.put(2, 20);
     try testing.expectEqual(@as(i32, 10), m.getOrDefault(1, -1)); // hit: 1 MRU
     try testing.expectEqual(@as(i32, -1), m.getOrDefault(99, -1)); // miss: no insert/refresh
-    try testing.expectEqual(@as(usize, 2), m.size());
+    try testing.expectEqual(@as(usize, 2), m.len());
     try testing.expect(!m.containsKey(99));
     _ = try m.put(3, 30); // evicts 2
     try expectKeys(&m, a, &.{ 1, 3 });
@@ -598,7 +593,7 @@ test "clear fires no callback and stays sane" {
     _ = try m.put(2, 20);
     m.clear();
     try testing.expect(m.isEmpty());
-    try testing.expectEqual(@as(usize, 0), m.size());
+    try testing.expectEqual(@as(usize, 0), m.len());
     try testing.expectEqual(@as(usize, 0), log.entries.items.len);
     _ = try m.put(7, 70); // reuse works after clear
     try expectKeys(&m, a, &.{7});
@@ -613,7 +608,7 @@ test "capacity zero drops everything" {
     try testing.expectEqual(@as(?i32, null), try m.put(1, 10));
     try testing.expectEqual(@as(?i32, null), try m.put(2, 20));
     try testing.expectEqual(@as(?i32, null), try m.put(3, 30));
-    try testing.expectEqual(@as(usize, 0), m.size());
+    try testing.expectEqual(@as(usize, 0), m.len());
     try testing.expect(m.isEmpty());
     try testing.expectEqual(@as(?i32, null), m.get(1));
     try testing.expectEqual(@as(usize, 0), log.entries.items.len); // never resident
@@ -803,7 +798,7 @@ test "miss does not refresh or insert" {
     _ = try m.put(2, 20); // {1(LRU), 2}
     try testing.expectEqual(@as(?i32, null), m.get(99));
     try testing.expectEqual(@as(i32, -1), m.getOrDefault(99, -1));
-    try testing.expectEqual(@as(usize, 2), m.size());
+    try testing.expectEqual(@as(usize, 2), m.len());
     _ = try m.put(4, 40); // 1 still LRU -> evicted
     try expectKeys(&m, a, &.{ 2, 4 });
 }
@@ -831,7 +826,7 @@ test "slot reuse after eviction: no dangling, arena bounded" {
     var k: i32 = 0;
     while (k < 1000) : (k += 1) {
         _ = try m.put(k, k * 10);
-        try testing.expect(m.size() <= 3);
+        try testing.expect(m.len() <= 3);
     }
     try expectKeys(&m, a, &.{ 997, 998, 999 });
     try expectValues(&m, a, &.{ 9970, 9980, 9990 });

@@ -42,7 +42,7 @@ pub fn ArrayDeque(comptime T: type) type {
             self.items.deinit(self.allocator);
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var d = init(allocator);
             try d.items.appendSlice(d.allocator, values);
             return d;

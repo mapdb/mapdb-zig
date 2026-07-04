@@ -167,7 +167,7 @@ test "ImmutableHashMap: parameterized fromMutable / read ops / toMutable indepen
 test "ImmutableArrayList: parameterized read ops + numeric-gated sum/min/max" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var il = try ImmutableArrayList(T).of(std.testing.allocator, &vs);
+        var il = try ImmutableArrayList(T).fromSlice(std.testing.allocator, &vs);
         defer il.deinit();
 
         try std.testing.expectEqual(@as(usize, 3), il.len());
@@ -193,7 +193,7 @@ test "ImmutableArrayList: parameterized read ops + numeric-gated sum/min/max" {
         }
 
         // eql against an identical list.
-        var il2 = try ImmutableArrayList(T).of(std.testing.allocator, &vs);
+        var il2 = try ImmutableArrayList(T).fromSlice(std.testing.allocator, &vs);
         defer il2.deinit();
         try std.testing.expect(il.eql(&il2));
 
@@ -229,7 +229,7 @@ test "ImmutableHashBag: parameterized occurrence counting + independence" {
         const vs = samples(T);
         // of() with a duplicate of vs[0].
         const data = [_]T{ vs[0], vs[0], vs[1] };
-        var ib = try ImmutableHashBag(T).of(std.testing.allocator, &data);
+        var ib = try ImmutableHashBag(T).fromSlice(std.testing.allocator, &data);
         defer ib.deinit();
 
         try std.testing.expectEqual(@as(usize, 2), ib.occurrencesOf(vs[0]));
@@ -247,7 +247,7 @@ test "ImmutableHashBag: parameterized occurrence counting + independence" {
 test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var s1 = try ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
+        var s1 = try ImmutableArrayStack(T).fromSlice(std.testing.allocator, &[_]T{vs[0]});
         defer s1.deinit();
         var s2 = try s1.push(vs[1]);
         defer s2.deinit();
@@ -263,7 +263,7 @@ test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
         try std.testing.expectEqual(vs[1], r.value);
         try std.testing.expectEqual(@as(usize, 1), s3.len());
 
-        var s4 = try ImmutableArrayStack(T).of(std.testing.allocator, &[_]T{vs[0]});
+        var s4 = try ImmutableArrayStack(T).fromSlice(std.testing.allocator, &[_]T{vs[0]});
         defer s4.deinit();
         try std.testing.expect(s1.eql(&s4));
     }
@@ -272,7 +272,7 @@ test "ImmutableArrayStack: parameterized push/pop/peek persistence" {
 test "ImmutableArrayDeque: parameterized withFirst/withLast/without persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var d1 = try ImmutableArrayDeque(T).of(std.testing.allocator, &[_]T{vs[1]});
+        var d1 = try ImmutableArrayDeque(T).fromSlice(std.testing.allocator, &[_]T{vs[1]});
         defer d1.deinit();
         var d2 = try d1.withFirst(vs[0]);
         defer d2.deinit();
@@ -301,7 +301,7 @@ test "ImmutableArrayDeque: parameterized withFirst/withLast/without persistence"
 test "ImmutablePriorityQueue: parameterized heap order + persistence" {
     inline for (type_axis) |T| {
         const vs = samples(T);
-        var q = try ImmutablePriorityQueue(T).of(std.testing.allocator, &vs);
+        var q = try ImmutablePriorityQueue(T).fromSlice(std.testing.allocator, &vs);
         defer q.deinit();
         try std.testing.expectEqual(@as(usize, 3), q.len());
         try std.testing.expect(q.peek() != null);
@@ -370,7 +370,7 @@ test "ImmutableF32HashMap key: NaN and ±0 distinctness survives snapshot" {
 }
 
 test "ImmutableF32ArrayList: contains uses bit equality (+0.0 != -0.0), totalCmp min/max" {
-    var il = try ImmutableArrayList(f32).of(std.testing.allocator, &[_]f32{ 0.0, 2.0, -1.0 });
+    var il = try ImmutableArrayList(f32).fromSlice(std.testing.allocator, &[_]f32{ 0.0, 2.0, -1.0 });
     defer il.deinit();
     // +0.0 present, -0.0 absent under bit equality.
     try std.testing.expect(il.contains(0.0));
@@ -382,7 +382,7 @@ test "ImmutableF32ArrayList: contains uses bit equality (+0.0 != -0.0), totalCmp
 
 test "ImmutableF32PriorityQueue: float total-order min-heap via delegation" {
     // -0.0 sorts below +0.0 under total order; smallest must surface at peek.
-    var q = try ImmutablePriorityQueue(f32).of(std.testing.allocator, &[_]f32{ 3.0, -0.0, 0.0, 1.0 });
+    var q = try ImmutablePriorityQueue(f32).fromSlice(std.testing.allocator, &[_]f32{ 3.0, -0.0, 0.0, 1.0 });
     defer q.deinit();
     const r = (try q.pop()).?;
     var q2 = r.queue;
@@ -392,14 +392,14 @@ test "ImmutableF32PriorityQueue: float total-order min-heap via delegation" {
 }
 
 test "ImmutableI8ArrayList: sum widens to i64 (no i8 overflow)" {
-    var il = try ImmutableArrayList(i8).of(std.testing.allocator, &[_]i8{ 100, 100, 100 });
+    var il = try ImmutableArrayList(i8).fromSlice(std.testing.allocator, &[_]i8{ 100, 100, 100 });
     defer il.deinit();
     // 300 would overflow i8 but the accumulator is i64.
     try std.testing.expectEqual(@as(i64, 300), il.sum());
 }
 
 test "ImmutableI64ArrayList: sum is plain i64 accumulation" {
-    var il = try ImmutableArrayList(i64).of(std.testing.allocator, &[_]i64{ 10, 20, 30 });
+    var il = try ImmutableArrayList(i64).fromSlice(std.testing.allocator, &[_]i64{ 10, 20, 30 });
     defer il.deinit();
     try std.testing.expectEqual(@as(i64, 60), il.sum());
 }

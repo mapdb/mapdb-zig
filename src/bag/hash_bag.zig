@@ -43,7 +43,7 @@ pub fn HashBag(comptime T: type) type {
             self.counts.deinit();
         }
 
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var bag = try init(allocator);
             for (values) |val| {
                 try bag.add(val);

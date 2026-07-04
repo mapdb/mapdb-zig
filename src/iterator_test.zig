@@ -287,7 +287,7 @@ test "ListMultimap.iterator yields one entry per (key, value)" {
         try testing.expect(m.containsKeyValue(entry.key, entry.value));
         count += 1;
     }
-    try testing.expectEqual(m.size(), count);
+    try testing.expectEqual(m.len(), count);
     try testing.expectEqual(@as(usize, 3), count);
 }
 
@@ -306,7 +306,7 @@ test "SetMultimap.iterator yields one entry per (key, value)" {
         try testing.expect(m.containsKeyValue(entry.key, entry.value));
         count += 1;
     }
-    try testing.expectEqual(m.size(), count);
+    try testing.expectEqual(m.len(), count);
     try testing.expectEqual(@as(usize, 3), count);
 }
 
@@ -316,7 +316,7 @@ test "SetMultimap.iterator yields one entry per (key, value)" {
 
 test "ImmutableArrayList.iterator yields insertion order" {
     const a = testing.allocator;
-    var imm = try immutable.ImmutableI32ArrayList.of(a, &[_]i32{ 4, 5, 6 });
+    var imm = try immutable.ImmutableI32ArrayList.fromSlice(a, &[_]i32{ 4, 5, 6 });
     defer imm.deinit();
     var it = imm.iterator();
     try testing.expectEqual(@as(?i32, 4), it.next());
@@ -327,7 +327,7 @@ test "ImmutableArrayList.iterator yields insertion order" {
 
 test "ImmutableHashSet.iterator yields every element once" {
     const a = testing.allocator;
-    var imm = try immutable.ImmutableI32HashSet.of(a, &[_]i32{ 1, 2, 3, 2 });
+    var imm = try immutable.ImmutableI32HashSet.fromSlice(a, &[_]i32{ 1, 2, 3, 2 });
     defer imm.deinit();
     var got = std.ArrayListUnmanaged(i32){};
     defer got.deinit(a);
@@ -358,7 +358,7 @@ test "ImmutableHashMap.iterator yields every entry once" {
 
 test "ImmutableHashBag.iterator yields each element by occurrence" {
     const a = testing.allocator;
-    var imm = try immutable.ImmutableI32HashBag.of(a, &[_]i32{ 9, 9, 8 });
+    var imm = try immutable.ImmutableI32HashBag.fromSlice(a, &[_]i32{ 9, 9, 8 });
     defer imm.deinit();
     var got = std.ArrayListUnmanaged(i32){};
     defer got.deinit(a);

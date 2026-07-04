@@ -82,12 +82,12 @@ pub fn assertList(comptime T: type) void {
     }
 }
 
-/// Mutable ordered list. Adds `add` (append) and `set` (positional replace).
+/// Mutable ordered list. Adds `push` (append) and `set` (positional replace).
 pub fn assertMutableList(comptime T: type) void {
     assertList(T);
     assertMutableCollection(T);
     comptime {
-        if (!@hasDecl(T, "add")) @compileError(@typeName(T) ++ " missing add()");
+        if (!@hasDecl(T, "push")) @compileError(@typeName(T) ++ " missing push()");
         if (!@hasDecl(T, "set")) @compileError(@typeName(T) ++ " missing set()");
     }
 }

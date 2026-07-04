@@ -138,11 +138,6 @@ pub fn TreeMap(comptime K: type, comptime V: type) type {
             return self.keys.items.len;
         }
 
-        /// Alias for len() — matches Go/Java naming.
-        pub fn size(self: *const Self) usize {
-            return self.len();
-        }
-
         pub fn isEmpty(self: *const Self) bool {
             return self.keys.items.len == 0;
         }

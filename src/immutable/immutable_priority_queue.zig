@@ -69,8 +69,8 @@ pub fn ImmutablePriorityQueue(comptime T: type) type {
         const Mutable = MutableType(T);
 
         /// Heapifies `values` (copy) and wraps the result. O(n).
-        pub fn of(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var tmp = try Mutable.of(allocator, values);
+        pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
+            var tmp = try Mutable.fromSlice(allocator, values);
             defer tmp.deinit();
             const owned = try allocator.dupe(T, tmp.slice());
             return .{ .items = owned, .allocator = allocator };
@@ -155,7 +155,7 @@ pub fn ImmutablePriorityQueue(comptime T: type) type {
         }
 
         pub fn toMutable(self: *const Self) Allocator.Error!Mutable {
-            return try Mutable.of(self.allocator, self.items);
+            return try Mutable.fromSlice(self.allocator, self.items);
         }
 
         pub fn eql(self: *const Self, other: *const Self) bool {

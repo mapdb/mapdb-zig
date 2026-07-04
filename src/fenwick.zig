@@ -89,11 +89,6 @@ pub const FenwickTree = struct {
         return self.n;
     }
 
-    /// Alias for `len` (the spec's structural key).
-    pub fn size(self: *const FenwickTree) usize {
-        return self.n;
-    }
-
     /// True iff the tree is empty (`n == 0`).
     pub fn isEmpty(self: *const FenwickTree) bool {
         return self.n == 0;
@@ -297,7 +292,7 @@ test "worked example from spec" {
     try testing.expectEqual(@as(i64, 11), f.rangeSum(1, 7));
     try testing.expectEqual(@as(i64, 2), f.get(3));
     try testing.expectEqual(@as(usize, 8), f.len());
-    try testing.expectEqual(@as(usize, 8), f.size());
+    try testing.expectEqual(@as(usize, 8), f.len());
     try testing.expect(!f.isEmpty());
 
     const ct = try f.canonicalTree(testing.allocator);

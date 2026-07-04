@@ -3499,7 +3499,7 @@ fn runF32HashMap(
         defer vbuf.deinit();
         const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try vw.print("{d}", .{m.size()});
+            try vw.print("{d}", .{m.len()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
             try vw.print("{s}", .{if (m.isEmpty()) "true" else "false"});
         } else if (std.mem.startsWith(u8, key, "get_")) {
@@ -3576,7 +3576,7 @@ fn runF32HashSet(
         defer vbuf.deinit();
         const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try vw.print("{d}", .{set.size()});
+            try vw.print("{d}", .{set.len()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
             try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
         } else if (std.mem.startsWith(u8, key, "contains_")) {
@@ -3632,7 +3632,7 @@ fn runF32TreeSet(
         defer vbuf.deinit();
         const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try vw.print("{d}", .{set.size()});
+            try vw.print("{d}", .{set.len()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
             try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
         } else if (std.mem.eql(u8, key, "min")) {
@@ -3767,7 +3767,7 @@ fn runI64HashMap(
         const vw = vbuf.writer();
         var known = true;
         if (std.mem.eql(u8, key, "size")) {
-            try vw.print("{d}", .{m.size()});
+            try vw.print("{d}", .{m.len()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
             try vw.print("{s}", .{if (m.isEmpty()) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sorted_keys")) {
@@ -4124,7 +4124,7 @@ fn lruEvalAssertion(
     allocator: Allocator,
 ) !bool {
     if (std.mem.eql(u8, key, "size")) {
-        try w.print("{d}", .{map.size()});
+        try w.print("{d}", .{map.len()});
     } else if (std.mem.eql(u8, key, "is_empty")) {
         try w.writeAll(if (map.isEmpty()) "true" else "false");
     } else if (std.mem.eql(u8, key, "lru_order_keys")) {
