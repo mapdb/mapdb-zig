@@ -259,7 +259,7 @@ pub fn HashBag(comptime T: type) type {
 
         /// Returns a new bag with only elements satisfying the predicate (preserving counts).
         pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {
@@ -271,7 +271,7 @@ pub fn HashBag(comptime T: type) type {
 
         /// Returns a new bag with elements NOT satisfying the predicate.
         pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.entries[i].occupied) {

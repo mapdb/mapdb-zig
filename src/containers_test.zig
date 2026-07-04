@@ -599,3 +599,47 @@ test "TreeBag: {f} dispatch renders {1x2, 2x1} in sorted order" {
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("{1x2, 2x1}", out);
 }
+
+fn f_isEven(_: void, v: i32) bool {
+    return @rem(v, 2) == 0;
+}
+
+// Regression: select/reject are generic methods that only compile when
+// instantiated. A stale `try init(...)` (from the lazy-infallible-init wave)
+// slipped past `zig build test` because nothing exercised them. These tests
+// force instantiation so that class of break is caught at build time.
+test "HashSet.select/reject compile and filter (infallible-init regression)" {
+    var s = try hashset.HashSet(i32).fromSlice(testing.allocator, &[_]i32{ 1, 2, 3, 4, 5, 6 });
+    defer s.deinit();
+
+    var evens = try s.select({}, f_isEven);
+    defer evens.deinit();
+    try testing.expectEqual(@as(usize, 3), evens.len());
+    try testing.expect(evens.contains(2) and evens.contains(4) and evens.contains(6));
+    try testing.expect(!evens.contains(1));
+
+    var odds = try s.reject({}, f_isEven);
+    defer odds.deinit();
+    try testing.expectEqual(@as(usize, 3), odds.len());
+    try testing.expect(odds.contains(1) and odds.contains(3) and odds.contains(5));
+    try testing.expect(!odds.contains(2));
+}
+
+test "HashBag.select/reject compile and filter, preserving counts (infallible-init regression)" {
+    var b = bag.HashBag(i32).init(testing.allocator);
+    defer b.deinit();
+    try b.addOccurrences(2, 3);
+    try b.addOccurrences(3, 2);
+    try b.addOccurrences(4, 1);
+
+    var evens = try b.select({}, f_isEven);
+    defer evens.deinit();
+    try testing.expectEqual(@as(usize, 3), evens.occurrencesOf(2));
+    try testing.expectEqual(@as(usize, 1), evens.occurrencesOf(4));
+    try testing.expectEqual(@as(usize, 0), evens.occurrencesOf(3));
+
+    var odds = try b.reject({}, f_isEven);
+    defer odds.deinit();
+    try testing.expectEqual(@as(usize, 2), odds.occurrencesOf(3));
+    try testing.expectEqual(@as(usize, 0), odds.occurrencesOf(2));
+}

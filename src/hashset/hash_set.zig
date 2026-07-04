@@ -182,7 +182,7 @@ pub fn HashSet(comptime T: type) type {
 
         /// Returns a new set with only elements satisfying the predicate.
         pub fn select(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
@@ -195,7 +195,7 @@ pub fn HashSet(comptime T: type) type {
 
         /// Returns a new set with elements NOT satisfying the predicate.
         pub fn reject(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) Allocator.Error!Self {
-            var result = try init(self.allocator);
+            var result = init(self.allocator);
             errdefer result.deinit();
             for (0..self.inner.capacity) |i| {
                 if (self.inner.entries[i].occupied) {
