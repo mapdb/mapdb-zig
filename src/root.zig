@@ -29,26 +29,33 @@
 //!
 //! The library does **not** force a single allocator model: both the managed
 //! (stored-allocator) style and an explicit-allocator style are supported, and
-//! neither is being removed. Where a method hands back **raw owned memory** you
-//! choose the backing allocator explicitly, so the result can live in a
-//! different arena than the collection:
+//! neither is being removed.
 //!
-//! > **A method that takes an `Allocator` returns raw owned memory the caller
-//! > frees with that allocator; a method that takes none returns no raw memory
-//! > the caller must free.**
+//! For **raw owned memory** (a bare slice), the signature alone tells you who
+//! owns it:
+//!
+//! > **A method that returns raw owned memory (`![]T`) takes an `Allocator` and
+//! > the caller frees the result with it; a method that takes no allocator
+//! > returns no raw memory the caller must free.**
 //!
 //! So slice/raw materializers (`toSlice(allocator)`, `rangeKeysIn(range,
-//! allocator)`, …) take an explicit allocator; mutators and count-returning ops
+//! allocator)`, …) take an explicit allocator — the result can live in a
+//! different arena than the collection; mutators and count-returning ops
 //! (`put`, `remove`, `removeRange`, …) take none and use the stored allocator.
 //! Borrowed views (`slice`, `…Slice`, `items`) allocate nothing and are named
 //! so they never read as owned.
 //!
-//! Functional methods that return a **fresh collection** (`select`, `reject`,
-//! `setUnion`, `reversed`, `toImmutable`/`toMutable`, …) are managed: the result
-//! is backed by the source's stored allocator and cleaned up by its own
-//! `deinit`. A demand-driven explicit-allocator tier for the flagship types can
-//! be added without disturbing this default; it is intentionally not built
-//! speculatively.
+//! Methods that return a **fresh collection** (rather than raw memory) hand back
+//! a managed result with its own `deinit`. Here both allocator styles appear and
+//! both are supported: some take an explicit allocator so the result can be
+//! placed in a chosen arena (`subMap`/`subSet`, the object-tier
+//! `setUnion`/`intersect`/`difference`, `fromSlice`/`fromMutable`); others use
+//! the source's stored allocator (`select`/`reject`/`reversed`/`toImmutable`,
+//! the primitive set algebra). The rule is simply: if the method takes an
+//! allocator the result is backed by it, otherwise by the source's stored one —
+//! either way you `deinit` the returned collection. A fuller explicit-allocator
+//! tier can be added on demand without disturbing the managed default; it is
+//! intentionally not built speculatively.
 //!
 //! ## Concurrency contract
 //!

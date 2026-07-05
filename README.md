@@ -47,20 +47,22 @@ ergonomics. Each type wraps an unmanaged stdlib core (`ArrayListUnmanaged`,
 
 The library does **not** force a single allocator model — both the managed
 (stored-allocator) and explicit-allocator styles are supported, and neither is
-removed. Where a method returns **raw owned memory** you pick the allocator
-explicitly, so the result can live in a different arena than the collection:
-**a method that takes an allocator returns raw owned memory you free with that
-allocator; a method that takes none returns no raw memory you must free.** So
-slice/raw materializers (`toSlice(allocator)`, `rangeKeysIn(range, allocator)`)
-take an explicit allocator; mutators and count-returning ops (`put`, `remove`,
+removed. For **raw owned memory** (a bare slice) the signature tells you who
+owns it: **a method that returns raw owned memory (`![]T`) takes an allocator
+and you free the result with it; a method that takes none returns no raw memory
+you must free.** So slice/raw materializers (`toSlice(allocator)`,
+`rangeKeysIn(range, allocator)`) take an explicit allocator — the result can
+live in a different arena; mutators and count-returning ops (`put`, `remove`,
 `removeRange`) use the stored one. Borrowed views (`slice`, `…Slice`, `items`)
 allocate nothing.
 
-Functional methods that return a **fresh collection** (`select`, `reject`,
-`setUnion`, `reversed`, `toImmutable`/`toMutable`) are managed: the result is
-backed by the source's stored allocator and freed by its own `deinit`. An
-explicit-allocator tier for the flagship types can be added on demand without
-disturbing this default.
+Methods that return a **fresh collection** hand back a managed result with its
+own `deinit`, and both styles appear: some take an explicit allocator so the
+result can be placed in a chosen arena (`subMap`/`subSet`, the object-tier
+`setUnion`/`intersect`/`difference`, `fromSlice`/`fromMutable`); others use the
+source's stored allocator (`select`/`reject`/`reversed`/`toImmutable`, the
+primitive set algebra). Either way you `deinit` the returned collection. A
+fuller explicit-allocator tier can be added on demand.
 
 ## Quick Start
 
