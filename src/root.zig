@@ -19,29 +19,36 @@
 //! `src/object/object.zig` module doc and
 //! `todo/fable-zig/fable-review-01-ownership-model.md`.
 //!
-//! ## Memory management (managed tier)
+//! ## Memory management
 //!
-//! Every collection is **managed**: it stores the allocator handed to `init`
-//! and uses it for all of its own growth and teardown, so you do not thread an
-//! allocator through method calls. This is a deliberate design choice — the
-//! library's identity is batteries-included, Eclipse-Collections-style
-//! ergonomics — even though the ecosystem direction (and each collection's own
-//! internals: `ArrayListUnmanaged`, `HashMapUnmanaged`, treaps) is
-//! unmanaged-first. No speculative parallel `Unmanaged` tier is provided; the
-//! managed wrappers over unmanaged stdlib cores are the supported surface.
+//! Every collection is **managed by default**: it stores the allocator handed
+//! to `init` and uses it for its own growth and teardown, so the common path
+//! threads no allocator through method calls — batteries-included, Eclipse-
+//! Collections-style ergonomics. Internally each type wraps an unmanaged stdlib
+//! core (`ArrayListUnmanaged`, `HashMapUnmanaged`, treaps).
 //!
-//! One rule governs where an `Allocator` reappears in a method signature:
+//! The library does **not** force a single allocator model: both the managed
+//! (stored-allocator) style and an explicit-allocator style are supported, and
+//! neither is being removed. Where a method hands back **raw owned memory** you
+//! choose the backing allocator explicitly, so the result can live in a
+//! different arena than the collection:
 //!
-//! > **A method that takes an `Allocator` returns owned memory the caller must
-//! > free with that allocator; a method that takes none never returns anything
-//! > the caller may free.** (takes-allocator ⇔ caller-owns)
+//! > **A method that takes an `Allocator` returns raw owned memory the caller
+//! > frees with that allocator; a method that takes none returns no raw memory
+//! > the caller must free.**
 //!
-//! So materializers that hand you a fresh owned slice/collection
-//! (`toSlice(allocator)`, `rangeKeysIn(range, allocator)`, …) take an explicit
-//! allocator, while mutators and count-returning operations (`put`, `remove`,
-//! `removeRange`, …) use the stored allocator and take none. Borrowed views
-//! (`slice`, `…Slice`, `items`) allocate nothing and are named so they never
-//! read as owned.
+//! So slice/raw materializers (`toSlice(allocator)`, `rangeKeysIn(range,
+//! allocator)`, …) take an explicit allocator; mutators and count-returning ops
+//! (`put`, `remove`, `removeRange`, …) take none and use the stored allocator.
+//! Borrowed views (`slice`, `…Slice`, `items`) allocate nothing and are named
+//! so they never read as owned.
+//!
+//! Functional methods that return a **fresh collection** (`select`, `reject`,
+//! `setUnion`, `reversed`, `toImmutable`/`toMutable`, …) are managed: the result
+//! is backed by the source's stored allocator and cleaned up by its own
+//! `deinit`. A demand-driven explicit-allocator tier for the flagship types can
+//! be added without disturbing this default; it is intentionally not built
+//! speculatively.
 //!
 //! ## Concurrency contract
 //!

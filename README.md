@@ -39,21 +39,28 @@ Generic comptime collections using `pub fn Type(comptime T: type) type`:
 
 ## Memory management
 
-Every collection is **managed**: it stores the allocator you pass to `init` and
-uses it for all its own growth and teardown, so you don't thread an allocator
-through method calls. This is a deliberate design choice — batteries-included,
-Eclipse-Collections-style ergonomics — even though each type's internals are
-unmanaged stdlib containers (`ArrayListUnmanaged`, `AutoHashMapUnmanaged`,
-treaps) and the broader ecosystem is unmanaged-first. There is no speculative
-parallel `Unmanaged` tier; the managed wrappers are the supported surface.
+Every collection is **managed by default**: it stores the allocator you pass to
+`init` and uses it for its own growth and teardown, so the common path threads
+no allocator through method calls — batteries-included, Eclipse-Collections-style
+ergonomics. Each type wraps an unmanaged stdlib core (`ArrayListUnmanaged`,
+`AutoHashMapUnmanaged`, treaps).
 
-One rule says where an `Allocator` reappears in a signature: **a method that
-takes an allocator returns owned memory (you free it with that allocator); a
-method that takes none never returns anything you may free.** Materializers that
-hand back a fresh slice/collection (`toSlice(allocator)`, `rangeKeysIn(range,
-allocator)`) take an explicit allocator; mutators and count-returning ops
-(`put`, `remove`, `removeRange`) use the stored one. Borrowed views (`slice`,
-`…Slice`, `items`) allocate nothing.
+The library does **not** force a single allocator model — both the managed
+(stored-allocator) and explicit-allocator styles are supported, and neither is
+removed. Where a method returns **raw owned memory** you pick the allocator
+explicitly, so the result can live in a different arena than the collection:
+**a method that takes an allocator returns raw owned memory you free with that
+allocator; a method that takes none returns no raw memory you must free.** So
+slice/raw materializers (`toSlice(allocator)`, `rangeKeysIn(range, allocator)`)
+take an explicit allocator; mutators and count-returning ops (`put`, `remove`,
+`removeRange`) use the stored one. Borrowed views (`slice`, `…Slice`, `items`)
+allocate nothing.
+
+Functional methods that return a **fresh collection** (`select`, `reject`,
+`setUnion`, `reversed`, `toImmutable`/`toMutable`) are managed: the result is
+backed by the source's stored allocator and freed by its own `deinit`. An
+explicit-allocator tier for the flagship types can be added on demand without
+disturbing this default.
 
 ## Quick Start
 
