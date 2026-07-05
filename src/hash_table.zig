@@ -191,6 +191,12 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
                 self.alloc.free(self.values);
                 self.alloc.free(self.occupied);
             }
+            // Poison-on-deinit (Step 8): using the map after deinit — including a
+            // second deinit — is illegal; `self.*=undefined` traps it in safe
+            // builds. This is the deliberate contract for the hash-backed
+            // collections (matches the Zig std norm). The treap sets/bags differ:
+            // D10 makes *their* deinit idempotent (null root + pool reset), so a
+            // double-deinit is safe there but NOT here.
             self.* = undefined;
         }
 
@@ -504,6 +510,12 @@ pub fn OpenHashSet(comptime K: type) type {
                 self.alloc.free(self.keys);
                 self.alloc.free(self.occupied);
             }
+            // Poison-on-deinit (Step 8): using the set after deinit — including a
+            // second deinit — is illegal; `self.*=undefined` traps it in safe
+            // builds. This is the deliberate contract for the hash-backed
+            // collections (matches the Zig std norm). The treap sets/bags differ:
+            // D10 makes *their* deinit idempotent (null root + pool reset), so a
+            // double-deinit is safe there but NOT here.
             self.* = undefined;
         }
 
