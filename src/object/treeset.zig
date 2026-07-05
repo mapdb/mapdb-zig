@@ -208,9 +208,10 @@ pub fn TreeSetContext(comptime T: type, comptime Context: type) type {
         }
 
         /// Removes every element ∈ `range`; returns the count removed. A range
-        /// that matches nothing is a no-op returning 0.
-        pub fn removeRange(self: *Self, range: Range(T), allocator: Allocator) Allocator.Error!usize {
-            return self.inner.removeRange(range, allocator);
+        /// that matches nothing is a no-op returning 0. Takes no allocator (it
+        /// returns a count, not owned memory); scratch uses the stored allocator.
+        pub fn removeRange(self: *Self, range: Range(T)) Allocator.Error!usize {
+            return self.inner.removeRange(range);
         }
 
         pub fn forEach(self: *const Self, context: anytype, comptime f: fn (@TypeOf(context), T) void) void {
@@ -401,8 +402,8 @@ test "object.TreeSet range/removeRange + descending" {
     const desc = try s.descending(allocator);
     defer allocator.free(desc);
     try std.testing.expectEqualSlices(i32, &.{ 100, 90, 80, 70, 60, 50, 40, 30, 20, 10 }, desc);
-    try std.testing.expectEqual(@as(usize, 4), try s.removeRange(ObjSetRange.closedOpen(30, 70), allocator));
-    try std.testing.expectEqual(@as(usize, 0), try s.removeRange(ObjSetRange.closedOpen(30, 70), allocator));
+    try std.testing.expectEqual(@as(usize, 4), try s.removeRange(ObjSetRange.closedOpen(30, 70)));
+    try std.testing.expectEqual(@as(usize, 0), try s.removeRange(ObjSetRange.closedOpen(30, 70)));
 }
 
 test "object.TreeSet subSet: preserves reverse comparator + snapshot independence" {

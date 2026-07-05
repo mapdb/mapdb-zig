@@ -572,12 +572,17 @@ pub fn TreeMapContext(comptime K: type, comptime V: type, comptime Context: type
 
         /// Removes every entry whose key ∈ `range`; returns the count removed.
         /// A range that matches nothing is a no-op returning 0.
-        pub fn removeRange(self: *Self, range: Range(K), allocator: Allocator) Allocator.Error!usize {
+        ///
+        /// Returns a count, not owned memory, so per the library's allocator
+        /// rule (takes an allocator ⇔ caller owns the result) it takes no
+        /// allocator: the transient victim scratch uses the stored
+        /// `self.allocator`, matching the primitive `TreeMap.removeRange`.
+        pub fn removeRange(self: *Self, range: Range(K)) Allocator.Error!usize {
             var victims = std.ArrayListUnmanaged(K){};
-            defer victims.deinit(allocator);
+            defer victims.deinit(self.allocator);
             var it = self.iterator();
             while (it.next()) |e| {
-                if (range.contains(e.key)) try victims.append(allocator, e.key);
+                if (range.contains(e.key)) try victims.append(self.allocator, e.key);
             }
             for (victims.items) |k| _ = self.remove(k);
             return victims.items.len;
@@ -1216,8 +1221,8 @@ test "object.TreeMap range/removeRange + open(1,2) empty" {
     const empty = try m2.rangeKeysIn(ObjRange.open(1, 2), allocator);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
-    try std.testing.expectEqual(@as(usize, 4), try m.removeRange(ObjRange.closedOpen(30, 70), allocator));
-    try std.testing.expectEqual(@as(usize, 0), try m.removeRange(ObjRange.closedOpen(30, 70), allocator));
+    try std.testing.expectEqual(@as(usize, 4), try m.removeRange(ObjRange.closedOpen(30, 70)));
+    try std.testing.expectEqual(@as(usize, 0), try m.removeRange(ObjRange.closedOpen(30, 70)));
 }
 
 test "object.TreeMap subMap: preserves reverse comparator + snapshot independence" {
