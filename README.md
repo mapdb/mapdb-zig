@@ -37,6 +37,24 @@ Generic comptime collections using `pub fn Type(comptime T: type) type`:
 | `ArrayStack(T)` | LIFO stack backed by `ArrayListUnmanaged(T)` |
 | `HashBiMap(K, V)` | Bidirectional map with unique keys and values |
 
+## Memory management
+
+Every collection is **managed**: it stores the allocator you pass to `init` and
+uses it for all its own growth and teardown, so you don't thread an allocator
+through method calls. This is a deliberate design choice — batteries-included,
+Eclipse-Collections-style ergonomics — even though each type's internals are
+unmanaged stdlib containers (`ArrayListUnmanaged`, `AutoHashMapUnmanaged`,
+treaps) and the broader ecosystem is unmanaged-first. There is no speculative
+parallel `Unmanaged` tier; the managed wrappers are the supported surface.
+
+One rule says where an `Allocator` reappears in a signature: **a method that
+takes an allocator returns owned memory (you free it with that allocator); a
+method that takes none never returns anything you may free.** Materializers that
+hand back a fresh slice/collection (`toSlice(allocator)`, `rangeKeysIn(range,
+allocator)`) take an explicit allocator; mutators and count-returning ops
+(`put`, `remove`, `removeRange`) use the stored one. Borrowed views (`slice`,
+`…Slice`, `items`) allocate nothing.
+
 ## Quick Start
 
 ```zig

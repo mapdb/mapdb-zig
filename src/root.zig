@@ -19,6 +19,30 @@
 //! `src/object/object.zig` module doc and
 //! `todo/fable-zig/fable-review-01-ownership-model.md`.
 //!
+//! ## Memory management (managed tier)
+//!
+//! Every collection is **managed**: it stores the allocator handed to `init`
+//! and uses it for all of its own growth and teardown, so you do not thread an
+//! allocator through method calls. This is a deliberate design choice — the
+//! library's identity is batteries-included, Eclipse-Collections-style
+//! ergonomics — even though the ecosystem direction (and each collection's own
+//! internals: `ArrayListUnmanaged`, `HashMapUnmanaged`, treaps) is
+//! unmanaged-first. No speculative parallel `Unmanaged` tier is provided; the
+//! managed wrappers over unmanaged stdlib cores are the supported surface.
+//!
+//! One rule governs where an `Allocator` reappears in a method signature:
+//!
+//! > **A method that takes an `Allocator` returns owned memory the caller must
+//! > free with that allocator; a method that takes none never returns anything
+//! > the caller may free.** (takes-allocator ⇔ caller-owns)
+//!
+//! So materializers that hand you a fresh owned slice/collection
+//! (`toSlice(allocator)`, `rangeKeysIn(range, allocator)`, …) take an explicit
+//! allocator, while mutators and count-returning operations (`put`, `remove`,
+//! `removeRange`, …) use the stored allocator and take none. Borrowed views
+//! (`slice`, `…Slice`, `items`) allocate nothing and are named so they never
+//! read as owned.
+//!
 //! ## Concurrency contract
 //!
 //! 1. **All collections are single-threaded.** Any concurrent use — including
