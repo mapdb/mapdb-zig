@@ -263,6 +263,11 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
         /// Visit every `{K, *const V}` entry, one shard at a time under a read
         /// lock. Weakly consistent (see the module doc). The callback runs under
         /// a shard lock and must not reenter this map.
+        ///
+        /// The `*const V` points at a lock-scoped COPY of the stored value, not
+        /// at the slot itself, so the pointer must not be retained past the
+        /// callback. For plain values this is indistinguishable from borrowing;
+        /// it matters only if V holds a pointer whose identity you compare.
         pub fn forEach(
             self: *Self,
             context: anytype,
