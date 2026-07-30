@@ -367,7 +367,6 @@ test "ArrayList select and reject" {
         }
     }.f;
 
-
     var evens = try list.select({}, isEven);
     defer evens.deinit();
     try std.testing.expectEqual(@as(usize, 2), evens.len());
@@ -396,7 +395,6 @@ test "ArrayList anySatisfy allSatisfy noneSatisfy count" {
             return x < 0;
         }
     }.f;
-
 
     try std.testing.expect(list.allSatisfy({}, isEven));
     try std.testing.expect(list.anySatisfy({}, isEven));

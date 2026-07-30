@@ -208,4 +208,9 @@ comptime {
     _ = @import("treeset/tree_set.zig");
     _ = @import("tuple/tuple.zig");
     _ = @import("tuple/pair_test.zig");
+    // The `pub const concurrent` export above is lazy, so it does NOT pull this
+    // module's tests into `zig build test`; without this line the two
+    // concurrency tiers ship untested (and their test code silently rots).
+    _ = @import("concurrent/concurrent.zig");
+    _ = @import("oom_test.zig");
 }

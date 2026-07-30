@@ -256,7 +256,6 @@ test "HashSet anySatisfy allSatisfy noneSatisfy count" {
         }
     }.f;
 
-
     try std.testing.expect(set.allSatisfy({}, isEven));
     try std.testing.expect(set.anySatisfy({}, isEven));
     try std.testing.expect(set.noneSatisfy({}, isNeg));

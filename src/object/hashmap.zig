@@ -251,7 +251,6 @@ test "HashMap anySatisfy allSatisfy noneSatisfy" {
         }
     }.f;
 
-
     try std.testing.expect(map.allSatisfy({}, valEven));
     try std.testing.expect(map.anySatisfy({}, valEven));
     try std.testing.expect(map.noneSatisfy({}, valNeg));

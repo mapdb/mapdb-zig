@@ -246,14 +246,14 @@ pub fn TreeMapContext(comptime K: type, comptime V: type, comptime Context: type
         /// Returns this map's comparator function pointer. Available only on the
         /// dynamic `TreeMap` alias (`Context == FnPtrContext(K)`); for a
         /// comptime-context map the comparator lives in the type, so use
-        /// `context()` for reconstruction instead. Kept callable
+        /// `comparatorContext()` for reconstruction instead. Kept callable
         /// (`Comparator(K)`) so pre-context callers of `map.comparator()(a, b)`
         /// are unchanged.
         pub fn comparator(self: *const Self) Cmp {
             if (comptime Context != strategy.FnPtrContext(K)) {
                 @compileError("comparator() returns a Comparator(" ++ @typeName(K) ++
                     ") fn pointer only for the dynamic TreeMap alias; a " ++
-                    @typeName(Context) ++ " map bakes ordering into the type — use context()");
+                    @typeName(Context) ++ " map bakes ordering into the type — use comparatorContext()");
             }
             return self.ctx.cmp_fn;
         }

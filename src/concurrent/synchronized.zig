@@ -16,7 +16,7 @@
 //!
 //! Usage:
 //! ```zig
-//! var sync = Synchronized(I32I32HashMap).init(try I32I32HashMap.init(alloc));
+//! var sync = Synchronized(I32I32HashMap).init(I32I32HashMap.init(alloc));
 //! defer sync.deinit(); // caller guarantees quiescence (all user threads done)
 //!
 //! {
@@ -122,7 +122,7 @@ const HashMap = @import("../hashmap/hashmap.zig").HashMap;
 
 test "Synchronized: single-threaded guard round-trip" {
     const M = HashMap(i64, i64);
-    var sync = Synchronized(M).init(try M.init(std.testing.allocator));
+    var sync = Synchronized(M).init(M.init(std.testing.allocator));
     defer sync.deinit();
 
     {
@@ -141,7 +141,7 @@ test "Synchronized: single-threaded guard round-trip" {
 
 test "Synchronized: concurrent writers on disjoint keys land every entry" {
     const M = HashMap(i64, i64);
-    var sync = Synchronized(M).init(try M.init(std.testing.allocator));
+    var sync = Synchronized(M).init(M.init(std.testing.allocator));
     defer sync.deinit();
 
     const per_thread: i64 = 2000;
@@ -177,7 +177,7 @@ test "Synchronized: concurrent writers on disjoint keys land every entry" {
 
 test "Synchronized: many readers concurrent with occasional writer stays consistent" {
     const M = HashMap(i64, i64);
-    var sync = Synchronized(M).init(try M.init(std.testing.allocator));
+    var sync = Synchronized(M).init(M.init(std.testing.allocator));
     defer sync.deinit();
     {
         var g = sync.lock();

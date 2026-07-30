@@ -46,6 +46,8 @@ pub fn HashBag(comptime T: type) type {
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
             var bag = init(allocator);
+            errdefer bag.deinit(); // add() grows incrementally: a mid-build OOM
+            // would otherwise strand every table allocation made so far.
             for (values) |val| {
                 try bag.add(val);
             }
