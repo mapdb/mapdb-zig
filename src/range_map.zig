@@ -8,12 +8,22 @@
 //! disjoint non-empty `Range(T)`s to values `V` (v1 ships the `i32 -> i32`
 //! specialisation, `I32I32RangeMap`).
 //!
-//! **Unlike `RangeSet`, a `RangeMap` does NOT coalesce across different
-//! values.** [`put`](RangeMap.put) is last-writer-wins: it clips/splits every
-//! overlapping prior entry and inserts the new `(range, value)`, but leaves
-//! adjacent equal-valued entries **distinct**.
-//! [`putCoalescing`](RangeMap.putCoalescing) is the variant that merges
-//! connected neighbours holding an **equal** value.
+//! Like `RangeSet`, a `RangeMap` is **always maximally merged** — but per
+//! value: [`put`](RangeMap.put) is last-writer-wins (it clips/splits every
+//! overlapping prior entry) and then **coalesces** the inserted entry with
+//! connected neighbours holding an **equal** value. A **different** value is a
+//! barrier and is never absorbed or crossed. The normal form therefore carries
+//! a global invariant: *no two connected entries hold an equal value*.
+//!
+//! ## Divergence from Guava
+//!
+//! `TreeRangeMap.put` does not coalesce; coalescing lives in a separate
+//! `putCoalescing`. We fold it into `put` and do **not** expose
+//! `putCoalescing`. Guava's split is a compatibility retrofit (`RangeMap` is
+//! `@since 14.0`, `putCoalescing` `@since 22.0`, by which point `put`'s
+//! behaviour was observable through `asMapOfRanges()` and could not be
+//! changed); we have no such constraint. See
+//! `spec/features/range-set-map.md` §Coalescing.
 //!
 //! Every clip / split / merge / ordering decision reduces to the side-aware cut
 //! comparisons of `range.zig`; there is **no `±1` endpoint arithmetic** (the
@@ -34,8 +44,8 @@ const range_mod = @import("range.zig");
 
 /// A mutable piecewise mapping from disjoint ranges to values.
 ///
-/// See the module docs for the put / put-coalescing semantics and the
-/// normal-form invariant.
+/// See the module docs for the put / coalescing semantics and the normal-form
+/// invariant.
 pub fn RangeMap(comptime T: type, comptime V: type) type {
     return struct {
         const Self = @This();
@@ -67,38 +77,50 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
         /// Assign `value` to **every** point of `range`, **last-writer-wins**
         /// over any prior overlap. Existing entries are clipped to the parts
         /// outside `range` (a straddling entry **splits into two**, both keeping
-        /// the old value); the new `(range, value)` is then inserted. A
-        /// **cut-empty** `range` is a **no-op**. `put` does **not** coalesce —
-        /// an adjacent equal value stays a distinct entry.
-        pub fn put(self: *Self, range: Range, value: V) Allocator.Error!void {
+        /// the old value); the new `(range, value)` is then **coalesced** with
+        /// any connected neighbour holding an **equal** value and inserted. A
+        /// **different** value is a barrier. A **cut-empty** `range` is a
+        /// **no-op**, decided before any clipping.
+        pub fn put(self: *Self, range: Range, value: V) !void {
             if (range.isEmpty()) return;
             try self.clipOut(range);
-            try self.insertEntry(range, value);
-        }
 
-        /// Like [`put`](RangeMap.put), then **merge** the inserted entry with
-        /// any **connected** (overlapping *or* abutting) neighbour whose value
-        /// **equals** `value`, producing one entry spanning the union.
-        /// Neighbours with a different value are left untouched (clipped by the
-        /// `put` step as usual).
-        pub fn putCoalescing(self: *Self, range: Range, value: V) Allocator.Error!void {
-            if (range.isEmpty()) return;
-            try self.clipOut(range);
-            // Span over every connected entry with an EQUAL value, dropping them.
+            // Coalesce outward from the insertion position. Because the normal
+            // form is maintained by every put, AT MOST ONE entry per side is
+            // absorbable: if the neighbour is absorbed, the entry beyond it was
+            // already either disconnected from it or differently-valued, and
+            // stays so against the grown range. Each loop therefore runs at most
+            // once. They are loops rather than ifs so a normal form violated by
+            // a bug elsewhere degrades into a correct (if slower) result instead
+            // of a malformed map.
+            const pos = self.insertionPoint(range);
             var merged = range;
-            var out: std.ArrayListUnmanaged(Entry) = .{};
-            errdefer out.deinit(self.allocator);
-            try out.ensureTotalCapacity(self.allocator, self.entries.items.len + 1);
-            for (self.entries.items) |e| {
-                if (e.value == value and e.range.isConnected(merged)) {
-                    merged = e.range.span(merged);
-                } else {
-                    out.appendAssumeCapacity(e);
-                }
+
+            var lo = pos;
+            while (lo > 0) {
+                const e = self.entries.items[lo - 1];
+                if (e.value != value or !e.range.isConnected(merged)) break;
+                merged = e.range.span(merged);
+                lo -= 1;
             }
-            self.entries.deinit(self.allocator);
-            self.entries = out;
-            try self.insertEntry(merged, value);
+
+            var hi = pos;
+            while (hi < self.entries.items.len) {
+                const e = self.entries.items[hi];
+                if (e.value != value or !e.range.isConnected(merged)) break;
+                merged = e.range.span(merged);
+                hi += 1;
+            }
+
+            // Replace entries[lo..hi] with the single merged entry. Grow first
+            // so the write cannot fail after the buffer has been disturbed.
+            if (hi - lo == 0) {
+                try self.entries.insert(self.allocator, lo, .{ .range = merged, .value = value });
+            } else {
+                self.entries.replaceRangeAssumeCapacity(lo, hi - lo, &[_]Entry{
+                    .{ .range = merged, .value = value },
+                });
+            }
         }
 
         /// The value mapped at `value`, or `null` if uncovered.
@@ -209,18 +231,16 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
             self.entries = out;
         }
 
-        /// Insert `(range, value)` at its ascending-by-lower-cut position.
-        /// Callers must have already cleared the overlap (via `clipOut`);
-        /// `range` is disjoint from every remaining entry.
-        fn insertEntry(self: *Self, range: Range, value: V) !void {
-            var pos: usize = self.entries.items.len;
+        /// The ascending-by-lower-cut index at which `range` belongs: the first
+        /// index whose lower cut is above `range`'s. Callers must have already
+        /// cleared the overlap (via `clipOut`), so `range` is disjoint from
+        /// every remaining entry and every entry below the returned index lies
+        /// strictly to its left.
+        fn insertionPoint(self: Self, range: Range) usize {
             for (self.entries.items, 0..) |e, i| {
-                if (Cut.cmp(e.range.lower, range.lower) == .gt) {
-                    pos = i;
-                    break;
-                }
+                if (Cut.cmp(e.range.lower, range.lower) == .gt) return i;
             }
-            try self.entries.insert(self.allocator, pos, .{ .range = range, .value = value });
+            return self.entries.items.len;
         }
     };
 }
@@ -285,38 +305,106 @@ test "put split straddle" {
     try testing.expectEqual(@as(?i32, 100), m.get(6));
 }
 
-test "put does NOT coalesce" {
+test "put COALESCES equal value abut" {
     var m = I32I32RangeMap.init(testing.allocator);
     defer m.deinit();
     try m.put(I32Range.closedOpen(1, 5), 100);
     try m.put(I32Range.closedOpen(5, 9), 100);
-    try expectEntries(m, &.{ ent(I32Range.closedOpen(1, 5), 100), ent(I32Range.closedOpen(5, 9), 100) });
+    // ONE entry: equal value and abutting, so plain put merges them.
+    // Guava's TreeRangeMap leaves two here; this is the divergence.
+    try expectEntries(m, &.{ent(I32Range.closedOpen(1, 9), 100)});
     try testing.expectEqual(@as(?i32, 100), m.get(5));
 }
 
-test "putCoalescing equal value abut merges" {
+test "put different value no merge" {
     var m = I32I32RangeMap.init(testing.allocator);
     defer m.deinit();
     try m.put(I32Range.closedOpen(1, 5), 100);
-    try m.putCoalescing(I32Range.closedOpen(5, 9), 100);
-    try expectEntries(m, &.{ent(I32Range.closedOpen(1, 9), 100)});
-}
-
-test "putCoalescing different value no merge" {
-    var m = I32I32RangeMap.init(testing.allocator);
-    defer m.deinit();
-    try m.put(I32Range.closedOpen(1, 5), 100);
-    try m.putCoalescing(I32Range.closedOpen(5, 9), 200);
+    try m.put(I32Range.closedOpen(5, 9), 200);
     try expectEntries(m, &.{ ent(I32Range.closedOpen(1, 5), 100), ent(I32Range.closedOpen(5, 9), 200) });
 }
 
-test "putCoalescing both sides bridges" {
+test "put coalesces both sides bridges" {
     var m = I32I32RangeMap.init(testing.allocator);
     defer m.deinit();
     try m.put(I32Range.closedOpen(1, 5), 100);
     try m.put(I32Range.closedOpen(9, 12), 100);
-    try m.putCoalescing(I32Range.closedOpen(5, 9), 100);
+    try m.put(I32Range.closedOpen(5, 9), 100);
     try expectEntries(m, &.{ent(I32Range.closedOpen(1, 12), 100)});
+}
+
+test "put coalesces chain in ascending order" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(1, 2), 7);
+    try m.put(I32Range.closedOpen(2, 3), 7);
+    // A chain never forms: the map is already [1,3) here.
+    try expectEntries(m, &.{ent(I32Range.closedOpen(1, 3), 7)});
+    try m.put(I32Range.closedOpen(3, 4), 7);
+    try expectEntries(m, &.{ent(I32Range.closedOpen(1, 4), 7)});
+}
+
+test "put coalescing is order independent" {
+    // Mirror of the ascending case: the same three puts, inserted so the
+    // existing entries lie to the RIGHT of the last one. Identical result.
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(2, 3), 7);
+    try m.put(I32Range.closedOpen(3, 4), 7);
+    try m.put(I32Range.closedOpen(1, 2), 7);
+    try expectEntries(m, &.{ent(I32Range.closedOpen(1, 4), 7)});
+}
+
+test "put different value is a hard barrier" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(1, 2), 7);
+    try m.put(I32Range.closedOpen(2, 3), 8);
+    try m.put(I32Range.closedOpen(3, 4), 7);
+    // The 8 entry is neither absorbed nor crossed, so the far [1,2) -> 7 is
+    // unreachable even though both hold 7.
+    try expectEntries(m, &.{
+        ent(I32Range.closedOpen(1, 2), 7),
+        ent(I32Range.closedOpen(2, 3), 8),
+        ent(I32Range.closedOpen(3, 4), 7),
+    });
+}
+
+test "put split fragments do not rejoin across the insert" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(1, 9), 100);
+    try m.put(I32Range.closedOpen(3, 5), 200);
+    // The two 100 fragments are separated by the 200 entry, so they are not
+    // connected and must not be re-merged by the coalescing step.
+    try expectEntries(m, &.{
+        ent(I32Range.closedOpen(1, 3), 100),
+        ent(I32Range.closedOpen(3, 5), 200),
+        ent(I32Range.closedOpen(5, 9), 100),
+    });
+}
+
+test "normal form has no connected equal valued pair" {
+    // The global invariant that the old put/putCoalescing split could not
+    // state: after every operation, no two connected entries hold an equal
+    // value.
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(1, 2), 7);
+    try m.put(I32Range.closedOpen(2, 3), 7);
+    try m.put(I32Range.closedOpen(3, 4), 8);
+    try m.put(I32Range.closedOpen(4, 5), 8);
+    try m.put(I32Range.closedOpen(5, 6), 7);
+    const v = m.items();
+    var i: usize = 0;
+    while (i + 1 < v.len) : (i += 1) {
+        try testing.expect(!(v[i].range.isConnected(v[i + 1].range) and v[i].value == v[i + 1].value));
+    }
+    try expectEntries(m, &.{
+        ent(I32Range.closedOpen(1, 3), 7),
+        ent(I32Range.closedOpen(3, 5), 8),
+        ent(I32Range.closedOpen(5, 6), 7),
+    });
 }
 
 test "remove splits" {
@@ -388,7 +476,7 @@ test "normal form disjoint after sequence" {
     try m.put(I32Range.closedOpen(1, 10), 1);
     try m.put(I32Range.closedOpen(3, 5), 2);
     try m.put(I32Range.closedOpen(7, 20), 3);
-    try m.putCoalescing(I32Range.closedOpen(20, 25), 3);
+    try m.put(I32Range.closedOpen(20, 25), 3);
     const v = m.items();
     var i: usize = 1;
     while (i < v.len) : (i += 1) {

@@ -4319,12 +4319,12 @@ fn runBoundedLru(
 // The auto-coalescing RangeSet / piecewise RangeMap (spec/features/
 // range-set-map.md). Routed through the PRODUCTION I32RangeSet /
 // I32I32RangeMap — every assertion is proved against the real cut algebra
-// (coalescing add, splitting remove/put, putCoalescing, complement, sub-range
+// (coalescing add, splitting+coalescing put, complement, sub-range
 // snapshots), not re-derived here. Direct translation of the Rust runner's
 // run_range_set / run_range_map (mapdb-rust/src/bin/validate.rs).
 //
 // Both kinds are stateful: many mutating ops (add/remove_range/clear for the
-// set; put/put_coalescing/remove_range/clear for the map), each carrying a
+// set; put/remove_range/clear for the map), each carrying a
 // range-builder object (the 10-range op shape, via buildRangeFromObj). An
 // optional top-level `query` (same shape) supplies the range for the
 // query-based assertions (encloses/intersects/sub-range).
@@ -4585,9 +4585,6 @@ fn runRangeMap(
         if (std.mem.eql(u8, op_name, "put")) {
             const value = jsonToI32(obj.get("value").?).?;
             try map.put(buildRangeFromObj(obj.get("range").?.object), value);
-        } else if (std.mem.eql(u8, op_name, "put_coalescing")) {
-            const value = jsonToI32(obj.get("value").?).?;
-            try map.putCoalescing(buildRangeFromObj(obj.get("range").?.object), value);
         } else if (std.mem.eql(u8, op_name, "remove_range")) {
             try map.remove(buildRangeFromObj(obj.get("range").?.object));
         } else if (std.mem.eql(u8, op_name, "clear")) {
