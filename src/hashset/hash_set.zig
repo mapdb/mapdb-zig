@@ -328,6 +328,7 @@ pub fn HashSet(comptime T: type) type {
         /// Returns all elements as an allocated slice. Caller owns the slice.
         pub fn toSlice(self: *const Self, allocator: Allocator) Allocator.Error![]T {
             var buf: std.ArrayListUnmanaged(T) = .empty;
+            errdefer buf.deinit(allocator);
             for (0..self.inner.capacity) |i| {
                 if (self.inner.isOccupied(i)) {
                     const value = self.inner.keys[i];

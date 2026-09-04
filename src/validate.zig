@@ -214,9 +214,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         const index: usize = @intCast(obj.get("index").?.integer);
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
-            .array_list => |*l| {
-                try l.items.insert(l.allocator, index, value);
-            },
+            .array_list => |*l| try l.addAtIndex(index, value),
             else => {},
         }
     } else if (std.mem.eql(u8, op_name, "addToValue")) {
@@ -374,6 +372,203 @@ fn parseThreshold(key: []const u8, prefix: []const u8) ?i32 {
         return -num;
     }
     return std.fmt.parseInt(i32, rest, 10) catch null;
+}
+
+// ---------------------------------------------------------------------------
+// Production functional-API dispatch.
+//
+// The cross-language rule (cross-language-validation/README.md) is that every
+// assertion value must come from the production method the assertion names --
+// a runner-local loop over the collection's contents is a bug even when the
+// comparator is production. These helpers dispatch one assertion to the
+// production `select` / `reject` / `detect` / `count` / `anySatisfy` /
+// `allSatisfy` / `noneSatisfy` / `injectInto` of whichever collection the
+// scenario built, so the runner never re-implements the traversal.
+//
+// TreeSet spells the predicate select `selectWhere` because `select(i)` there
+// is the order-statistic select (spec/features/rank-select.md).
+// ---------------------------------------------------------------------------
+
+/// Whether the collection is one of the two map kinds, which have no
+/// element-predicate API of the `(value) -> bool` shape used below.
+fn isMapCollection(coll: *Collection) bool {
+    return switch (coll.*) {
+        .hash_map, .tree_map => true,
+        else => false,
+    };
+}
+
+/// Whether the assertion key names one of the element-predicate assertions
+/// dispatched through the helpers below.
+fn isElementPredicateKey(key: []const u8) bool {
+    const prefixes = [_][]const u8{
+        "select_gt_",       "reject_gt_",      "detect_gt_",      "count_gt_",
+        "count_lt_",        "any_satisfy_gt_", "all_satisfy_gt_", "none_satisfy_gt_",
+        "none_satisfy_lt_",
+    };
+    for (prefixes) |pfx| {
+        if (std.mem.startsWith(u8, key, pfx)) return true;
+    }
+    const exact = [_][]const u8{
+        "count_even",       "count_odd",        "any_satisfy_even",
+        "all_satisfy_even", "none_satisfy_odd",
+    };
+    for (exact) |e| {
+        if (std.mem.eql(u8, key, e)) return true;
+    }
+    return false;
+}
+
+/// Predicate context carrying the threshold parsed out of the assertion key.
+const Threshold = struct { value: i32 };
+
+fn predGt(ctx: Threshold, v: i32) bool {
+    return v > ctx.value;
+}
+fn predLt(ctx: Threshold, v: i32) bool {
+    return v < ctx.value;
+}
+fn predEven(_: void, v: i32) bool {
+    return @rem(v, 2) == 0;
+}
+fn predOdd(_: void, v: i32) bool {
+    return @rem(v, 2) != 0;
+}
+
+/// Production `select` (TreeSet: `selectWhere`), materialized as a slice the
+/// caller owns. Map collections have no element-predicate select: empty.
+fn collSelect(coll: *Collection, allocator: Allocator, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) Allocator.Error![]i32 {
+    switch (coll.*) {
+        .array_list => |*c| {
+            var r = try c.select(ctx, pred);
+            defer r.deinit();
+            return try allocator.dupe(i32, r.slice());
+        },
+        .array_stack => |*c| {
+            var r = try c.select(ctx, pred);
+            defer r.deinit();
+            return try allocator.dupe(i32, r.slice());
+        },
+        .hash_set => |*c| {
+            var r = try c.select(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        .hash_bag => |*c| {
+            var r = try c.select(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        .tree_set => |*c| {
+            var r = try c.selectWhere(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        else => return try allocator.alloc(i32, 0),
+    }
+}
+
+/// Production `reject`, materialized as a slice the caller owns.
+fn collReject(coll: *Collection, allocator: Allocator, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) Allocator.Error![]i32 {
+    switch (coll.*) {
+        .array_list => |*c| {
+            var r = try c.reject(ctx, pred);
+            defer r.deinit();
+            return try allocator.dupe(i32, r.slice());
+        },
+        .array_stack => |*c| {
+            var r = try c.reject(ctx, pred);
+            defer r.deinit();
+            return try allocator.dupe(i32, r.slice());
+        },
+        .hash_set => |*c| {
+            var r = try c.reject(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        .hash_bag => |*c| {
+            var r = try c.reject(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        .tree_set => |*c| {
+            var r = try c.reject(ctx, pred);
+            defer r.deinit();
+            return try r.toSlice(allocator);
+        },
+        else => return try allocator.alloc(i32, 0),
+    }
+}
+
+/// Production `detect`.
+fn collDetect(coll: *Collection, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) ?i32 {
+    return switch (coll.*) {
+        .array_list => |*c| c.detect(ctx, pred),
+        .array_stack => |*c| c.detect(ctx, pred),
+        .hash_set => |*c| c.detect(ctx, pred),
+        .hash_bag => |*c| c.detect(ctx, pred),
+        .tree_set => |*c| c.detect(ctx, pred),
+        else => null,
+    };
+}
+
+/// Production `count`. HashBag counts occurrences (bag semantics), matching
+/// the duplicates its `toSlice` yields.
+fn collCount(coll: *Collection, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) i64 {
+    return switch (coll.*) {
+        .array_list => |*c| @intCast(c.count(ctx, pred)),
+        .array_stack => |*c| @intCast(c.count(ctx, pred)),
+        .hash_set => |*c| @intCast(c.count(ctx, pred)),
+        .hash_bag => |*c| @intCast(c.count(ctx, pred)),
+        .tree_set => |*c| @intCast(c.count(ctx, pred)),
+        else => 0,
+    };
+}
+
+/// Production `anySatisfy`.
+fn collAnySatisfy(coll: *Collection, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) bool {
+    return switch (coll.*) {
+        .array_list => |*c| c.anySatisfy(ctx, pred),
+        .array_stack => |*c| c.anySatisfy(ctx, pred),
+        .hash_set => |*c| c.anySatisfy(ctx, pred),
+        .hash_bag => |*c| c.anySatisfy(ctx, pred),
+        .tree_set => |*c| c.anySatisfy(ctx, pred),
+        else => false,
+    };
+}
+
+/// Production `allSatisfy`.
+fn collAllSatisfy(coll: *Collection, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) bool {
+    return switch (coll.*) {
+        .array_list => |*c| c.allSatisfy(ctx, pred),
+        .array_stack => |*c| c.allSatisfy(ctx, pred),
+        .hash_set => |*c| c.allSatisfy(ctx, pred),
+        .hash_bag => |*c| c.allSatisfy(ctx, pred),
+        .tree_set => |*c| c.allSatisfy(ctx, pred),
+        else => true,
+    };
+}
+
+/// Production `noneSatisfy`.
+fn collNoneSatisfy(coll: *Collection, ctx: anytype, comptime pred: fn (@TypeOf(ctx), i32) bool) bool {
+    return switch (coll.*) {
+        .array_list => |*c| c.noneSatisfy(ctx, pred),
+        .array_stack => |*c| c.noneSatisfy(ctx, pred),
+        .hash_set => |*c| c.noneSatisfy(ctx, pred),
+        .hash_bag => |*c| c.noneSatisfy(ctx, pred),
+        .tree_set => |*c| c.noneSatisfy(ctx, pred),
+        else => true,
+    };
+}
+
+/// Production `injectInto` (ArrayList / ArrayStack only -- the fold assertions
+/// are only scripted for those two).
+fn collInjectInto(coll: *Collection, initial: i32, comptime f: fn (void, i32, i32) i32) ?i32 {
+    return switch (coll.*) {
+        .array_list => |*c| c.injectInto({}, initial, f),
+        .array_stack => |*c| c.injectInto({}, initial, f),
+        else => null,
+    };
 }
 
 fn writeI32(writer: anytype, val: i32) !void {
@@ -858,7 +1053,9 @@ fn evaluateAssertion(
     }
     // --- is_empty ---
     else if (std.mem.eql(u8, key, "is_empty")) {
-        try writeBool(writer, getCollectionSize(coll) == 0);
+        // Production isEmpty(), not size()==0 -- the assertion names isEmpty,
+        // and a defective production isEmpty must be able to fail here.
+        try writeBool(writer, isCollectionEmpty(coll));
     }
     // --- other_size ---
     else if (std.mem.eql(u8, key, "other_size")) {
@@ -1009,11 +1206,7 @@ fn evaluateAssertion(
     else if (std.mem.eql(u8, key, "inject_into_sum")) {
         switch (coll.*) {
             .array_list => |*l| try writeI32(writer, l.injectInto({}, 0, injectAddWrapI32)),
-            .array_stack => |*s| {
-                var acc: i32 = 0;
-                for (s.slice()) |item| acc = injectAddWrapI32(undefined, acc, item);
-                try writeI32(writer, acc);
-            },
+            .array_stack => |*s| try writeI32(writer, s.injectInto({}, 0, injectAddWrapI32)),
             else => try writeNull(writer),
         }
     }
@@ -1021,11 +1214,7 @@ fn evaluateAssertion(
     else if (std.mem.eql(u8, key, "inject_into_product")) {
         switch (coll.*) {
             .array_list => |*l| try writeI32(writer, l.injectInto({}, 1, injectMulWrapI32)),
-            .array_stack => |*s| {
-                var acc: i32 = 1;
-                for (s.slice()) |item| acc = injectMulWrapI32(undefined, acc, item);
-                try writeI32(writer, acc);
-            },
+            .array_stack => |*s| try writeI32(writer, s.injectInto({}, 1, injectMulWrapI32)),
             else => try writeNull(writer),
         }
     }
@@ -1034,208 +1223,94 @@ fn evaluateAssertion(
     // "product"; Rust's validate also handles "inject_into_wrapping_product"
     // as the same wrapping form. Mirror that here.
     else if (std.mem.eql(u8, key, "product") or std.mem.eql(u8, key, "inject_into_wrapping_product")) {
-        switch (coll.*) {
-            .array_list => |*l| {
-                var acc: i32 = 1;
-                for (l.slice()) |item| acc *%= item;
-                try writeI32(writer, acc);
-            },
-            .array_stack => |*s| {
-                var acc: i32 = 1;
-                for (s.slice()) |item| acc *%= item;
-                try writeI32(writer, acc);
-            },
-            else => try writeNull(writer),
+        // Same wrapping fold as inject_into_product, through the same
+        // production injectInto -- not a second, runner-local multiplication.
+        if (collInjectInto(coll, 1, injectMulWrapI32)) |acc| {
+            try writeI32(writer, acc);
+        } else {
+            try writeNull(writer);
         }
+    }
+    // --- element-predicate assertions on a map collection ---
+    // HashMap/TreeMap have no element predicate of this shape (their production
+    // predicates take (key, value)). Report the key as unknown rather than let
+    // the dispatch helpers' fallbacks manufacture a plausible value, which
+    // would be a false green if such a scenario were ever written.
+    else if (isMapCollection(coll) and isElementPredicateKey(key)) {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
     }
     // --- select_gt_N ---
     else if (std.mem.startsWith(u8, key, "select_gt_")) {
         const threshold = parseThreshold(key, "select_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
-        // (std.array_list.Managed). The allocator-carrying init(alloc) form
-        // now lives on Managed; unmanaged uses .empty / append(alloc, item).
-        var result = std.array_list.Managed(i32).init(allocator);
-        defer result.deinit();
-        for (items) |item| {
-            if (item > threshold) try result.append(item);
-        }
-        const slice = result.items;
-        const copy = try allocator.alloc(i32, slice.len);
-        defer allocator.free(copy);
-        @memcpy(copy, slice);
-        try writeSortedArray(writer, copy);
+        const selected = try collSelect(coll, allocator, Threshold{ .value = threshold }, predGt);
+        defer allocator.free(selected);
+        try writeSortedArray(writer, selected);
     }
     // --- reject_gt_N ---
     else if (std.mem.startsWith(u8, key, "reject_gt_")) {
         const threshold = parseThreshold(key, "reject_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        // Zig 0.15 split ArrayList into Unmanaged (std.ArrayList) and Managed
-        // (std.array_list.Managed). The allocator-carrying init(alloc) form
-        // now lives on Managed; unmanaged uses .empty / append(alloc, item).
-        var result = std.array_list.Managed(i32).init(allocator);
-        defer result.deinit();
-        for (items) |item| {
-            if (item <= threshold) try result.append(item);
-        }
-        const slice = result.items;
-        const copy = try allocator.alloc(i32, slice.len);
-        defer allocator.free(copy);
-        @memcpy(copy, slice);
-        try writeSortedArray(writer, copy);
+        const kept = try collReject(coll, allocator, Threshold{ .value = threshold }, predGt);
+        defer allocator.free(kept);
+        try writeSortedArray(writer, kept);
     }
     // --- detect_gt_N ---
     else if (std.mem.startsWith(u8, key, "detect_gt_")) {
         const threshold = parseThreshold(key, "detect_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var found: ?i32 = null;
-        for (items) |item| {
-            if (item > threshold) {
-                found = item;
-                break;
-            }
+        if (collDetect(coll, Threshold{ .value = threshold }, predGt)) |v| {
+            try writeI32(writer, v);
+        } else {
+            try writeNull(writer);
         }
-        if (found) |v| try writeI32(writer, v) else try writeNull(writer);
     }
     // --- count_gt_N ---
     else if (std.mem.startsWith(u8, key, "count_gt_")) {
         const threshold = parseThreshold(key, "count_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var c: i64 = 0;
-        for (items) |item| {
-            if (item > threshold) c += 1;
-        }
-        try writeI64(writer, c);
+        try writeI64(writer, collCount(coll, Threshold{ .value = threshold }, predGt));
     }
     // --- count_lt_N ---
     else if (std.mem.startsWith(u8, key, "count_lt_")) {
         const threshold = parseThreshold(key, "count_lt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var c: i64 = 0;
-        for (items) |item| {
-            if (item < threshold) c += 1;
-        }
-        try writeI64(writer, c);
+        try writeI64(writer, collCount(coll, Threshold{ .value = threshold }, predLt));
     }
     // --- count_even ---
     else if (std.mem.eql(u8, key, "count_even")) {
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var c: i64 = 0;
-        for (items) |item| {
-            if (@rem(item, 2) == 0) c += 1;
-        }
-        try writeI64(writer, c);
+        try writeI64(writer, collCount(coll, {}, predEven));
     }
     // --- count_odd ---
     else if (std.mem.eql(u8, key, "count_odd")) {
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var c: i64 = 0;
-        for (items) |item| {
-            if (@rem(item, 2) != 0) c += 1;
-        }
-        try writeI64(writer, c);
+        try writeI64(writer, collCount(coll, {}, predOdd));
     }
     // --- any_satisfy_even ---
     else if (std.mem.eql(u8, key, "any_satisfy_even")) {
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var found = false;
-        for (items) |item| {
-            if (@rem(item, 2) == 0) {
-                found = true;
-                break;
-            }
-        }
-        try writeBool(writer, found);
+        try writeBool(writer, collAnySatisfy(coll, {}, predEven));
     }
     // --- all_satisfy_even ---
     else if (std.mem.eql(u8, key, "all_satisfy_even")) {
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var all = true;
-        for (items) |item| {
-            if (@rem(item, 2) != 0) {
-                all = false;
-                break;
-            }
-        }
-        try writeBool(writer, all);
+        try writeBool(writer, collAllSatisfy(coll, {}, predEven));
     }
     // --- none_satisfy_odd ---
     else if (std.mem.eql(u8, key, "none_satisfy_odd")) {
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var none = true;
-        for (items) |item| {
-            if (@rem(item, 2) != 0) {
-                none = false;
-                break;
-            }
-        }
-        try writeBool(writer, none);
+        try writeBool(writer, collNoneSatisfy(coll, {}, predOdd));
     }
     // --- any_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "any_satisfy_gt_")) {
         const threshold = parseThreshold(key, "any_satisfy_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var found = false;
-        for (items) |item| {
-            if (item > threshold) {
-                found = true;
-                break;
-            }
-        }
-        try writeBool(writer, found);
+        try writeBool(writer, collAnySatisfy(coll, Threshold{ .value = threshold }, predGt));
     }
     // --- all_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "all_satisfy_gt_")) {
         const threshold = parseThreshold(key, "all_satisfy_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var all = true;
-        for (items) |item| {
-            if (item <= threshold) {
-                all = false;
-                break;
-            }
-        }
-        try writeBool(writer, all);
+        try writeBool(writer, collAllSatisfy(coll, Threshold{ .value = threshold }, predGt));
     }
     // --- none_satisfy_gt_N ---
     else if (std.mem.startsWith(u8, key, "none_satisfy_gt_")) {
         const threshold = parseThreshold(key, "none_satisfy_gt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var none = true;
-        for (items) |item| {
-            if (item > threshold) {
-                none = false;
-                break;
-            }
-        }
-        try writeBool(writer, none);
+        try writeBool(writer, collNoneSatisfy(coll, Threshold{ .value = threshold }, predGt));
     }
     // --- none_satisfy_lt_N ---
     else if (std.mem.startsWith(u8, key, "none_satisfy_lt_")) {
         const threshold = parseThreshold(key, "none_satisfy_lt_").?;
-        const items = try getItemSlice(coll, allocator);
-        defer allocator.free(items);
-        var none = true;
-        for (items) |item| {
-            if (item < threshold) {
-                none = false;
-                break;
-            }
-        }
-        try writeBool(writer, none);
+        try writeBool(writer, collNoneSatisfy(coll, Threshold{ .value = threshold }, predLt));
     }
     // --- Set operations: union_sorted, union_size ---
     else if (std.mem.eql(u8, key, "union_sorted") or std.mem.eql(u8, key, "union_size")) {
@@ -1360,6 +1435,19 @@ fn getCollectionSize(coll: *Collection) usize {
         .tree_set => |*s| s.len(),
         .tree_map => |*m| m.len(),
         .array_stack => |*s| s.len(),
+    };
+}
+
+/// Production `isEmpty()` for whichever collection the scenario built.
+fn isCollectionEmpty(coll: *Collection) bool {
+    return switch (coll.*) {
+        .hash_map => |*m| m.isEmpty(),
+        .array_list => |*l| l.isEmpty(),
+        .hash_set => |*s| s.isEmpty(),
+        .hash_bag => |*b| b.isEmpty(),
+        .tree_set => |*s| s.isEmpty(),
+        .tree_map => |*m| m.isEmpty(),
+        .array_stack => |*s| s.isEmpty(),
     };
 }
 
@@ -3687,9 +3775,11 @@ fn runF32ArrayList(
         defer vbuf.deinit();
         const vw = vbuf.writer();
         if (std.mem.eql(u8, key, "size")) {
-            try vw.print("{d}", .{values.len});
+            // Production F32ArrayList.len(), not the slice length.
+            try vw.print("{d}", .{list.len()});
         } else if (std.mem.eql(u8, key, "is_empty")) {
-            try vw.print("{s}", .{if (values.len == 0) "true" else "false"});
+            // Production F32ArrayList.isEmpty().
+            try vw.print("{s}", .{if (list.isEmpty()) "true" else "false"});
         } else if (std.mem.eql(u8, key, "sum")) {
             // Production F32ArrayList.sum().
             try writeF32(vw, list.sum());
@@ -3702,9 +3792,8 @@ fn runF32ArrayList(
         } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "to_sorted_array")) {
             // Production F32ArrayList.sort() (total-order). Sort a copy so the
             // original element order is preserved for any later assertions.
-            var sorted_list = F32ArrayList.init(allocator);
+            var sorted_list = try F32ArrayList.fromSlice(allocator, values);
             defer sorted_list.deinit();
-            for (values) |v| try sorted_list.push(v);
             sorted_list.sort();
             const buf = sorted_list.slice();
             try vw.writeAll("[");
@@ -4526,7 +4615,11 @@ fn runRangeSet(
         if (std.mem.eql(u8, key, "is_empty")) {
             try w.writeAll(if (set.isEmpty()) "true" else "false");
         } else if (std.mem.eql(u8, key, "as_ranges")) {
-            try writeRangeArray(w, set.items());
+            // Production asRanges() -- the method the assertion names, which
+            // also exercises the production materialization path.
+            const ranges = try set.asRanges(allocator);
+            defer allocator.free(ranges);
+            try writeRangeArray(w, ranges);
         } else if (std.mem.eql(u8, key, "span_lower")) {
             try writeOptI32Json(w, if (span) |r| r.lowerEndpoint() else null);
         } else if (std.mem.eql(u8, key, "span_upper")) {
@@ -4605,7 +4698,10 @@ fn runRangeMap(
         if (std.mem.eql(u8, key, "is_empty")) {
             try w.writeAll(if (map.isEmpty()) "true" else "false");
         } else if (std.mem.eql(u8, key, "as_map_of_ranges")) {
-            try writeEntryArray(w, map.items());
+            // Production asMapOfRanges() -- the method the assertion names.
+            const entries = try map.asMapOfRanges(allocator);
+            defer allocator.free(entries);
+            try writeEntryArray(w, entries);
         } else if (std.mem.eql(u8, key, "span_lower")) {
             try writeOptI32Json(w, if (span) |r| r.lowerEndpoint() else null);
         } else if (std.mem.eql(u8, key, "span_upper")) {

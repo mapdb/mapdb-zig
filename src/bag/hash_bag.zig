@@ -310,6 +310,18 @@ pub fn HashBag(comptime T: type) type {
             return self.detect(context, predicate) == null;
         }
 
+        /// Number of occurrences (not distinct values) satisfying the
+        /// predicate — bag semantics, matching `len()` counting occurrences.
+        pub fn count(self: *const Self, context: anytype, comptime predicate: fn (@TypeOf(context), T) bool) usize {
+            var total: usize = 0;
+            for (0..self.counts.capacity) |i| {
+                if (self.counts.isOccupied(i)) {
+                    if (predicate(context, self.counts.keys[i])) total += self.counts.values[i];
+                }
+            }
+            return total;
+        }
+
         // ---- Conversion ----
 
         /// Returns all elements (with duplicates) as an allocated slice.

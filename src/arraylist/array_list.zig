@@ -108,6 +108,16 @@ pub fn ArrayList(comptime T: type) type {
             return old;
         }
 
+        /// Inserts a value at the given index, shifting later elements right.
+        /// Asserts `index <= len()` as a precondition — `index == len()` appends
+        /// (same contract as Java's `addAtIndex`); a larger index is a
+        /// safety-checked panic in Debug/ReleaseSafe and illegal behavior in
+        /// ReleaseFast/ReleaseSmall.
+        pub fn addAtIndex(self: *Self, index: usize, value: T) Allocator.Error!void {
+            std.debug.assert(index <= self.items.items.len);
+            try self.items.insert(self.allocator, index, value);
+        }
+
         /// Removes and returns the element at the given index.
         /// Asserts `index < len()` as a precondition (same contract as `set`;
         /// see D5) — out-of-bounds is a checked panic / ReleaseFast UB.

@@ -117,6 +117,33 @@ test "ArrayList: parameterized core ops + contains + eql + distinct" {
     }
 }
 
+test "ArrayList: addAtIndex inserts at head, middle and tail" {
+    inline for (type_axis) |T| {
+        const s = samples(T);
+        var l = arraylist.ArrayList(T).init(testing.allocator);
+        defer l.deinit();
+        // Insert into the empty list (index == len() appends).
+        try l.addAtIndex(0, s[1]);
+        try testing.expectEqual(@as(usize, 1), l.len());
+        try testing.expectEqual(@as(?T, s[1]), l.get(0));
+        // Head insert shifts the existing element right.
+        try l.addAtIndex(0, s[0]);
+        try testing.expectEqual(@as(?T, s[0]), l.get(0));
+        try testing.expectEqual(@as(?T, s[1]), l.get(1));
+        // Tail insert at index == len().
+        try l.addAtIndex(2, s[0]);
+        try testing.expectEqual(@as(usize, 3), l.len());
+        try testing.expectEqual(@as(?T, s[0]), l.get(2));
+        // Middle insert shifts the suffix right.
+        try l.addAtIndex(1, s[1]);
+        try testing.expectEqual(@as(usize, 4), l.len());
+        try testing.expectEqual(@as(?T, s[0]), l.get(0));
+        try testing.expectEqual(@as(?T, s[1]), l.get(1));
+        try testing.expectEqual(@as(?T, s[1]), l.get(2));
+        try testing.expectEqual(@as(?T, s[0]), l.get(3));
+    }
+}
+
 test "ArrayList: min/max/sort under canonical ordering" {
     inline for (type_axis) |T| {
         const s = samples(T);
@@ -351,6 +378,33 @@ test "HashBag/TreeBag: parameterized count semantics" {
         try testing.expectEqual(@as(?T, s[0]), tb.min());
         try testing.expectEqual(@as(?T, s[1]), tb.max());
     }
+}
+
+test "HashBag: count(predicate) counts occurrences, not distinct values" {
+    const P = struct {
+        fn isFirst(ctx: i32, v: i32) bool {
+            return v == ctx;
+        }
+        fn always(_: void, _: i32) bool {
+            return true;
+        }
+        fn never(_: void, _: i32) bool {
+            return false;
+        }
+    };
+    var hb = bag.HashBag(i32).init(testing.allocator);
+    defer hb.deinit();
+    try hb.add(1);
+    try hb.add(1);
+    try hb.add(1);
+    try hb.add(2);
+    // Matching value 1 has three occurrences; count reports occurrences.
+    try testing.expectEqual(@as(usize, 3), hb.count(@as(i32, 1), P.isFirst));
+    try testing.expectEqual(@as(usize, 1), hb.count(@as(i32, 2), P.isFirst));
+    try testing.expectEqual(@as(usize, 0), hb.count(@as(i32, 9), P.isFirst));
+    // count over an all-true predicate equals totalSize (occurrence count).
+    try testing.expectEqual(hb.totalSize(), hb.count({}, P.always));
+    try testing.expectEqual(@as(usize, 0), hb.count({}, P.never));
 }
 
 // ---------------------------------------------------------------------------
