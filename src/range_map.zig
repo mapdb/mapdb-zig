@@ -505,3 +505,221 @@ test "asMapOfRanges returns owned ascending slice" {
     try testing.expectEqual(@as(i32, 10), arr[0].value);
     try testing.expect(arr[1].range.eql(I32Range.closed(5, 6)));
 }
+
+// ── Salvaged coalescing battery (NEXT #5) ───────────────────────────────────
+// Rewritten from the pre-2026-07-31 `putCoalescing` tests for the coalescing
+// `put`. Each pins a shape the outward walk must get right: unbounded chains,
+// clip fragments rejoining chains beyond them, straddled equal entries, and
+// cut-empty puts at an abutment.
+
+test "put unbounded chains on both sides collapse to all" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.lessThan(-5), 7); // (-inf, -5)
+    try m.put(I32Range.closedOpen(-5, 0), 7); // merges as it lands -> (-inf, 0)
+    try m.put(I32Range.closedOpen(5, 10), 7);
+    try m.put(I32Range.atLeast(10), 7); // merges as it lands -> [5, +inf)
+    // Each pair merged on arrival; the gap [0,5) keeps the two sides apart.
+    try expectEntries(m, &.{ ent(I32Range.lessThan(0), 7), ent(I32Range.atLeast(5), 7) });
+    // Fill the gap: both unbounded neighbours absorb into (-inf, +inf).
+    try m.put(I32Range.closedOpen(0, 5), 7);
+    try expectEntries(m, &.{ent(I32Range.all(), 7)});
+    try testing.expectEqual(@as(?i32, 7), m.get(std.math.minInt(i32)));
+    try testing.expectEqual(@as(?i32, 7), m.get(0));
+    try testing.expectEqual(@as(?i32, 7), m.get(std.math.maxInt(i32)));
+}
+
+test "put rejoins clipped fragment and chain beyond it" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(0, 10), 7);
+    try m.put(I32Range.closedOpen(10, 12), 9);
+    // [6,11) clips [0,10) to [0,6) (equal value: rejoins) and [10,12) to
+    // [11,12) (different value: barrier, stays distinct).
+    try m.put(I32Range.closedOpen(6, 11), 7);
+    try expectEntries(m, &.{ ent(I32Range.closedOpen(0, 11), 7), ent(I32Range.closedOpen(11, 12), 9) });
+    try testing.expectEqual(@as(?i32, 7), m.get(0));
+    try testing.expectEqual(@as(?i32, 7), m.get(10));
+    try testing.expectEqual(@as(?i32, 9), m.get(11));
+}
+
+test "put rejoins both clip fragments of a straddled equal entry" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(0, 20), 7);
+    // Straddled: clipOut leaves [0,6)->7 and [14,20)->7; both rejoin.
+    try m.put(I32Range.closedOpen(6, 14), 7);
+    try expectEntries(m, &.{ent(I32Range.closedOpen(0, 20), 7)});
+
+    // Same shape flanked by different values: the fragments rejoin the insert
+    // but never the barriers, so the map is unchanged.
+    var m2 = I32I32RangeMap.init(testing.allocator);
+    defer m2.deinit();
+    try m2.put(I32Range.closedOpen(0, 2), 1);
+    try m2.put(I32Range.closedOpen(2, 18), 7);
+    try m2.put(I32Range.closedOpen(18, 20), 1);
+    try m2.put(I32Range.closedOpen(6, 14), 7);
+    try expectEntries(m2, &.{
+        ent(I32Range.closedOpen(0, 2), 1),
+        ent(I32Range.closedOpen(2, 18), 7),
+        ent(I32Range.closedOpen(18, 20), 1),
+    });
+}
+
+test "put cut-empty range at an abutment is a no-op" {
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.closedOpen(1, 5), 100);
+    try m.put(I32Range.closedOpen(5, 9), 200);
+    // Cut-empty puts must return BEFORE clipOut: no clip, no coalesce, even
+    // when the empty range sits exactly on the abutment cut (both forms).
+    const unchanged = [_]MapEntry{ ent(I32Range.closedOpen(1, 5), 100), ent(I32Range.closedOpen(5, 9), 200) };
+    try m.put(I32Range.closedOpen(5, 5), 100);
+    try expectEntries(m, &unchanged);
+    try m.put(I32Range.openClosed(5, 5), 200);
+    try expectEntries(m, &unchanged);
+    try m.put(I32Range.closedOpen(3, 3), 999);
+    try expectEntries(m, &unchanged);
+}
+
+test "no-integer range is a stored barrier" {
+    // open(1, 2) over i32 holds no integer but is cut-NON-empty, so it is
+    // stored, splits the enclosing entry, and blocks the two equal-valued
+    // fragments from rejoining. The point-based oracle test cannot see this
+    // shape (no integer to probe), hence the exact-entry check here.
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.all(), 1);
+    try m.put(I32Range.open(1, 2), 2);
+    try expectEntries(m, &.{
+        ent(I32Range.atMost(1), 1),
+        ent(I32Range.open(1, 2), 2),
+        ent(I32Range.atLeast(2), 1),
+    });
+    // Removing it leaves the two fragments abutting NOTHING: a gap of zero
+    // integers but non-zero cuts, so they stay distinct (no rejoin).
+    try m.remove(I32Range.open(1, 2));
+    try expectEntries(m, &.{ ent(I32Range.atMost(1), 1), ent(I32Range.atLeast(2), 1) });
+}
+
+test "remove of an unbounded range clips to the exact sentinel cut" {
+    // The surviving fragment starts at the flipped boundary cut: below(0)
+    // for lessThan(0), above(0) for atMost(0). No ±1.
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+    try m.put(I32Range.all(), 1);
+    try m.remove(I32Range.lessThan(0));
+    try expectEntries(m, &.{ent(I32Range.atLeast(0), 1)});
+
+    var m2 = I32I32RangeMap.init(testing.allocator);
+    defer m2.deinit();
+    try m2.put(I32Range.all(), 1);
+    try m2.remove(I32Range.atMost(0));
+    try expectEntries(m2, &.{ent(I32Range.greaterThan(0), 1)});
+}
+
+/// Draw a random range whose endpoints lie in `[-8, 8]`, covering all four
+/// bound types and every unbounded form so the `below_all` / `above_all`
+/// sentinels are exercised. `open(v, v)` traps (invalid-as-open), so that draw
+/// degrades to the legal cut-empty `closedOpen(v, v)`; cut-empty draws are let
+/// through and must be no-ops.
+fn oracleRandomRange(rnd: std.Random) I32Range {
+    const a = rnd.intRangeAtMost(i32, -8, 8);
+    const b = rnd.intRangeAtMost(i32, -8, 8);
+    const lo = @min(a, b);
+    const hi = @max(a, b);
+    return switch (rnd.intRangeLessThan(u8, 0, 9)) {
+        0 => I32Range.closed(lo, hi),
+        1 => if (lo == hi) I32Range.closedOpen(lo, hi) else I32Range.open(lo, hi),
+        2 => I32Range.closedOpen(lo, hi),
+        3 => I32Range.openClosed(lo, hi),
+        4 => I32Range.lessThan(a),
+        5 => I32Range.atMost(a),
+        6 => I32Range.greaterThan(a),
+        7 => I32Range.atLeast(a),
+        else => I32Range.all(),
+    };
+}
+
+/// Run one seeded `put`/`remove` sequence against a dense `?i32`-per-point
+/// oracle over `[-12, 12]`, checking after EVERY op that lookups, entries and
+/// the normal form agree with it.
+fn runPutRemoveOracle(seed: u64, ops: usize) !void {
+    const LO: i32 = -12;
+    const HI: i32 = 12;
+    const N: usize = @intCast(HI - LO + 1);
+    var oracle = [_]?i32{null} ** N;
+    var m = I32I32RangeMap.init(testing.allocator);
+    defer m.deinit();
+
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rnd = prng.random();
+    var iter: usize = 0;
+    while (iter < ops) : (iter += 1) {
+        const r = oracleRandomRange(rnd);
+        // ~70% put / 30% remove; values from {1,2,3} so equal-value
+        // coalescing happens constantly.
+        if (rnd.intRangeLessThan(u8, 0, 10) < 7) {
+            const value = rnd.intRangeAtMost(i32, 1, 3);
+            try m.put(r, value);
+            var p = LO;
+            while (p <= HI) : (p += 1) {
+                if (r.contains(p)) oracle[@intCast(p - LO)] = value;
+            }
+        } else {
+            try m.remove(r);
+            var p = LO;
+            while (p <= HI) : (p += 1) {
+                if (r.contains(p)) oracle[@intCast(p - LO)] = null;
+            }
+        }
+
+        // (a) get and (b) getEntry agree with the oracle at every point.
+        var p = LO;
+        while (p <= HI) : (p += 1) {
+            const want = oracle[@intCast(p - LO)];
+            try testing.expectEqual(want, m.get(p));
+            if (m.getEntry(p)) |e| {
+                try testing.expect(want != null);
+                try testing.expect(e.range.contains(p));
+                try testing.expectEqual(want.?, e.value);
+            } else {
+                try testing.expect(want == null);
+            }
+        }
+
+        // (c) Normal form: ascending by lower cut, cut-non-empty, pairwise
+        // disjoint, and no connected consecutive pair with an equal value.
+        const v = m.items();
+        for (v) |e| try testing.expect(!e.range.isEmpty());
+        var i: usize = 1;
+        while (i < v.len) : (i += 1) {
+            const prev = v[i - 1];
+            const cur = v[i];
+            try testing.expectEqual(std.math.Order.lt, I32Range.Cut.cmp(prev.range.lower, cur.range.lower));
+            if (prev.range.intersection(cur.range)) |x| try testing.expect(x.isEmpty());
+            try testing.expect(!(prev.range.isConnected(cur.range) and prev.value == cur.value));
+        }
+
+        // (d) Rebuilding the dense array from the entries reproduces the
+        // oracle exactly.
+        var rebuilt = [_]?i32{null} ** N;
+        for (v) |e| {
+            var q = LO;
+            while (q <= HI) : (q += 1) {
+                if (e.range.contains(q)) {
+                    try testing.expect(rebuilt[@intCast(q - LO)] == null); // disjointness, again
+                    rebuilt[@intCast(q - LO)] = e.value;
+                }
+            }
+        }
+        try testing.expectEqualSlices(?i32, &oracle, &rebuilt);
+    }
+}
+
+test "oracle: random put/remove vs dense per-point model" {
+    // Seeded and deterministic; three seeds x 400 ops each.
+    try runPutRemoveOracle(0x5A1_0001, 400);
+    try runPutRemoveOracle(0x5A1_0002, 400);
+    try runPutRemoveOracle(0x5A1_0003, 400);
+}

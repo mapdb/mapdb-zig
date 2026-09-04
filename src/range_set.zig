@@ -728,3 +728,46 @@ test "differential vs boolean model over a bounded domain (random add/remove)" {
         for (items) |rr| try testing.expect(!rr.isEmpty());
     }
 }
+
+// ── Salvaged coalescing battery (NEXT #5) ───────────────────────────────────
+// `add` merges via ONE ascending pass. For a set that is sufficient (the merge
+// predicate is pure connectivity, there is no value barrier), so these pin the
+// direction-independence and remove/re-add cases that a map needs an outward
+// walk for.
+
+test "add coalesces whole run from either direction" {
+    // Ascending: [1,2), [2,3), [3,4) -> {[1,4)}.
+    var asc = try rsFrom(testing.allocator, &.{
+        I32Range.closedOpen(1, 2),
+        I32Range.closedOpen(2, 3),
+        I32Range.closedOpen(3, 4),
+    });
+    defer asc.deinit();
+    try expectRanges(asc, &.{I32Range.closedOpen(1, 4)});
+
+    // The same three, with the last add landing to the LEFT of the run.
+    var mixed = try rsFrom(testing.allocator, &.{
+        I32Range.closedOpen(2, 3),
+        I32Range.closedOpen(3, 4),
+        I32Range.closedOpen(1, 2),
+    });
+    defer mixed.deinit();
+    try expectRanges(mixed, &.{I32Range.closedOpen(1, 4)});
+
+    // Bridge: [3,5) abuts both [1,3) and [5,7) -> one range.
+    var bridge = try rsFrom(testing.allocator, &.{ I32Range.closedOpen(1, 3), I32Range.closedOpen(5, 7) });
+    defer bridge.deinit();
+    try testing.expectEqual(@as(usize, 2), bridge.items().len);
+    try bridge.add(I32Range.closedOpen(3, 5));
+    try expectRanges(bridge, &.{I32Range.closedOpen(1, 7)});
+}
+
+test "add rejoins fragments left behind by remove" {
+    var s = try rsFrom(testing.allocator, &.{I32Range.closedOpen(0, 10)});
+    defer s.deinit();
+    try s.remove(I32Range.closedOpen(3, 7));
+    try expectRanges(s, &.{ I32Range.closedOpen(0, 3), I32Range.closedOpen(7, 10) });
+    // Re-adding the hole abuts both fragments: back to the single range.
+    try s.add(I32Range.closedOpen(3, 7));
+    try expectRanges(s, &.{I32Range.closedOpen(0, 10)});
+}
