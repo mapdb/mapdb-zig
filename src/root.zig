@@ -16,8 +16,7 @@
 //! -value are ownership transfers (the caller disposes of what comes back);
 //! `clear`/`deinit` free structure only, so drain owning values first. Object
 //! collections add `getPtr`/`getConstPtr` borrowed accessors. Full contract:
-//! `src/object/object.zig` module doc and
-//! `todo/fable-zig/fable-review-01-ownership-model.md`.
+//! `src/object/object.zig` module doc.
 //!
 //! ## Memory management
 //!
@@ -73,8 +72,6 @@
 //!    `deinit` requires external quiescence.
 //! 4. Any allocator given to a concurrent collection must be thread-safe.
 //!    (`parallel.filter` is the exception — its workers never allocate.)
-//!
-//! See `todo/fable-zig/fable-review-02-concurrent-map-memory.md`.
 
 pub const hash_table = @import("hash_table.zig");
 pub const hash = @import("hash.zig");

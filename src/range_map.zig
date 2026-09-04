@@ -112,8 +112,10 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
                 hi += 1;
             }
 
-            // Replace entries[lo..hi] with the single merged entry. Grow first
-            // so the write cannot fail after the buffer has been disturbed.
+            // Replace entries[lo..hi] with the single merged entry. `clipOut`
+            // reserved `len + 2` (one straddling entry can split into two
+            // fragments, and this insert adds one more), so neither branch can
+            // fail after the buffer has been disturbed.
             if (hi - lo == 0) {
                 try self.entries.insert(self.allocator, lo, .{ .range = merged, .value = value });
             } else {
@@ -203,7 +205,10 @@ pub fn RangeMap(comptime T: type, comptime V: type) type {
         fn clipOut(self: *Self, range: Range) !void {
             var out: std.ArrayListUnmanaged(Entry) = .{};
             errdefer out.deinit(self.allocator);
-            try out.ensureTotalCapacity(self.allocator, self.entries.items.len + 1);
+            // `+ 2`: at most one straddling entry splits into two fragments
+            // (`+ 1`), and `put` inserts one more entry into this buffer after
+            // `clipOut` returns.
+            try out.ensureTotalCapacity(self.allocator, self.entries.items.len + 2);
             for (self.entries.items) |e| {
                 const r = e.range;
                 if (r.intersection(range)) |i| {

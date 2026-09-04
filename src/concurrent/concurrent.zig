@@ -4,8 +4,7 @@
 // See LICENSE-EPL-1.0.txt and LICENSE-EDL-1.0.txt.
 // USE AT YOUR OWN RISK — THIS SOFTWARE IS PROVIDED WITHOUT WARRANTY OF ANY KIND.
 
-//! Concurrency module index. See the `root.zig` //! concurrency contract and
-//! `todo/fable-zig/fable-review-02-concurrent-map-memory.md`.
+//! Concurrency module index. See the `root.zig` concurrency contract.
 //!
 //! - `Synchronized(C)` (L1): coarse RwLock wrapper for any collection.
 //! - `ShardedHashMap(K, V)` (L2): genuinely concurrent per-shard-locked map.

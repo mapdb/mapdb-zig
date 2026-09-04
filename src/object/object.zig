@@ -30,8 +30,7 @@
 //!   overload where one is provided.
 //!
 //! This mirrors `std.HashMapUnmanaged` (shallow) and the primitive tier, so
-//! Zig users arrive with the right mental model. See
-//! `todo/fable-zig/fable-review-01-ownership-model.md`.
+//! Zig users arrive with the right mental model.
 
 pub const ArrayList = @import("arraylist.zig").ArrayList;
 pub const HashSet = @import("hashset.zig").HashSet;
