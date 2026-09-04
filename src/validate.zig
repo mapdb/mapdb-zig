@@ -210,6 +210,15 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
             .array_stack => |*s| try s.push(value),
             else => {},
         }
+    } else if (std.mem.eql(u8, op_name, "add_occurrences")) {
+        // {"op":"add_occurrences","value":v,"count":n}: the production bulk
+        // add on the bag (count 0 is a no-op, never creates the item).
+        const value = jsonToI32(obj.get("value").?).?;
+        const count: usize = @intCast(obj.get("count").?.integer);
+        switch (coll.*) {
+            .hash_bag => |*b| try b.addOccurrences(value, count),
+            else => {},
+        }
     } else if (std.mem.eql(u8, op_name, "add_at")) {
         const index: usize = @intCast(obj.get("index").?.integer);
         const value = jsonToI32(obj.get("value").?).?;
