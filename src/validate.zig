@@ -46,6 +46,7 @@ const HyperLogLog = @import("hyperloglog/hyperloglog.zig").HyperLogLog;
 const RoaringU32 = @import("roaring.zig").RoaringU32;
 const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 const SSEntry = @import("space_saving.zig").Entry;
+const I32Interval = @import("interval/interval.zig").I32Interval;
 
 const CollectionKind = enum {
     hash_map,
@@ -1888,6 +1889,335 @@ fn runTrace(allocator: Allocator, trace_path: []const u8, out_path: []const u8) 
     return writeAtomicObservations(out_path, body);
 }
 
+// Q2: a sentinel is the scenario banner or a `key: value` assertion line
+// (colon followed by a space). PASS/FAIL/SKIP/ERROR are not sentinels.
+fn stdoutHasSentinel(stdout: []const u8) bool {
+    var i: usize = 0;
+    while (i < stdout.len) {
+        var end = i;
+        while (end < stdout.len and stdout[end] != '\n') : (end += 1) {}
+        var line = stdout[i..end];
+        while (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+        if (std.mem.startsWith(u8, line, "=== scenario:")) return true;
+        if (lineIsKeyValueSentinel(line)) return true;
+        i = if (end < stdout.len) end + 1 else end;
+    }
+    return false;
+}
+
+fn lineIsKeyValueSentinel(line: []const u8) bool {
+    var j: usize = 0;
+    while (j < line.len) : (j += 1) {
+        const c = line[j];
+        const ok = (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '+' or c == '-';
+        if (!ok) break;
+    }
+    if (j == 0 or j + 1 >= line.len) return false;
+    if (line[j] != ':' or line[j + 1] != ' ') return false;
+    const key = line[0..j];
+    if (std.mem.eql(u8, key, "PASS") or std.mem.eql(u8, key, "FAIL") or
+        std.mem.eql(u8, key, "SKIP") or std.mem.eql(u8, key, "ERROR") or
+        std.mem.eql(u8, key, "SUMMARY"))
+    {
+        return false;
+    }
+    return true;
+}
+
+fn panicPassed(timed_out: bool, exit_code: i32, stdout: []const u8) bool {
+    return !timed_out and exit_code != 0 and !stdoutHasSentinel(stdout);
+}
+
+fn panicJudgeSelftest() u8 {
+    const Case = struct {
+        timed_out: bool,
+        exit_code: i32,
+        stdout: []const u8,
+        pass: bool,
+    };
+    const cases = [_]Case{
+        .{ .timed_out = false, .exit_code = 0, .stdout = "", .pass = false },
+        .{ .timed_out = false, .exit_code = 0, .stdout = "=== scenario: x ===\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "size: 1\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "", .pass = true },
+        .{ .timed_out = false, .exit_code = 101, .stdout = "boom\n", .pass = true },
+        .{ .timed_out = true, .exit_code = 1, .stdout = "", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "FAIL name expect_panic\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "expect_panic: true\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "SUMMARY: 1\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "boom:detail\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "FAIL-count: 1\n", .pass = false },
+    };
+    var failed = false;
+    for (cases, 0..) |c, idx| {
+        if (panicPassed(c.timed_out, c.exit_code, c.stdout) != c.pass) {
+            std.debug.print("panic-judge-selftest: case {d} failed\n", .{idx + 1});
+            failed = true;
+        }
+    }
+    return if (failed) 1 else 0;
+}
+
+const ExpectPanic = enum { absent, malformed, yes };
+
+fn classifyExpectPanic(root: std.json.ObjectMap) ExpectPanic {
+    const assertions = root.get("assertions") orelse return .absent;
+    if (assertions != .object) return .absent;
+    const flag = assertions.object.get("expect_panic") orelse return .absent;
+    if (flag == .bool and flag.bool) return .yes;
+    return .malformed;
+}
+
+fn exitCodeFromStatus(status: u32) i32 {
+    if (std.posix.W.IFEXITED(status)) return std.posix.W.EXITSTATUS(status);
+    if (std.posix.W.IFSIGNALED(status)) {
+        const sig = std.posix.W.TERMSIG(status);
+        if (sig == 0) return 1;
+        return @intCast(sig);
+    }
+    if (std.posix.W.IFSTOPPED(status)) {
+        const sig = std.posix.W.STOPSIG(status);
+        if (sig == 0) return 1;
+        return @intCast(sig);
+    }
+    if (status == 0) return 1;
+    return @intCast(status);
+}
+
+const PanicChildOutcome = struct {
+    timed_out: bool,
+    exit_code: i32,
+    stdout: []u8,
+    owned: bool,
+    overflow: bool,
+};
+
+fn drainChildStdout(fd: std.posix.fd_t, buf: []u8, len: *usize, overflow: *bool) void {
+    var tmp: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &tmp) catch return;
+        if (n == 0) return;
+        const room = buf.len - len.*;
+        if (n > room) {
+            if (room != 0) {
+                @memcpy(buf[len.*..][0..room], tmp[0..room]);
+                len.* += room;
+            }
+            overflow.* = true;
+            continue;
+        }
+        @memcpy(buf[len.*..][0..n], tmp[0..n]);
+        len.* += n;
+    }
+}
+
+fn observePanicChild(allocator: Allocator, exe: []const u8, scenario_path: []const u8) PanicChildOutcome {
+    const blank = PanicChildOutcome{
+        .timed_out = false,
+        .exit_code = 0,
+        .stdout = "",
+        .owned = false,
+        .overflow = false,
+    };
+    const argv = [_][]const u8{ exe, "--panic-child", scenario_path };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Inherit;
+    child.spawn() catch return blank;
+
+    var reaped = false;
+    defer if (!reaped) {
+        _ = std.posix.kill(child.id, std.posix.SIG.KILL) catch {};
+        _ = std.posix.waitpid(child.id, 0);
+    };
+    defer if (child.stdout) |*f| f.close();
+
+    child.waitForSpawn() catch return blank;
+
+    const fd = child.stdout.?.handle;
+    var fl = std.posix.fcntl(fd, std.posix.F.GETFL, 0) catch return blank;
+    fl |= @as(usize, 1) << @bitOffsetOf(std.posix.O, "NONBLOCK");
+    _ = std.posix.fcntl(fd, std.posix.F.SETFL, fl) catch return blank;
+
+    var storage: [64 * 1024]u8 = undefined;
+    var len: usize = 0;
+    var overflow = false;
+    const deadline = std.time.milliTimestamp() + 10_000;
+    var timed_out = false;
+    var status: u32 = 0;
+
+    while (!reaped) {
+        const now = std.time.milliTimestamp();
+        if (now >= deadline) {
+            const pending = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+            if (pending.pid != 0) {
+                status = pending.status;
+                reaped = true;
+                break;
+            }
+            timed_out = true;
+            _ = std.posix.kill(child.id, std.posix.SIG.KILL) catch {};
+            const wr = std.posix.waitpid(child.id, 0);
+            status = wr.status;
+            reaped = true;
+            break;
+        }
+        const remain_ms: i32 = @intCast(@min(deadline - now, 200));
+        var pfd = [1]std.posix.pollfd{
+            .{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        _ = std.posix.poll(&pfd, remain_ms) catch 0;
+        drainChildStdout(fd, &storage, &len, &overflow);
+        const wr = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+        if (wr.pid != 0) {
+            status = wr.status;
+            reaped = true;
+        }
+    }
+    drainChildStdout(fd, &storage, &len, &overflow);
+
+    const stdout = allocator.alloc(u8, len) catch return blank;
+    @memcpy(stdout, storage[0..len]);
+    return .{
+        .timed_out = timed_out,
+        .exit_code = exitCodeFromStatus(status),
+        .stdout = stdout,
+        .owned = true,
+        .overflow = overflow,
+    };
+}
+
+fn finishExpectPanic(name: []const u8, passed: bool) noreturn {
+    var stdout_buf: [16 * 1024]u8 = undefined;
+    var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_w.interface;
+    stdout.print("=== scenario: {s} ===\n", .{name}) catch {};
+    if (passed) {
+        stdout.writeAll("expect_panic: true\n") catch {};
+    } else {
+        stdout.print("FAIL {s} expect_panic: child did not trap cleanly\n", .{name}) catch {};
+    }
+    stdout.flush() catch {};
+    std.process.exit(if (passed) 0 else 1);
+}
+
+fn runExpectPanicParent(allocator: Allocator, argv0: []const u8, scenario_path: []const u8, name: []const u8) noreturn {
+    const exe_alloc = std.fs.selfExePathAlloc(allocator);
+    const exe = exe_alloc catch argv0;
+    const outcome = observePanicChild(allocator, exe, scenario_path);
+    defer if (outcome.owned) allocator.free(outcome.stdout);
+    const clean = panicPassed(outcome.timed_out, outcome.exit_code, outcome.stdout);
+    finishExpectPanic(name, clean and !outcome.overflow);
+}
+
+// JSON integers arrive as i64. Range-check into i32; do not accept floats
+// (f64 cannot be the source of minInt(i32)).
+fn readIntervalI32(obj: std.json.ObjectMap, field: []const u8) ?i32 {
+    const v = obj.get(field) orelse return null;
+    return switch (v) {
+        .integer => |i| std.math.cast(i32, i),
+        .number_string => |s| std.fmt.parseInt(i32, s, 10) catch null,
+        else => null,
+    };
+}
+
+fn intervalBail(name: []const u8) noreturn {
+    const out = std.fs.File.stdout();
+    out.writeAll("=== scenario: ") catch {};
+    out.writeAll(name) catch {};
+    out.writeAll(" ===\n") catch {};
+    std.process.exit(1);
+}
+
+fn panicScenarioName(root: std.json.ObjectMap) []const u8 {
+    const name_val = root.get("name") orelse return "interval";
+    if (name_val != .string) return "interval";
+    return name_val.string;
+}
+
+fn panicCollectionKnown(collection: []const u8) bool {
+    const known = [_][]const u8{
+        "HashMap<i32, i32>",
+        "HashMap<i64, i32>",
+        "ListMultimap<i64, i32>",
+        "SetMultimap<i64, i32>",
+        "ArrayList<i32>",
+        "HashSet<i32>",
+        "HashBag<i32>",
+        "TreeSet<i32>",
+        "TreeMap<i32, i32>",
+        "HashMap<f32, i32>",
+        "HashSet<f32>",
+        "TreeSet<f32>",
+        "ArrayList<f32>",
+        "Range<i32>",
+        "RangeSet<i32>",
+        "RangeMap<i32, i32>",
+        "BoundedLruMap<i32, i32>",
+        "ImmutableSortedMap<i32, i32>",
+        "ImmutableSortedSet<i32>",
+        "HashPipeline",
+        "Bloom",
+        "HyperLogLog",
+        "CountMin",
+        "SpaceSaving",
+        "FenwickTree",
+        "RoaringU32",
+        "Interval<i32>",
+    };
+    for (known) |k| {
+        if (std.mem.eql(u8, collection, k)) return true;
+    }
+    return false;
+}
+
+fn runInterval(name: []const u8, operations: std.json.Array) void {
+    var interval: I32Interval = undefined;
+    var have_interval = false;
+    for (operations.items) |op_val| {
+        if (op_val != .object) intervalBail(name);
+        const obj = op_val.object;
+        const op_field = obj.get("op") orelse intervalBail(name);
+        if (op_field != .string) intervalBail(name);
+        if (std.mem.eql(u8, op_field.string, "from_to_by")) {
+            const from = readIntervalI32(obj, "from") orelse intervalBail(name);
+            const to = readIntervalI32(obj, "to") orelse intervalBail(name);
+            const step = readIntervalI32(obj, "step") orelse intervalBail(name);
+            interval = I32Interval.fromToBy(from, to, step);
+            have_interval = true;
+        } else if (std.mem.eql(u8, op_field.string, "reversed")) {
+            if (!have_interval) intervalBail(name);
+            interval = interval.reversed();
+        } else intervalBail(name);
+    }
+}
+
+fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
+    const file_data = try std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024);
+    defer allocator.free(file_data);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file_data, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const name = panicScenarioName(root);
+    const coll_val = root.get("collection") orelse intervalBail(name);
+    if (coll_val != .string) intervalBail(name);
+    const collection_type = coll_val.string;
+    if (std.mem.eql(u8, collection_type, "Interval<i32>")) {
+        const ops_val = root.get("operations") orelse intervalBail(name);
+        if (ops_val != .array) intervalBail(name);
+        runInterval(name, ops_val.array);
+        var stdout_buf: [16 * 1024]u8 = undefined;
+        var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
+        const stdout = &stdout_w.interface;
+        try stdout.print("=== scenario: {s} ===\n", .{name});
+        try stdout.flush();
+        std.process.exit(0);
+    }
+    try runParsed(allocator, root);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1899,6 +2229,16 @@ pub fn main() !void {
     if (args.len < 2) {
         std.debug.print("Usage: validate <scenario.json>\n", .{});
         std.process.exit(2);
+    }
+
+    if (std.mem.eql(u8, args[1], "--panic-judge-selftest")) {
+        if (args.len != 2) std.process.exit(2);
+        std.process.exit(panicJudgeSelftest());
+    }
+    if (std.mem.eql(u8, args[1], "--panic-child")) {
+        if (args.len != 3) std.process.exit(2);
+        try runPanicChild(allocator, args[2]);
+        return;
     }
 
     if (hasCliFlag(args)) {
@@ -1919,6 +2259,24 @@ pub fn main() !void {
     defer parsed.deinit();
     const root = parsed.value.object;
 
+    switch (classifyExpectPanic(root)) {
+        .malformed => std.process.exit(1),
+        .yes => {
+            const name_val = root.get("name") orelse std.process.exit(1);
+            if (name_val != .string) std.process.exit(1);
+            const coll_val = root.get("collection");
+            const known = if (coll_val) |v| (v == .string and panicCollectionKnown(v.string)) else false;
+            if (known) {
+                runExpectPanicParent(allocator, args[0], file_path, name_val.string);
+            }
+        },
+        .absent => {},
+    }
+
+    try runParsed(allocator, root);
+}
+
+fn runParsed(allocator: Allocator, root: std.json.ObjectMap) !void {
     const name = root.get("name").?.string;
     const collection_type = root.get("collection").?.string;
     const construction = if (root.get("construction")) |c| c.string else "";
@@ -2137,7 +2495,7 @@ pub fn main() !void {
         // Scenario authors use "comment" as a doc string; the other ports
         // (Rust, Go) skip it. Treat it the same way here so harness diffs
         // line up.
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         const other_ptr: ?*Collection = if (other_coll != null) &other_coll.? else null;
         try emitAssertion(name, key, expected, &coll, other_ptr, .none, &log, query, allocator, stdout);
     }
@@ -2220,7 +2578,7 @@ fn runRange(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalRangeAssertion(key, range, other, cbuf.writer());
@@ -2369,7 +2727,7 @@ fn runImmutableSortedMap(
     const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalSortedMapAssertion(key, &map, query, allocator, cbuf.writer());
@@ -2494,7 +2852,7 @@ fn runImmutableSortedSet(
     const query: ?I32Range = if (root.get("query")) |q| buildRangeFromObj(q.object) else null;
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalSortedSetAssertion(key, &set, query, allocator, cbuf.writer());
@@ -2828,7 +3186,7 @@ fn runRoaring(
     try writer.print("=== scenario: {s} ===\n", .{name});
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalRoaringAssertion(key, &maybe_set, if (other) |*o| o else null, allocator, cbuf.writer());
@@ -3036,7 +3394,7 @@ fn runHashPipeline(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalHashProbe(probe, key, cbuf.writer());
@@ -3235,7 +3593,7 @@ fn runBloom(
     const other_ptr: ?*const Bloom = if (other) |*o| o else null;
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalBloomKey(&b, other_ptr, key, allocator, cbuf.writer());
@@ -3408,7 +3766,7 @@ fn runHyperLogLog(
     defer hll.deinit();
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalHllAssertion(&hll, key, allocator, cbuf.writer());
@@ -3557,7 +3915,7 @@ fn runCountMin(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalCountMin(&cms, key, allocator, cbuf.writer());
@@ -3687,7 +4045,7 @@ fn runSpaceSaving(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalSpaceSaving(&ss, key, allocator, cbuf.writer());
@@ -3987,7 +4345,7 @@ fn runFenwick(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         try evalFenwickAssertion(&tree, key, allocator, cbuf.writer());
@@ -4029,7 +4387,7 @@ fn runF32HashMap(
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4106,7 +4464,7 @@ fn runF32HashSet(
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4162,7 +4520,7 @@ fn runF32TreeSet(
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4217,7 +4575,7 @@ fn runF32ArrayList(
     }
     const values = list.slice();
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4297,7 +4655,7 @@ fn runI64HashMap(
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4423,7 +4781,7 @@ fn runI64Multimap(
         }
     }
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var vbuf = std.array_list.Managed(u8).init(allocator);
         defer vbuf.deinit();
         const vw = vbuf.writer();
@@ -4832,7 +5190,7 @@ fn runBoundedLru(
     }
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         const known = try lruEvalAssertion(cbuf.writer(), key, &map, &rlog, &elog, allocator);
@@ -5054,7 +5412,7 @@ fn runRangeSet(
     const span = set.span();
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         const w = cbuf.writer();
@@ -5137,7 +5495,7 @@ fn runRangeMap(
     const span = map.span();
 
     for (assertions.keys(), assertions.values()) |key, expected| {
-        if (std.mem.eql(u8, key, "comment")) continue;
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
         var cbuf = std.array_list.Managed(u8).init(allocator);
         defer cbuf.deinit();
         const w = cbuf.writer();
