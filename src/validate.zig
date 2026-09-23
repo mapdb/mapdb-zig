@@ -1460,6 +1460,434 @@ fn isCollectionEmpty(coll: *Collection) bool {
     };
 }
 
+// Trace mode (--trace / --emit-observations) ignores assertions and any
+// unknown top-level field, including "generator". It must not call
+// process.exit before returning: the caller exits only after this frame's
+// defers run, so a failed write cannot leave the destination path in place.
+const TraceObs = struct {
+    key: []u8,
+    val: []u8,
+};
+
+const TraceCli = struct {
+    trace: []const u8,
+    out: []const u8,
+};
+
+fn hasCliFlag(args: anytype) bool {
+    for (args[1..]) |a| {
+        if (std.mem.startsWith(u8, a, "-")) return true;
+    }
+    return false;
+}
+
+fn parseTraceCli(args: anytype) ?TraceCli {
+    var trace: ?[]const u8 = null;
+    var out: ?[]const u8 = null;
+    var i: usize = 1;
+    while (i < args.len) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--trace")) {
+            if (trace != null) return null;
+            if (i + 1 >= args.len) return null;
+            if (std.mem.startsWith(u8, args[i + 1], "-")) return null;
+            trace = args[i + 1];
+            i += 2;
+        } else if (std.mem.eql(u8, a, "--emit-observations")) {
+            if (out != null) return null;
+            if (i + 1 >= args.len) return null;
+            if (std.mem.startsWith(u8, args[i + 1], "-")) return null;
+            out = args[i + 1];
+            i += 2;
+        } else return null;
+    }
+    return .{
+        .trace = trace orelse return null,
+        .out = out orelse return null,
+    };
+}
+
+fn traceCollectionKind(name: []const u8) ?CollectionKind {
+    if (std.mem.eql(u8, name, "HashMap<i32, i32>")) return .hash_map;
+    if (std.mem.eql(u8, name, "ArrayList<i32>")) return .array_list;
+    if (std.mem.eql(u8, name, "TreeMap<i32, i32>")) return .tree_map;
+    return null;
+}
+
+fn requireI32Field(obj: std.json.ObjectMap, field: []const u8) error{Malformed}!i32 {
+    const v = obj.get(field) orelse return error.Malformed;
+    if (v != .integer) return error.Malformed;
+    return std.math.cast(i32, v.integer) orelse error.Malformed;
+}
+
+fn requireIndexField(obj: std.json.ObjectMap, field: []const u8) error{Malformed}!usize {
+    const v = obj.get(field) orelse return error.Malformed;
+    if (v != .integer) return error.Malformed;
+    if (v.integer < 0) return error.Malformed;
+    return std.math.cast(usize, v.integer) orelse error.Malformed;
+}
+
+fn noteDistinctKey(keys: *std.ArrayList(i32), allocator: Allocator, k: i32) !void {
+    for (keys.items) |e| if (e == k) return;
+    try keys.append(allocator, k);
+}
+
+fn keysContain(keys: []const i32, k: i32) bool {
+    for (keys) |e| if (e == k) return true;
+    return false;
+}
+
+fn applyTraceOp(
+    coll: *Collection,
+    op: std.json.Value,
+    allocator: Allocator,
+    probe_keys: *std.ArrayList(i32),
+    saw_key_99: *bool,
+) !void {
+    if (op != .object) return error.Malformed;
+    const obj = op.object;
+    const op_field = obj.get("op") orelse return error.Malformed;
+    if (op_field != .string) return error.Malformed;
+    const op_name = op_field.string;
+
+    // Any op may carry a key field. 99 counts even when the op is not put/remove.
+    if (obj.get("key")) |kv| {
+        if (kv == .integer) {
+            if (std.math.cast(i32, kv.integer)) |k| {
+                if (k == 99) saw_key_99.* = true;
+            }
+        }
+    }
+
+    switch (coll.*) {
+        .array_list => |*l| {
+            if (std.mem.eql(u8, op_name, "add")) {
+                const value = try requireI32Field(obj, "value");
+                try l.push(value);
+            } else if (std.mem.eql(u8, op_name, "add_at")) {
+                const index = try requireIndexField(obj, "index");
+                const value = try requireI32Field(obj, "value");
+                if (index > l.len()) return error.Malformed;
+                try l.addAtIndex(index, value);
+            } else if (std.mem.eql(u8, op_name, "remove")) {
+                const value = try requireI32Field(obj, "value");
+                _ = l.remove(value);
+            } else if (std.mem.eql(u8, op_name, "clear")) {
+                l.clear();
+            } else return error.Malformed;
+        },
+        .hash_map, .tree_map => {
+            if (std.mem.eql(u8, op_name, "put")) {
+                const key = try requireI32Field(obj, "key");
+                const value = try requireI32Field(obj, "value");
+                try noteDistinctKey(probe_keys, allocator, key);
+                switch (coll.*) {
+                    .hash_map => |*m| _ = try m.put(key, value),
+                    .tree_map => |*m| _ = try m.put(key, value),
+                    else => return error.Malformed,
+                }
+            } else if (std.mem.eql(u8, op_name, "remove")) {
+                const key = try requireI32Field(obj, "key");
+                try noteDistinctKey(probe_keys, allocator, key);
+                switch (coll.*) {
+                    .hash_map => |*m| _ = m.remove(key),
+                    .tree_map => |*m| _ = m.remove(key),
+                    else => return error.Malformed,
+                }
+            } else if (std.mem.eql(u8, op_name, "clear")) {
+                switch (coll.*) {
+                    .hash_map => |*m| m.clear(),
+                    .tree_map => |*m| m.clear(),
+                    else => return error.Malformed,
+                }
+            } else if (std.mem.eql(u8, op_name, "get")) {
+                const key = try requireI32Field(obj, "key");
+                switch (coll.*) {
+                    .hash_map => |*m| _ = m.get(key),
+                    .tree_map => |*m| _ = m.get(key),
+                    else => return error.Malformed,
+                }
+            } else return error.Malformed;
+        },
+        else => return error.Malformed,
+    }
+}
+
+fn appendObs(
+    obs: *std.ArrayList(TraceObs),
+    allocator: Allocator,
+    coll: *Collection,
+    log: *const NavLog,
+    key: []const u8,
+) !void {
+    var cbuf = std.array_list.Managed(u8).init(allocator);
+    defer cbuf.deinit();
+    try evaluateAssertion(key, coll, null, log, null, allocator, cbuf.writer());
+    if (std.mem.startsWith(u8, cbuf.items, "UNKNOWN_ASSERTION:")) return error.Malformed;
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    const owned_val = try allocator.dupe(u8, cbuf.items);
+    errdefer allocator.free(owned_val);
+    try obs.append(allocator, .{ .key = owned_key, .val = owned_val });
+}
+
+fn appendObsFmt(
+    obs: *std.ArrayList(TraceObs),
+    allocator: Allocator,
+    coll: *Collection,
+    log: *const NavLog,
+    comptime fmt: []const u8,
+    args: anytype,
+) !void {
+    var kbuf: [64]u8 = undefined;
+    const key = std.fmt.bufPrint(&kbuf, fmt, args) catch return error.Malformed;
+    try appendObs(obs, allocator, coll, log, key);
+}
+
+fn collectTraceObs(
+    obs: *std.ArrayList(TraceObs),
+    allocator: Allocator,
+    coll: *Collection,
+    probe_keys: []const i32,
+    saw_key_99: bool,
+) !void {
+    var log: NavLog = .{};
+    defer log.deinit(allocator);
+
+    try appendObs(obs, allocator, coll, &log, "size");
+    try appendObs(obs, allocator, coll, &log, "is_empty");
+
+    switch (coll.*) {
+        .array_list => {
+            try appendObs(obs, allocator, coll, &log, "to_sorted_array");
+            try appendObs(obs, allocator, coll, &log, "sum");
+            const n = getCollectionSize(coll);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                try appendObsFmt(obs, allocator, coll, &log, "get_at_{d}", .{i});
+            }
+        },
+        .hash_map, .tree_map => {
+            try appendObs(obs, allocator, coll, &log, "sorted_keys");
+            try appendObs(obs, allocator, coll, &log, "sorted_values");
+            const is_tree = coll.* == .tree_map;
+            const n = getCollectionSize(coll);
+            if (is_tree and n != 0) {
+                try appendObs(obs, allocator, coll, &log, "first_key");
+                try appendObs(obs, allocator, coll, &log, "last_key");
+            }
+            for (probe_keys) |k| {
+                try appendObsFmt(obs, allocator, coll, &log, "get_{d}", .{k});
+                try appendObsFmt(obs, allocator, coll, &log, "contains_{d}", .{k});
+                if (is_tree) {
+                    try appendObsFmt(obs, allocator, coll, &log, "floor_{d}", .{k});
+                    try appendObsFmt(obs, allocator, coll, &log, "ceiling_{d}", .{k});
+                    try appendObsFmt(obs, allocator, coll, &log, "lower_{d}", .{k});
+                    try appendObsFmt(obs, allocator, coll, &log, "higher_{d}", .{k});
+                    try appendObsFmt(obs, allocator, coll, &log, "rank_{d}", .{k});
+                }
+            }
+            // Absent-key probe. Only get/contains, and only when 99 was never a key field.
+            if (!saw_key_99 and !keysContain(probe_keys, 99)) {
+                try appendObs(obs, allocator, coll, &log, "get_99");
+                try appendObs(obs, allocator, coll, &log, "contains_99");
+            }
+            if (is_tree and n >= 1 and n <= 32) {
+                var i: usize = 0;
+                while (i < n) : (i += 1) {
+                    try appendObsFmt(obs, allocator, coll, &log, "select_{d}", .{i});
+                }
+            }
+        },
+        else => return error.Malformed,
+    }
+
+    std.mem.sort(TraceObs, obs.items, {}, struct {
+        fn less(_: void, a: TraceObs, b: TraceObs) bool {
+            return std.mem.order(u8, a.key, b.key) == .lt;
+        }
+    }.less);
+}
+
+fn writeJsonString(w: anytype, s: []const u8) !void {
+    try w.writeAll("\"");
+    for (s) |c| {
+        switch (c) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\r' => try w.writeAll("\\r"),
+            '\t' => try w.writeAll("\\t"),
+            else => if (c < 0x20) {
+                try w.print("\\u{x:0>4}", .{c});
+            } else {
+                try w.writeByte(c);
+            },
+        }
+    }
+    try w.writeAll("\"");
+}
+
+fn buildTraceJson(
+    allocator: Allocator,
+    name: []const u8,
+    collection: []const u8,
+    obs: []const TraceObs,
+) ![]u8 {
+    var buf = std.array_list.Managed(u8).init(allocator);
+    errdefer buf.deinit();
+    const w = buf.writer();
+    try w.writeAll("{\n  \"name\": ");
+    try writeJsonString(w, name);
+    try w.writeAll(",\n  \"collection\": ");
+    try writeJsonString(w, collection);
+    try w.writeAll(",\n  \"observations\": {\n");
+    for (obs, 0..) |o, i| {
+        try w.writeAll("    ");
+        try writeJsonString(w, o.key);
+        try w.writeAll(": ");
+        try writeJsonString(w, o.val);
+        if (i + 1 != obs.len) try w.writeByte(',');
+        try w.writeByte('\n');
+    }
+    try w.writeAll("  }\n}\n");
+    return try buf.toOwnedSlice();
+}
+
+fn writeAtomicObservations(out_path: []const u8, body: []const u8) u8 {
+    var write_buf: [8192]u8 = undefined;
+    var af = std.fs.cwd().atomicFile(out_path, .{ .write_buffer = &write_buf }) catch {
+        std.debug.print("trace: failed to write observations\n", .{});
+        return 1;
+    };
+    defer af.deinit();
+    af.file_writer.interface.writeAll(body) catch {
+        std.debug.print("trace: failed to write observations\n", .{});
+        return 1;
+    };
+    af.finish() catch {
+        std.debug.print("trace: failed to write observations\n", .{});
+        return 1;
+    };
+    return 0;
+}
+
+fn runTrace(allocator: Allocator, trace_path: []const u8, out_path: []const u8) u8 {
+    const file_data = std.fs.cwd().readFileAlloc(allocator, trace_path, 100 * 1024 * 1024) catch {
+        std.debug.print("trace: malformed trace\n", .{});
+        return 1;
+    };
+    defer allocator.free(file_data);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, file_data, .{}) catch {
+        std.debug.print("trace: malformed trace\n", .{});
+        return 1;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        std.debug.print("trace: malformed trace\n", .{});
+        return 1;
+    }
+    const root = parsed.value.object;
+
+    const collection_type = blk: {
+        const v = root.get("collection") orelse {
+            std.debug.print("trace: malformed trace\n", .{});
+            return 1;
+        };
+        switch (v) {
+            .string => |s| break :blk s,
+            else => {
+                std.debug.print("trace: malformed trace\n", .{});
+                return 1;
+            },
+        }
+    };
+
+    const kind = traceCollectionKind(collection_type) orelse {
+        std.debug.print("skip: unsupported collection kind (forward-compat): {s}\n", .{collection_type});
+        return 0;
+    };
+
+    const name = blk: {
+        const v = root.get("name") orelse {
+            std.debug.print("trace: malformed trace\n", .{});
+            return 1;
+        };
+        switch (v) {
+            .string => |s| break :blk s,
+            else => {
+                std.debug.print("trace: malformed trace\n", .{});
+                return 1;
+            },
+        }
+    };
+
+    if (root.get("construction")) |c| {
+        const nonempty = switch (c) {
+            .string => |s| s.len != 0,
+            else => true,
+        };
+        if (nonempty) {
+            std.debug.print("trace: non-empty construction\n", .{});
+            return 1;
+        }
+    }
+
+    const operations = blk: {
+        const v = root.get("operations") orelse {
+            std.debug.print("trace: malformed trace\n", .{});
+            return 1;
+        };
+        switch (v) {
+            .array => |a| break :blk a,
+            else => {
+                std.debug.print("trace: malformed trace\n", .{});
+                return 1;
+            },
+        }
+    };
+
+    var coll = initCollection(kind, allocator) catch {
+        std.debug.print("trace: malformed trace\n", .{});
+        return 1;
+    };
+    defer deinitCollection(&coll);
+
+    var probe_keys: std.ArrayList(i32) = .{};
+    defer probe_keys.deinit(allocator);
+    var saw_key_99 = false;
+
+    for (operations.items) |op| {
+        applyTraceOp(&coll, op, allocator, &probe_keys, &saw_key_99) catch {
+            std.debug.print("trace: unknown or malformed op\n", .{});
+            return 1;
+        };
+    }
+
+    var obs: std.ArrayList(TraceObs) = .{};
+    defer {
+        for (obs.items) |o| {
+            allocator.free(o.key);
+            allocator.free(o.val);
+        }
+        obs.deinit(allocator);
+    }
+    collectTraceObs(&obs, allocator, &coll, probe_keys.items, saw_key_99) catch {
+        std.debug.print("trace: malformed trace\n", .{});
+        return 1;
+    };
+
+    const body = buildTraceJson(allocator, name, collection_type, obs.items) catch {
+        std.debug.print("trace: failed to write observations\n", .{});
+        return 1;
+    };
+    defer allocator.free(body);
+
+    return writeAtomicObservations(out_path, body);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1470,7 +1898,17 @@ pub fn main() !void {
 
     if (args.len < 2) {
         std.debug.print("Usage: validate <scenario.json>\n", .{});
-        std.process.exit(1);
+        std.process.exit(2);
+    }
+
+    if (hasCliFlag(args)) {
+        const paths = parseTraceCli(args) orelse {
+            std.debug.print("validate: expected --trace <file> --emit-observations <out.json> with no other arguments\n", .{});
+            std.process.exit(2);
+        };
+        const code = runTrace(allocator, paths.trace, paths.out);
+        if (code != 0) std.process.exit(code);
+        return;
     }
 
     const file_path = args[1];
