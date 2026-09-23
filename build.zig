@@ -70,6 +70,30 @@ pub fn build(b: *std.Build) void {
     const run_trapprobe = b.addRunArtifact(trapprobe_exe);
     const trapprobe_step = b.step("trapprobe", "Run the out-of-process required-input trap probe");
     trapprobe_step.dependOn(&run_trapprobe.step);
+
+    // Bytes-per-collection measurement (todo/impl-targets-2026-09-23/06).
+    // Not a unit test and not a `test` dependency. ReleaseFast, same reason
+    // as `bench`: a Debug run measures safety checks. The file is its own
+    // executable; the counting allocator is not part of the library module.
+    // Args after `--` (`--smoke`, `--full`).
+    const bytes_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const bytes_exe = b.addExecutable(.{
+        .name = "bytes-per-collection",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bytes_per_collection.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "mapdb_collections", .module = bytes_mod }},
+        }),
+    });
+    const run_bytes = b.addRunArtifact(bytes_exe);
+    if (b.args) |args| run_bytes.addArgs(args);
+    const bytes_step = b.step("bytes-per-collection", "Measure requested bytes per collection (ReleaseFast)");
+    bytes_step.dependOn(&run_bytes.step);
     // Unit tests
     const test_filters = b.option([]const []const u8, "test-filter", "Only run tests whose name contains the given substring (repeatable)") orelse &.{};
     const tsan = b.option(bool, "tsan", "Build the unit tests with ThreadSanitizer (for the concurrent collections)") orelse false;
