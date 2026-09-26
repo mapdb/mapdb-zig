@@ -150,6 +150,9 @@ const NavLog = struct {
     poll_first_values: std.ArrayList(?i32) = .{},
     poll_last_values: std.ArrayList(?i32) = .{},
     remove_range_counts: std.ArrayList(i32) = .{},
+    // Value returned by each production addToValue, in execution order
+    // (add_to_value_results; HashMap<i32,i32> only).
+    add_to_value_results: std.ArrayList(i32) = .{},
 
     fn deinit(self: *NavLog, allocator: Allocator) void {
         self.poll_first_keys.deinit(allocator);
@@ -157,6 +160,7 @@ const NavLog = struct {
         self.poll_first_values.deinit(allocator);
         self.poll_last_values.deinit(allocator);
         self.remove_range_counts.deinit(allocator);
+        self.add_to_value_results.deinit(allocator);
     }
 };
 
@@ -235,7 +239,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         const delta = jsonToI32(obj.get("delta").?).?;
         switch (coll.*) {
             .hash_map => |*m| {
-                _ = try m.addToValue(key, delta);
+                try log.add_to_value_results.append(allocator, try m.addToValue(key, delta));
             },
             else => {},
         }
@@ -1053,6 +1057,17 @@ fn evaluateAssertion(
         };
         if (is_tree) {
             if (try evalNavAssertion(key, coll, log, query, allocator, writer)) return;
+        }
+    }
+
+    // --- add_to_value_results (HashMap<i32,i32>): replayed from execution ---
+    if (std.mem.eql(u8, key, "add_to_value_results")) {
+        switch (coll.*) {
+            .hash_map => {
+                try writeArray(writer, log.add_to_value_results.items);
+                return;
+            },
+            else => {},
         }
     }
 
