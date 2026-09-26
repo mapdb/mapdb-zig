@@ -2202,14 +2202,27 @@ fn runInterval(name: []const u8, operations: std.json.Array) I32Interval {
 }
 
 // get_at_<N>: N is a NON-NEGATIVE decimal index (README Interval<i32>
-// vocabulary); a sign or any other non-digit is rejected (null -> skip).
-fn parseIntervalIndex(key: []const u8) ?usize {
+// vocabulary) with no upper bound. A suffix that is one or more ASCII digits
+// and nothing else is always a valid index; one that does not fit `usize`
+// is necessarily >= size, so it is reported as `.past_end` and the caller
+// prints null exactly as for an in-range-but-past-the-end index. A sign,
+// an empty suffix, or any other non-digit is rejected (null -> skip).
+const IntervalIndex = union(enum) {
+    at: usize,
+    past_end,
+};
+
+fn parseIntervalIndex(key: []const u8) ?IntervalIndex {
     const prefix = "get_at_";
     if (!std.mem.startsWith(u8, key, prefix)) return null;
     const rest = key[prefix.len..];
     if (rest.len == 0) return null;
     for (rest) |c| if (c < '0' or c > '9') return null;
-    return std.fmt.parseInt(usize, rest, 10) catch null;
+    const idx = std.fmt.parseInt(usize, rest, 10) catch |err| switch (err) {
+        error.Overflow => return .past_end,
+        error.InvalidCharacter => unreachable, // digits-only checked above
+    };
+    return .{ .at = idx };
 }
 
 // One Interval<i32> assertion (README "## Interval<i32>"), every value from
@@ -2239,8 +2252,11 @@ fn evalIntervalAssertion(
         const slice = try iv.toSlice(allocator);
         defer allocator.free(slice);
         try writeArray(writer, slice);
-    } else if (parseIntervalIndex(key)) |idx| {
-        if (iv.get(idx)) |v| try writeI32(writer, v) else try writeNull(writer);
+    } else if (parseIntervalIndex(key)) |index| {
+        switch (index) {
+            .at => |idx| if (iv.get(idx)) |v| try writeI32(writer, v) else try writeNull(writer),
+            .past_end => try writeNull(writer),
+        }
     } else if (parseSignedSuffix(key, "contains_")) |v| {
         try writeBool(writer, iv.contains(v));
     } else {

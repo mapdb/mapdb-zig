@@ -135,10 +135,14 @@ pub fn Interval(comptime T: type) type {
         }
 
         /// Returns a reversed interval: the same elements in the opposite
-        /// order, `get(len()-1)`, …, `get(0)`. Its `from` is the last element
-        /// actually produced, not this interval's `to`, which is only an
-        /// inclusive bound and may sit off the step grid (`fromToBy(0, 10, 3)`
-        /// yields `0, 3, 6, 9`; its reverse is `9, 6, 3, 0`). Panics for the
+        /// order. It starts from the last element of the complete progression
+        /// (`to` pulled back onto the step grid by the remainder of the
+        /// distance), which equals `get(len()-1)` whenever the element count
+        /// is representable by the index API; the general definition is the
+        /// complete progression, as the spec states. Its `from` is that last
+        /// element, not this interval's `to`, which is only an inclusive
+        /// bound and may sit off the step grid (`fromToBy(0, 10, 3)` yields
+        /// `0, 3, 6, 9`; its reverse is `9, 6, 3, 0`). Panics for the
         /// minimum signed step: negating `std.math.minInt(T)` overflows. The
         /// `@panic` is always-on (not `std.debug.assert`), so the trap holds in
         /// ReleaseFast too.
