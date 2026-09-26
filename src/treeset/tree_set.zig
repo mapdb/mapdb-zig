@@ -964,3 +964,24 @@ test "TreeSet: {f} dispatch renders {1, 2, 3} in sorted order" {
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("{1, 2, 3}", out);
 }
+
+test "TreeSet(f64) rangeElements / removeRange with NaN and -0.0 elements (astra25 Z1/Z6)" {
+    var s = TreeSet(f64).init(std.testing.allocator);
+    defer s.deinit();
+    const nan = std.math.nan(f64);
+    _ = try s.add(-0.0);
+    _ = try s.add(0.0);
+    _ = try s.add(2.0);
+    _ = try s.add(nan);
+
+    const window = try s.rangeElements(Range(f64).closedOpen(0.0, 5.0), std.testing.allocator);
+    defer std.testing.allocator.free(window);
+    try std.testing.expectEqual(@as(usize, 2), window.len);
+    try std.testing.expect(window[0] == 0.0 and !std.math.signbit(window[0]));
+    try std.testing.expectEqual(@as(f64, 2.0), window[1]);
+
+    try std.testing.expectEqual(@as(usize, 2), try s.removeRange(Range(f64).closedOpen(0.0, 5.0)));
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    try std.testing.expect(s.contains(-0.0));
+    try std.testing.expect(s.contains(nan));
+}

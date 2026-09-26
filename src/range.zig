@@ -36,11 +36,16 @@
 //!
 //! v1 ships the `i32` specialisation (matching the cross-language validation
 //! universe); `Range(comptime T)` stays generic over a totally-ordered
-//! primitive so the float / wider-integer matrix widens later exactly as
-//! `Interval` did. For float `T` the IEEE-754 total order (not raw `<`) is the
-//! ordering basis; that widening is deferred (v1 is i32 only).
+//! primitive so the wider-integer matrix widens later exactly as `Interval`
+//! did. For float `T` (`f32`/`f64`) the ordering basis is the IEEE-754 total
+//! order from `float_order.zig` — the same comparator the tree collections
+//! use for their keys — never raw `<` / `std.math.order`, which is
+//! `unreachable` on NaN. So `-0.0 < +0.0` are distinct points and NaN sorts
+//! above `+Inf` (`-NaN` below `-Inf`), matching `algorithms.md` §"Float
+//! ordering for tree collections" and `bound-range.md` §"Ordering basis".
 
 const std = @import("std");
+const float_order = @import("float_order.zig");
 
 /// The kind of a finite endpoint: `open` (exclusive) or `closed` (inclusive).
 ///
@@ -146,18 +151,22 @@ pub fn Range(comptime T: type) type {
             }
         };
 
-        /// Total order on the element type. v1 is i32 (natural signed order);
-        /// the float matrix later routes floats through the IEEE-754 total
-        /// order (`algorithms.md` §"Float ordering for tree collections").
+        /// Total order on the element type: integers / `u21` char by
+        /// `std.math.order`, `bool` explicitly (`false < true`), and `f32` /
+        /// `f64` by the IEEE-754 total order (`float_order.totalCmp`), which
+        /// is the ordering the tree collections apply to float keys. A
+        /// `Range(f64)` therefore agrees with a `TreeMap(f64)` on `-0.0` vs
+        /// `+0.0` and never reaches `std.math.order`'s `unreachable` on NaN.
         fn compareValues(a: T, b: T) std.math.Order {
             // `bool` has no `<`; order it explicitly (false < true) so the
             // generic tree collections can name `Range(bool)` when their
-            // declarations are force-compiled (refAllDeclsRecursive). Float
-            // widening (IEEE-754 total order) is deferred with the rest of the
-            // float matrix; v1 exercises i32.
+            // declarations are force-compiled (refAllDeclsRecursive).
             if (T == bool) {
                 if (a == b) return .eq;
                 return if (!a and b) .lt else .gt;
+            }
+            if (@typeInfo(T) == .float) {
+                return float_order.totalCmp(T)(a, b);
             }
             return std.math.order(a, b);
         }
@@ -189,7 +198,10 @@ pub fn Range(comptime T: type) type {
             return fromCuts(.{ .above = a }, .{ .below = b });
         }
 
-        /// `[a, b]` — both endpoints closed. Traps if `a > b`.
+        /// `[a, b]` — both endpoints closed. Traps if `a > b`. For float `T`
+        /// "greater" is the total order, so `Range(f64).closed(0.0, -0.0)`
+        /// traps (`-0.0 < +0.0`) while `closed(-0.0, 0.0)` is the two-point
+        /// range holding both zeros.
         pub fn closed(a: T, b: T) Self {
             return fromCuts(.{ .below = a }, .{ .above = b });
         }
@@ -712,4 +724,91 @@ test "format: interval notation" {
     var fbs = std.io.fixedBufferStream(&buf);
     try I32Range.closed(1, 5).format(fbs.writer());
     try testing.expectEqualStrings("[1, 5]", fbs.getWritten());
+}
+
+// ---------------------------------------------------------------------------
+// Float element types: IEEE 754 total order (astra25 Z1 / Z6 regressions).
+// `std.math.order` is `unreachable` on NaN, so before the fix any Range(f64)
+// query against a NaN endpoint or NaN probe trapped in Debug/ReleaseSafe and
+// was UB in ReleaseFast. -0.0 and +0.0 also compared equal, disagreeing with
+// the tree collections that hand their keys to `contains`.
+// ---------------------------------------------------------------------------
+
+test "Range(f64): NaN probes and endpoints follow the IEEE 754 total order (no trap)" {
+    const R = Range(f64);
+    const nan = std.math.nan(f64);
+    const neg_nan = -std.math.nan(f64);
+    const pinf = std.math.inf(f64);
+    const ninf = -std.math.inf(f64);
+
+    // NaN sorts above +Inf: outside every finite closed window, inside every
+    // upper-unbounded one, never inside a lower-unbounded finite one.
+    try std.testing.expect(!R.closed(0.0, 5.0).contains(nan));
+    try std.testing.expect(!R.closed(ninf, pinf).contains(nan));
+    try std.testing.expect(R.atLeast(1.0).contains(nan));
+    try std.testing.expect(R.greaterThan(pinf).contains(nan));
+    try std.testing.expect(!R.atMost(pinf).contains(nan));
+    try std.testing.expect(R.all().contains(nan));
+
+    // -NaN sorts below -Inf.
+    try std.testing.expect(R.lessThan(ninf).contains(neg_nan));
+    try std.testing.expect(!R.atLeast(ninf).contains(neg_nan));
+
+    // NaN endpoints are legal: [NaN, NaN] holds exactly the same-bits NaN,
+    // and (+Inf, +∞) / [1, NaN] admit a NaN probe.
+    try std.testing.expect(R.singleton(nan).contains(nan));
+    try std.testing.expect(!R.singleton(nan).contains(neg_nan));
+    try std.testing.expect(!R.singleton(nan).contains(pinf));
+    try std.testing.expect(R.closed(1.0, nan).contains(pinf));
+    try std.testing.expect(R.closed(1.0, nan).contains(nan));
+    try std.testing.expect(R.closed(neg_nan, nan).contains(0.0));
+    try std.testing.expect(!R.closedOpen(1.0, nan).contains(nan));
+
+    // Algebra on NaN-bounded ranges reduces to the same cut comparison.
+    try std.testing.expect(R.atLeast(pinf).encloses(R.singleton(nan)));
+    try std.testing.expect(R.closed(0.0, nan).isConnected(R.atLeast(pinf)));
+    const inter = R.closed(0.0, nan).intersection(R.atLeast(pinf)).?;
+    try std.testing.expect(inter.eql(R.closed(pinf, nan)));
+}
+
+test "Range(f64): -0.0 and +0.0 are distinct points, -0.0 < +0.0" {
+    const R = Range(f64);
+    const nz: f64 = -0.0;
+    const pz: f64 = 0.0;
+    try std.testing.expect(!R.closedOpen(pz, 1.0).contains(nz));
+    try std.testing.expect(R.closedOpen(pz, 1.0).contains(pz));
+    try std.testing.expect(R.closed(nz, pz).contains(nz));
+    try std.testing.expect(R.closed(nz, pz).contains(pz));
+    try std.testing.expect(!R.singleton(pz).contains(nz));
+    try std.testing.expect(!R.singleton(nz).contains(pz));
+    try std.testing.expect(R.lessThan(pz).contains(nz));
+    try std.testing.expect(!R.lessThan(nz).contains(pz));
+    // Two distinct cuts, so the range is non-empty and the two singletons differ.
+    try std.testing.expect(!R.closedOpen(nz, pz).isEmpty());
+    try std.testing.expect(!R.singleton(nz).eql(R.singleton(pz)));
+}
+
+test "Range(f32): same total-order contract on the narrow width" {
+    const R = Range(f32);
+    const nan = std.math.nan(f32);
+    const nz: f32 = -0.0;
+    const pz: f32 = 0.0;
+    try std.testing.expect(!R.closed(-1.0, 1.0).contains(nan));
+    try std.testing.expect(R.atLeast(0.0).contains(nan));
+    try std.testing.expect(R.singleton(nan).contains(nan));
+    try std.testing.expect(!R.closedOpen(pz, 1.0).contains(nz));
+    try std.testing.expect(R.closed(nz, pz).contains(nz));
+}
+
+test "Range(f64) bracket: binary search over a total-ordered slice with NaN at the end" {
+    const R = Range(f64);
+    const nan = std.math.nan(f64);
+    const pinf = std.math.inf(f64);
+    // Sorted per float_order.totalCmpF64.
+    const sorted = [_]f64{ -pinf, -1.0, -0.0, 0.0, 1.0, pinf, nan };
+    try std.testing.expectEqual(.{ @as(usize, 3), @as(usize, 5) }, R.closedOpen(0.0, pinf).bracket(&sorted));
+    try std.testing.expectEqual(.{ @as(usize, 2), @as(usize, 5) }, R.closedOpen(-0.0, pinf).bracket(&sorted));
+    try std.testing.expectEqual(.{ @as(usize, 5), @as(usize, 7) }, R.atLeast(pinf).bracket(&sorted));
+    try std.testing.expectEqual(.{ @as(usize, 6), @as(usize, 7) }, R.singleton(nan).bracket(&sorted));
+    try std.testing.expectEqual(.{ @as(usize, 0), @as(usize, 6) }, R.lessThan(nan).bracket(&sorted));
 }

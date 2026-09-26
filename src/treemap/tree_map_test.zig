@@ -534,3 +534,48 @@ test "TreeMap: {f} dispatch renders {1=10, 2=20} in sorted key order" {
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("{1=10, 2=20}", out);
 }
+
+// ---------------------------------------------------------------------------
+// astra25 Z1 / Z6: Range(f64) queries against a tree holding NaN / ±0 keys.
+// ---------------------------------------------------------------------------
+
+test "TreeMap(f64) range queries with a NaN key do not trap and exclude NaN from finite windows (Z1)" {
+    var m = TreeMap(f64, i32).init(std.testing.allocator);
+    defer m.deinit();
+    const nan = std.math.nan(f64);
+    _ = try m.put(1.0, 1);
+    _ = try m.put(nan, 2);
+    _ = try m.put(3.0, 3);
+
+    const in_window = try m.rangeKeysIn(Range(f64).closed(0.0, 5.0), std.testing.allocator);
+    defer std.testing.allocator.free(in_window);
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 3.0 }, in_window);
+
+    const tail = try m.rangeKeysIn(Range(f64).atLeast(3.0), std.testing.allocator);
+    defer std.testing.allocator.free(tail);
+    try std.testing.expectEqual(@as(usize, 2), tail.len);
+    try std.testing.expectEqual(@as(f64, 3.0), tail[0]);
+    try std.testing.expect(std.math.isNan(tail[1]));
+
+    var sub = try m.subMap(Range(f64).singleton(nan), std.testing.allocator);
+    defer sub.deinit();
+    try std.testing.expectEqual(@as(usize, 1), sub.len());
+    try std.testing.expectEqual(@as(?i32, 2), sub.get(nan));
+
+    try std.testing.expectEqual(@as(usize, 2), m.removeRange(Range(f64).closed(0.0, 5.0)));
+    try std.testing.expectEqual(@as(usize, 1), m.len());
+    try std.testing.expectEqual(@as(?i32, 2), m.get(nan));
+}
+
+test "TreeMap(f64) removeRange [0.0, 1.0) keeps the -0.0 key the tree orders below +0.0 (Z6)" {
+    var m = TreeMap(f64, i32).init(std.testing.allocator);
+    defer m.deinit();
+    _ = try m.put(-0.0, 1);
+    _ = try m.put(0.0, 2);
+    _ = try m.put(0.5, 3);
+    try std.testing.expectEqual(@as(usize, 2), m.removeRange(Range(f64).closedOpen(0.0, 1.0)));
+    try std.testing.expectEqual(@as(usize, 1), m.len());
+    const keys = m.keysSlice();
+    try std.testing.expect(keys[0] == 0.0 and std.math.signbit(keys[0]));
+    try std.testing.expectEqual(@as(?i32, 1), m.get(-0.0));
+}
