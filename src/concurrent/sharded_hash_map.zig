@@ -59,7 +59,13 @@ const Allocator = std.mem.Allocator;
 const HashMap = @import("../hashmap/hash_map.zig").HashMap;
 const hashKey = @import("../hash_table.zig").hashKey;
 
-const CACHE_LINE = 64;
+/// Target CPU's cache-line size (128 on Apple aarch64, 64 on most x86_64);
+/// shards are padded and aligned to it so neighbours never share a line.
+const cache_line = std.atomic.cache_line;
+
+comptime {
+    std.debug.assert(std.math.isPowerOfTwo(cache_line));
+}
 
 /// What a `compute` callback asks the map to do with a key.
 pub fn ComputeOp(comptime V: type) type {
@@ -86,7 +92,7 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
             _pad: [pad_len]u8 = undefined,
 
             const core = @sizeOf(std.Thread.RwLock) + @sizeOf(Map);
-            const pad_len = (CACHE_LINE - (core % CACHE_LINE)) % CACHE_LINE;
+            const pad_len = (cache_line - (core % cache_line)) % cache_line;
 
             comptime {
                 // `pad_len` is computed from summed field sizes; with two fields
@@ -94,13 +100,13 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
                 // gap, so the padded size is a cache-line multiple. Assert it so a
                 // future field/layout change that breaks per-shard isolation fails
                 // the build instead of silently reintroducing false sharing.
-                std.debug.assert(@sizeOf(Shard) % CACHE_LINE == 0);
+                std.debug.assert(@sizeOf(Shard) % cache_line == 0);
             }
         };
 
         pub const Entry = struct { key: K, value: V };
 
-        shards: []align(CACHE_LINE) Shard,
+        shards: []align(cache_line) Shard,
         shard_bits: std.math.Log2Int(u64),
         allocator: Allocator,
 
@@ -116,7 +122,7 @@ pub fn ShardedHashMap(comptime K: type, comptime V: type) type {
         /// `allocator` must be thread-safe.
         pub fn initShardCount(allocator: Allocator, requested_shards: usize) Allocator.Error!Self {
             const n = std.math.ceilPowerOfTwo(usize, @max(1, requested_shards)) catch return error.OutOfMemory;
-            const shards = try allocator.alignedAlloc(Shard, .fromByteUnits(CACHE_LINE), n);
+            const shards = try allocator.alignedAlloc(Shard, .fromByteUnits(cache_line), n);
             errdefer allocator.free(shards);
             // Map.init is infallible (lazy table alloc), so no partial-shard
             // rollback is needed once the shard array itself is allocated.
@@ -486,4 +492,15 @@ test "ShardedHashMap: concurrent putIfAbsent on the SAME key inserts exactly onc
     // Exactly one putIfAbsent across all threads observed the key as absent.
     try testing.expectEqual(@as(usize, 1), wins.load(.seq_cst));
     try testing.expectEqual(@as(usize, 1), m.count());
+}
+
+test "ShardedHashMap: shard stride and alignment are cache-line multiples" {
+    const M = ShardedHashMap(u64, u64);
+    try std.testing.expect(std.math.isPowerOfTwo(std.atomic.cache_line));
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(M.Shard) % std.atomic.cache_line);
+    var m = try M.initShardCount(std.testing.allocator, 4);
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), @intFromPtr(m.shards.ptr) % std.atomic.cache_line);
+    const stride = @intFromPtr(&m.shards[1]) - @intFromPtr(&m.shards[0]);
+    try std.testing.expectEqual(@as(usize, 0), stride % std.atomic.cache_line);
 }
