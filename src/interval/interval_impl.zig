@@ -21,7 +21,9 @@ const std = @import("std");
 /// The arithmetic widens to `i128` for the wrapping range computation so that a
 /// full-range `i64` interval (whose element count is `2^64`) does not overflow;
 /// `len()` then caps at `maxInt(usize)`. `reversed()` panics for the minimum
-/// signed step, since negating `std.math.minInt(T)` overflows.
+/// signed step, since negating `std.math.minInt(T)` overflows; otherwise it
+/// starts from the last element actually produced (`to` pulled onto the step
+/// grid), so `fromToBy(0, 10, 3).reversed()` is `9, 6, 3, 0`.
 pub fn Interval(comptime T: type) type {
     switch (@typeInfo(T)) {
         .int => |info| if (info.signedness != .signed)
@@ -132,13 +134,31 @@ pub fn Interval(comptime T: type) type {
             return .{ .interval = self.* };
         }
 
-        /// Returns a reversed interval. Panics for the minimum signed
-        /// step: negating `std.math.minInt(T)` overflows.
+        /// Returns a reversed interval: the same elements in the opposite
+        /// order, `get(len()-1)`, …, `get(0)`. Its `from` is the last element
+        /// actually produced, not this interval's `to`, which is only an
+        /// inclusive bound and may sit off the step grid (`fromToBy(0, 10, 3)`
+        /// yields `0, 3, 6, 9`; its reverse is `9, 6, 3, 0`). Panics for the
+        /// minimum signed step: negating `std.math.minInt(T)` overflows. The
+        /// `@panic` is always-on (not `std.debug.assert`), so the trap holds in
+        /// ReleaseFast too.
         pub fn reversed(self: *const Self) Self {
             if (self.step == std.math.minInt(T)) {
                 @panic("Interval: cannot reverse interval with minimum step");
             }
-            return .{ .from = self.to, .to = self.from, .step = -self.step };
+            // Last element: pull `to` back onto the step grid. The remainder
+            // never exceeds the distance, so `last` stays inside [from, to]
+            // and the narrowing cast cannot fail. Computed in i128 (the width
+            // len/contains/get already use) rather than via get(len()-1),
+            // whose len() caps at maxInt(usize).
+            const wide_from: i128 = self.from;
+            const wide_to: i128 = self.to;
+            const wide_step: i128 = self.step;
+            const distance: i128 = if (wide_step > 0) wide_to - wide_from else wide_from - wide_to;
+            const abs_step: i128 = if (wide_step > 0) wide_step else -wide_step;
+            const rem: i128 = @rem(distance, abs_step);
+            const last: T = @intCast(if (wide_step > 0) wide_to - rem else wide_to + rem);
+            return .{ .from = last, .to = self.from, .step = -self.step };
         }
     };
 }

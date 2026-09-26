@@ -2173,7 +2173,12 @@ fn panicCollectionKnown(collection: []const u8) bool {
     return false;
 }
 
-fn runInterval(name: []const u8, operations: std.json.Array) void {
+// Applies the Interval<i32> ops (`from_to_by`, `reversed`) through the
+// production constructor and `reversed()` and returns the resulting interval.
+// Shared by the --panic-child path (which discards the result) and the normal
+// value path (runIntervalScenario). Any malformed operand, an unknown op, or
+// `reversed` before `from_to_by` is a malformed scenario: banner, then exit 1.
+fn runInterval(name: []const u8, operations: std.json.Array) I32Interval {
     var interval: I32Interval = undefined;
     var have_interval = false;
     for (operations.items) |op_val| {
@@ -2192,6 +2197,96 @@ fn runInterval(name: []const u8, operations: std.json.Array) void {
             interval = interval.reversed();
         } else intervalBail(name);
     }
+    if (!have_interval) intervalBail(name);
+    return interval;
+}
+
+// get_at_<N>: N is a NON-NEGATIVE decimal index (README Interval<i32>
+// vocabulary); a sign or any other non-digit is rejected (null -> skip).
+fn parseIntervalIndex(key: []const u8) ?usize {
+    const prefix = "get_at_";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    if (rest.len == 0) return null;
+    for (rest) |c| if (c < '0' or c > '9') return null;
+    return std.fmt.parseInt(usize, rest, 10) catch null;
+}
+
+// One Interval<i32> assertion (README "## Interval<i32>"), every value from
+// the production method the key names: len / isEmpty / get(0) / get(len-1) /
+// toSlice (iteration order, NOT sorted) / get(index) / contains. Unknown keys
+// yield UNKNOWN_ASSERTION:* and are skipped by the caller.
+fn evalIntervalAssertion(
+    iv: *const I32Interval,
+    key: []const u8,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    if (std.mem.eql(u8, key, "size")) {
+        try writer.print("{d}", .{iv.len()});
+    } else if (std.mem.eql(u8, key, "is_empty")) {
+        try writeBool(writer, iv.isEmpty());
+    } else if (std.mem.eql(u8, key, "first")) {
+        if (iv.get(0)) |v| try writeI32(writer, v) else try writeNull(writer);
+    } else if (std.mem.eql(u8, key, "last")) {
+        const n = iv.len();
+        if (n == 0) {
+            try writeNull(writer);
+        } else if (iv.get(n - 1)) |v| {
+            try writeI32(writer, v);
+        } else try writeNull(writer);
+    } else if (std.mem.eql(u8, key, "to_array")) {
+        const slice = try iv.toSlice(allocator);
+        defer allocator.free(slice);
+        try writeArray(writer, slice);
+    } else if (parseIntervalIndex(key)) |idx| {
+        if (iv.get(idx)) |v| try writeI32(writer, v) else try writeNull(writer);
+    } else if (parseSignedSuffix(key, "contains_")) |v| {
+        try writeBool(writer, iv.contains(v));
+    } else {
+        try writer.print("UNKNOWN_ASSERTION:{s}", .{key});
+    }
+}
+
+// Normal (non-panic) Interval<i32> evaluation: apply the ops via runInterval,
+// print the banner, then emit every assertion key in sorted order (as the Go
+// runner does; validate.sh sorts assertion lines before its consensus diff).
+fn runIntervalScenario(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    const iv = runInterval(name, operations);
+    try writer.print("=== scenario: {s} ===\n", .{name});
+
+    const keys = try allocator.dupe([]const u8, assertions.keys());
+    defer allocator.free(keys);
+    std.mem.sort([]const u8, keys, {}, struct {
+        pub fn f(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.f);
+
+    for (keys) |key| {
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
+        const expected = assertions.get(key).?;
+        var cbuf = std.array_list.Managed(u8).init(allocator);
+        defer cbuf.deinit();
+        try evalIntervalAssertion(&iv, key, allocator, cbuf.writer());
+        const computed = cbuf.items;
+        if (std.mem.startsWith(u8, computed, "UNKNOWN_ASSERTION:")) continue;
+
+        try writer.print("{s}: {s}\n", .{ key, computed });
+        var ebuf = std.array_list.Managed(u8).init(allocator);
+        defer ebuf.deinit();
+        try renderExpected(ebuf.writer(), expected, key, .none);
+        if (!std.mem.eql(u8, computed, ebuf.items)) {
+            try writer.print("FAIL {s} {s}: expected={s} got={s}\n", .{ name, key, ebuf.items, computed });
+            any_fail = true;
+        }
+    }
 }
 
 fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
@@ -2207,7 +2302,7 @@ fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
     if (std.mem.eql(u8, collection_type, "Interval<i32>")) {
         const ops_val = root.get("operations") orelse intervalBail(name);
         if (ops_val != .array) intervalBail(name);
-        runInterval(name, ops_val.array);
+        _ = runInterval(name, ops_val.array);
         var stdout_buf: [16 * 1024]u8 = undefined;
         var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
         const stdout = &stdout_w.interface;
@@ -2419,6 +2514,12 @@ fn runParsed(allocator: Allocator, root: std.json.ObjectMap) !void {
     }
     if (std.mem.eql(u8, collection_type, "RoaringU32")) {
         try runRoaring(name, operations, root.get("assertions").?.object, root, allocator, stdout);
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
+    if (std.mem.eql(u8, collection_type, "Interval<i32>")) {
+        try runIntervalScenario(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
         if (any_fail) std.process.exit(1);
         return;

@@ -203,6 +203,93 @@ test "i64 large-range wrapping: len caps at maxInt(usize) without overflow" {
     try std.testing.expect(full.contains(std.math.minInt(i64)));
 }
 
+test "reversed off-grid keeps elements (ReversedOffGridKeepsElements)" {
+    // spec/algorithms.md §"Reversed() starts from the last element": the
+    // reverse's `from` is the last element actually produced, not the
+    // constructor's `to`. Every case fits i8, so the same table runs for all
+    // four widths; the boundary cases use the width's own min/max.
+    inline for (int_types) |T| {
+        const Iv = interval.Interval(T);
+        const max = std.math.maxInt(T);
+        const min = std.math.minInt(T);
+        const Case = struct { src: Iv, want: []const T };
+        const cases = [_]Case{
+            .{ .src = Iv.fromToBy(0, 10, 3), .want = &[_]T{ 9, 6, 3, 0 } },
+            .{ .src = Iv.fromToBy(10, 0, -3), .want = &[_]T{ 1, 4, 7, 10 } },
+            .{ .src = Iv.fromToBy(0, 5, max), .want = &[_]T{0} },
+            .{ .src = Iv.fromToBy(-7, 9, 5), .want = &[_]T{ 8, 3, -2, -7 } },
+            .{ .src = Iv.fromToBy(0, 9, 3), .want = &[_]T{ 9, 6, 3, 0 } }, // on grid
+            .{ .src = Iv.fromToBy(5, 5, 1), .want = &[_]T{5} },
+            // max boundary: to = maxInt off the grid, found without wrapping.
+            .{ .src = Iv.fromToBy(max - 7, max, 3), .want = &[_]T{ max - 1, max - 4, max - 7 } },
+            // min boundary descending: to = minInt off the grid.
+            .{ .src = Iv.fromToBy(min + 7, min, -3), .want = &[_]T{ min + 1, min + 4, min + 7 } },
+            // step minInt+1 negates without overflow; only minInt traps.
+            .{ .src = Iv.fromToBy(0, min + 1, min + 1), .want = &[_]T{ min + 1, 0 } },
+        };
+        for (cases) |c| {
+            const rev = c.src.reversed();
+            const got = try rev.toSlice(std.testing.allocator);
+            defer std.testing.allocator.free(got);
+            try std.testing.expectEqualSlices(T, c.want, got);
+            try std.testing.expectEqual(c.want[0], rev.from);
+            try std.testing.expectEqual(c.src.from, rev.to);
+            try std.testing.expectEqual(-c.src.step, rev.step);
+
+            // Same size and element set; contains agrees on every probe.
+            try std.testing.expectEqual(c.src.len(), rev.len());
+            try std.testing.expectEqual(c.want[0], rev.get(0).?);
+            try std.testing.expectEqual(c.want[c.want.len - 1], rev.get(rev.len() - 1).?);
+            for (c.want) |v| {
+                try std.testing.expect(c.src.contains(v));
+                try std.testing.expect(rev.contains(v));
+            }
+            const probes = [_]T{ 10, 1, 2, 4, 5, max, min, 0, -1, 9, 3, 8, -7 };
+            for (probes) |v| try std.testing.expectEqual(c.src.contains(v), rev.contains(v));
+
+            // The production iterator yields the same sequence as toSlice.
+            var it = rev.iterator();
+            var idx: usize = 0;
+            while (it.next()) |v| : (idx += 1) try std.testing.expectEqual(c.want[idx], v);
+            try std.testing.expectEqual(c.want.len, idx);
+
+            // Reversed twice gives the source sequence (to is normalised to
+            // the source's last element, but the elements are identical).
+            const twice = rev.reversed();
+            const src_slice = try c.src.toSlice(std.testing.allocator);
+            defer std.testing.allocator.free(src_slice);
+            const twice_slice = try twice.toSlice(std.testing.allocator);
+            defer std.testing.allocator.free(twice_slice);
+            try std.testing.expectEqualSlices(T, src_slice, twice_slice);
+            try std.testing.expectEqual(c.src.from, twice.from);
+            try std.testing.expectEqual(c.src.step, twice.step);
+        }
+    }
+}
+
+test "reversed of the full i64 range is not derived from the capped len" {
+    // A full-range i64 interval has 2^64 elements and len() caps at
+    // maxInt(usize); the remainder form still finds the true last element.
+    const full = I64Interval.fromTo(std.math.minInt(i64), std.math.maxInt(i64));
+    const rev = full.reversed();
+    try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), rev.from);
+    try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), rev.to);
+    try std.testing.expectEqual(@as(i64, -1), rev.step);
+    try std.testing.expectEqual(@as(?i64, std.math.maxInt(i64)), rev.get(0));
+    // Off-grid full-range: from minInt to maxInt by 7. The distance 2^64-1
+    // is 1 mod 7 (it is divisible by 3 and 5, which would sit on the grid),
+    // so the last element is maxInt-1 and maxInt itself is not contained.
+    const wide = I64Interval.fromToBy(std.math.minInt(i64), std.math.maxInt(i64), 7);
+    const wrev = wide.reversed();
+    const want_last: i64 = std.math.maxInt(i64) - 1;
+    try std.testing.expectEqual(want_last, wrev.from);
+    try std.testing.expectEqual(@as(?i64, want_last), wrev.get(0));
+    try std.testing.expect(wide.contains(want_last));
+    try std.testing.expect(wrev.contains(want_last));
+    try std.testing.expect(!wide.contains(std.math.maxInt(i64)));
+    try std.testing.expect(!wrev.contains(std.math.maxInt(i64)));
+}
+
 test "reversed panics on minimum signed step" {
     // negating minInt(T) overflows, so reversed() must @panic at the threshold.
     // We verify the guard condition holds for each width by checking a
