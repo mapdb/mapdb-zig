@@ -1925,8 +1925,42 @@ fn lineIsKeyValueSentinel(line: []const u8) bool {
     return true;
 }
 
-fn panicPassed(timed_out: bool, exit_code: i32, stdout: []const u8) bool {
-    return !timed_out and exit_code != 0 and !stdoutHasSentinel(stdout);
+// The line the --panic-child prints on stdout immediately before it calls the
+// production operation for op i of n (1-based). It starts with '[' so it can
+// never be an assertion sentinel.
+fn reachMarkerLine(buf: []u8, i: usize, n: usize) []const u8 {
+    return std.fmt.bufPrint(buf, "[panic-child] reached op {d}/{d}", .{ i, n }) catch unreachable;
+}
+
+// Written straight to fd 1 (no buffering) so the line is in the pipe before
+// the product call that may trap.
+fn writeReachMarker(i: usize, n: usize) void {
+    var buf: [64]u8 = undefined;
+    const out = std.fs.File.stdout();
+    out.writeAll(reachMarkerLine(&buf, i, n)) catch {};
+    out.writeAll("\n") catch {};
+}
+
+// Did the child print the marker for the LAST operation, i.e. get as far as
+// calling the product for it? A runner crash before that point leaves no such
+// line (astra25/25 F4: any non-zero exit used to count as the trap). A
+// scenario with no operations has nothing to reach and cannot pass.
+fn stdoutHasReachMarker(stdout: []const u8, ops: usize) bool {
+    if (ops < 1) return false;
+    var buf: [64]u8 = undefined;
+    const want = reachMarkerLine(&buf, ops, ops);
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimRight(u8, raw, "\r");
+        if (std.mem.eql(u8, line, want)) return true;
+    }
+    return false;
+}
+
+// ops is the scenario's operation count: the child must have reached the
+// product call of the last op, so the trap has to be raised by that op.
+fn panicPassed(timed_out: bool, exit_code: i32, stdout: []const u8, ops: usize) bool {
+    return !timed_out and exit_code != 0 and !stdoutHasSentinel(stdout) and stdoutHasReachMarker(stdout, ops);
 }
 
 fn panicJudgeSelftest() u8 {
@@ -1934,24 +1968,42 @@ fn panicJudgeSelftest() u8 {
         timed_out: bool,
         exit_code: i32,
         stdout: []const u8,
+        ops: usize = 1,
         pass: bool,
     };
+    // m1: reach marker of a one-op scenario; m2: last-op marker of a two-op
+    // scenario. Cases 1-11 are the original sentinel/exit rules with the marker
+    // present; 12-17 pin the reach rule (astra25/25 F4).
+    const m1 = "[panic-child] reached op 1/1\n";
+    const m1of2 = "[panic-child] reached op 1/2\n";
+    const m2 = "[panic-child] reached op 2/2\n";
     const cases = [_]Case{
-        .{ .timed_out = false, .exit_code = 0, .stdout = "", .pass = false },
-        .{ .timed_out = false, .exit_code = 0, .stdout = "=== scenario: x ===\n", .pass = false },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "size: 1\n", .pass = false },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "", .pass = true },
-        .{ .timed_out = false, .exit_code = 101, .stdout = "boom\n", .pass = true },
-        .{ .timed_out = true, .exit_code = 1, .stdout = "", .pass = false },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "FAIL name expect_panic\n", .pass = true },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "expect_panic: true\n", .pass = false },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "SUMMARY: 1\n", .pass = true },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "boom:detail\n", .pass = true },
-        .{ .timed_out = false, .exit_code = 1, .stdout = "FAIL-count: 1\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 0, .stdout = m1, .pass = false },
+        .{ .timed_out = false, .exit_code = 0, .stdout = m1 ++ "=== scenario: x ===\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "size: 1\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1, .pass = true },
+        .{ .timed_out = false, .exit_code = 101, .stdout = m1 ++ "boom\n", .pass = true },
+        .{ .timed_out = true, .exit_code = 1, .stdout = m1, .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "FAIL name expect_panic\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "expect_panic: true\n", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "SUMMARY: 1\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "boom:detail\n", .pass = true },
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ "FAIL-count: 1\n", .pass = false },
+        // crash before the product: no marker
+        .{ .timed_out = false, .exit_code = 1, .stdout = "", .pass = false },
+        .{ .timed_out = false, .exit_code = 1, .stdout = "boom\n", .pass = false },
+        // trapped on op 1 of 2
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1of2, .ops = 2, .pass = false },
+        // reached op 2 of 2
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1of2 ++ m2, .ops = 2, .pass = true },
+        // no ops: nothing to reach
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1, .ops = 0, .pass = false },
+        // the marker must match exactly
+        .{ .timed_out = false, .exit_code = 1, .stdout = "[panic-child] reached op 1/1 \n", .pass = false },
     };
     var failed = false;
     for (cases, 0..) |c, idx| {
-        if (panicPassed(c.timed_out, c.exit_code, c.stdout) != c.pass) {
+        if (panicPassed(c.timed_out, c.exit_code, c.stdout, c.ops) != c.pass) {
             std.debug.print("panic-judge-selftest: case {d} failed\n", .{idx + 1});
             failed = true;
         }
@@ -2103,12 +2155,12 @@ fn finishExpectPanic(name: []const u8, passed: bool) noreturn {
     std.process.exit(if (passed) 0 else 1);
 }
 
-fn runExpectPanicParent(allocator: Allocator, argv0: []const u8, scenario_path: []const u8, name: []const u8) noreturn {
+fn runExpectPanicParent(allocator: Allocator, argv0: []const u8, scenario_path: []const u8, name: []const u8, ops: usize) noreturn {
     const exe_alloc = std.fs.selfExePathAlloc(allocator);
     const exe = exe_alloc catch argv0;
     const outcome = observePanicChild(allocator, exe, scenario_path);
     defer if (outcome.owned) allocator.free(outcome.stdout);
-    const clean = panicPassed(outcome.timed_out, outcome.exit_code, outcome.stdout);
+    const clean = panicPassed(outcome.timed_out, outcome.exit_code, outcome.stdout, ops);
     finishExpectPanic(name, clean and !outcome.overflow);
 }
 
@@ -2178,10 +2230,14 @@ fn panicCollectionKnown(collection: []const u8) bool {
 // Shared by the --panic-child path (which discards the result) and the normal
 // value path (runIntervalScenario). Any malformed operand, an unknown op, or
 // `reversed` before `from_to_by` is a malformed scenario: banner, then exit 1.
-fn runInterval(name: []const u8, operations: std.json.Array) I32Interval {
+// Interval<i32> replay. With markers (panic child only) the reach marker for
+// op i of n is written immediately before each production call, so the parent
+// can tell a trap raised by the product from a runner crash on the way there.
+fn runInterval(name: []const u8, operations: std.json.Array, markers: bool) I32Interval {
     var interval: I32Interval = undefined;
     var have_interval = false;
-    for (operations.items) |op_val| {
+    const n = operations.items.len;
+    for (operations.items, 0..) |op_val, idx| {
         if (op_val != .object) intervalBail(name);
         const obj = op_val.object;
         const op_field = obj.get("op") orelse intervalBail(name);
@@ -2190,10 +2246,12 @@ fn runInterval(name: []const u8, operations: std.json.Array) I32Interval {
             const from = readIntervalI32(obj, "from") orelse intervalBail(name);
             const to = readIntervalI32(obj, "to") orelse intervalBail(name);
             const step = readIntervalI32(obj, "step") orelse intervalBail(name);
+            if (markers) writeReachMarker(idx + 1, n);
             interval = I32Interval.fromToBy(from, to, step);
             have_interval = true;
         } else if (std.mem.eql(u8, op_field.string, "reversed")) {
             if (!have_interval) intervalBail(name);
+            if (markers) writeReachMarker(idx + 1, n);
             interval = interval.reversed();
         } else intervalBail(name);
     }
@@ -2274,7 +2332,7 @@ fn runIntervalScenario(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    const iv = runInterval(name, operations);
+    const iv = runInterval(name, operations, false);
     try writer.print("=== scenario: {s} ===\n", .{name});
 
     const keys = try allocator.dupe([]const u8, assertions.keys());
@@ -2318,7 +2376,7 @@ fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
     if (std.mem.eql(u8, collection_type, "Interval<i32>")) {
         const ops_val = root.get("operations") orelse intervalBail(name);
         if (ops_val != .array) intervalBail(name);
-        _ = runInterval(name, ops_val.array);
+        _ = runInterval(name, ops_val.array, true);
         var stdout_buf: [16 * 1024]u8 = undefined;
         var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
         const stdout = &stdout_w.interface;
@@ -2378,7 +2436,8 @@ pub fn main() !void {
             const coll_val = root.get("collection");
             const known = if (coll_val) |v| (v == .string and panicCollectionKnown(v.string)) else false;
             if (known) {
-                runExpectPanicParent(allocator, args[0], file_path, name_val.string);
+                const ops: usize = if (root.get("operations")) |o| (if (o == .array) o.array.items.len else 0) else 0;
+                runExpectPanicParent(allocator, args[0], file_path, name_val.string, ops);
             }
         },
         .absent => {},
@@ -4530,10 +4589,19 @@ fn runF32HashMap(
                 try vw.writeAll("\"");
             }
             try vw.writeAll("]");
+        } else if (std.mem.eql(u8, key, "sorted_values")) {
+            // The values are i32 (README: HashMap<*> sorted_values is the
+            // value multiset ascending), rendered like the i32 map's.
+            const vals = try m.valuesToSlice(allocator);
+            defer allocator.free(vals);
+            try writeSortedArray(vw, vals);
         } else {
             try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
         }
-        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
+        // sorted_values is the i32 value multiset, so its expected side is
+        // rendered in i32 mode, not as quoted float labels.
+        const mode: FloatMode = if (std.mem.eql(u8, key, "sorted_values")) .none else .f32_keyed;
+        try emitF32(name, key, vbuf.items, expected, mode, allocator, writer);
     }
 }
 
