@@ -208,10 +208,28 @@ test "I32I32HashMap: put/get/remove/size/sumOfValues/addToValue" {
     _ = try m.put(3, 30);
     try std.testing.expectEqual(@as(?i32, 10), m.get(1));
     try std.testing.expectEqual(@as(usize, 3), m.len());
-    try std.testing.expectEqual(@as(i64, 60), m.sumOfValues());
+    try std.testing.expectEqual(@as(i32, 60), m.sumOfValues());
     try std.testing.expectEqual(@as(i32, 15), m.addToValue(1, 5));
     try std.testing.expectEqual(@as(?i32, 20), m.remove(2));
     try std.testing.expect(!m.containsKey(2));
+}
+
+test "HashMap.sumOfValues wraps at each integer value width" {
+    inline for (.{ i8, i16, i32, i64 }) |V| {
+        var m = HashMap(i32, V).init(std.testing.allocator);
+        defer m.deinit();
+
+        _ = try m.put(1, std.math.maxInt(V));
+        _ = try m.put(2, 1);
+        const overflow_result: V = m.sumOfValues();
+        try std.testing.expectEqual(std.math.minInt(V), overflow_result);
+
+        m.clear();
+        _ = try m.put(1, std.math.minInt(V));
+        _ = try m.put(2, -1);
+        const underflow_result: V = m.sumOfValues();
+        try std.testing.expectEqual(std.math.maxInt(V), underflow_result);
+    }
 }
 
 test "F32I32HashMap: NaN key and +/-0 key distinctness" {

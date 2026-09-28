@@ -422,10 +422,10 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         // wrappers that simply omitted them. Zig 0.15 removed `usingnamespace`,
         // so this is the supported way to gate a method by comptime condition.
 
-        /// Sum of all values. `i64` accumulator for integer values (wrapping
-        /// avoided by widening), the float type itself for float values.
+        /// Sum of all values in the value type. Integer sums wrap at that
+        /// type's width; float sums use the float type itself.
         pub const sumOfValues = if (isNumericValue(V)) struct {
-            fn f(self: *const Self) if (@typeInfo(V) == .float) V else i64 {
+            fn f(self: *const Self) V {
                 if (@typeInfo(V) == .float) {
                     var total: V = 0;
                     for (0..self.inner.capacity) |i| {
@@ -433,9 +433,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
                     }
                     return total;
                 } else {
-                    var total: i64 = 0;
+                    var total: V = 0;
                     for (0..self.inner.capacity) |i| {
-                        if (self.inner.isOccupied(i)) total += @as(i64, @intCast(self.inner.values[i]));
+                        if (self.inner.isOccupied(i)) total +%= self.inner.values[i];
                     }
                     return total;
                 }
