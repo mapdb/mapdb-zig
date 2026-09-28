@@ -1932,6 +1932,13 @@ fn reachMarkerLine(buf: []u8, i: usize, n: usize) []const u8 {
     return std.fmt.bufPrint(buf, "[panic-child] reached op {d}/{d}", .{ i, n }) catch unreachable;
 }
 
+// Printed immediately after that production call returns normally. Its
+// presence for the last op means the product did NOT trap there, whatever
+// killed the process afterwards.
+fn returnMarkerLine(buf: []u8, i: usize, n: usize) []const u8 {
+    return std.fmt.bufPrint(buf, "[panic-child] returned op {d}/{d}", .{ i, n }) catch unreachable;
+}
+
 // Written straight to fd 1 (no buffering) so the line is in the pipe before
 // the product call that may trap.
 fn writeReachMarker(i: usize, n: usize) void {
@@ -1941,14 +1948,14 @@ fn writeReachMarker(i: usize, n: usize) void {
     out.writeAll("\n") catch {};
 }
 
-// Did the child print the marker for the LAST operation, i.e. get as far as
-// calling the product for it? A runner crash before that point leaves no such
-// line (astra25/25 F4: any non-zero exit used to count as the trap). A
-// scenario with no operations has nothing to reach and cannot pass.
-fn stdoutHasReachMarker(stdout: []const u8, ops: usize) bool {
-    if (ops < 1) return false;
+fn writeReturnMarker(i: usize, n: usize) void {
     var buf: [64]u8 = undefined;
-    const want = reachMarkerLine(&buf, ops, ops);
+    const out = std.fs.File.stdout();
+    out.writeAll(returnMarkerLine(&buf, i, n)) catch {};
+    out.writeAll("\n") catch {};
+}
+
+fn stdoutHasLine(stdout: []const u8, want: []const u8) bool {
     var lines = std.mem.splitScalar(u8, stdout, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trimRight(u8, raw, "\r");
@@ -1957,10 +1964,28 @@ fn stdoutHasReachMarker(stdout: []const u8, ops: usize) bool {
     return false;
 }
 
+// Did the child print the marker for the LAST operation, i.e. get as far as
+// calling the product for it? A runner crash before that point leaves no such
+// line (astra25/25 F4: any non-zero exit used to count as the trap). A
+// scenario with no operations has nothing to reach and cannot pass.
+fn stdoutHasReachMarker(stdout: []const u8, ops: usize) bool {
+    if (ops < 1) return false;
+    var buf: [64]u8 = undefined;
+    return stdoutHasLine(stdout, reachMarkerLine(&buf, ops, ops));
+}
+
+// The last call returned normally: whatever killed the child afterwards (a
+// crash on the way to the banner), it was not the product's trap.
+fn stdoutHasReturnMarker(stdout: []const u8, ops: usize) bool {
+    if (ops < 1) return false;
+    var buf: [64]u8 = undefined;
+    return stdoutHasLine(stdout, returnMarkerLine(&buf, ops, ops));
+}
+
 // ops is the scenario's operation count: the child must have reached the
 // product call of the last op, so the trap has to be raised by that op.
 fn panicPassed(timed_out: bool, exit_code: i32, stdout: []const u8, ops: usize) bool {
-    return !timed_out and exit_code != 0 and !stdoutHasSentinel(stdout) and stdoutHasReachMarker(stdout, ops);
+    return !timed_out and exit_code != 0 and !stdoutHasSentinel(stdout) and stdoutHasReachMarker(stdout, ops) and !stdoutHasReturnMarker(stdout, ops);
 }
 
 fn panicJudgeSelftest() u8 {
@@ -1977,6 +2002,8 @@ fn panicJudgeSelftest() u8 {
     const m1 = "[panic-child] reached op 1/1\n";
     const m1of2 = "[panic-child] reached op 1/2\n";
     const m2 = "[panic-child] reached op 2/2\n";
+    const r1 = "[panic-child] returned op 1/1\n";
+    const r1of2 = "[panic-child] returned op 1/2\n";
     const cases = [_]Case{
         .{ .timed_out = false, .exit_code = 0, .stdout = m1, .pass = false },
         .{ .timed_out = false, .exit_code = 0, .stdout = m1 ++ "=== scenario: x ===\n", .pass = false },
@@ -2000,6 +2027,10 @@ fn panicJudgeSelftest() u8 {
         .{ .timed_out = false, .exit_code = 1, .stdout = m1, .ops = 0, .pass = false },
         // the marker must match exactly
         .{ .timed_out = false, .exit_code = 1, .stdout = "[panic-child] reached op 1/1 \n", .pass = false },
+        // the last call returned: not the product's trap
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1 ++ r1, .pass = false },
+        // op 1 returned, op 2 trapped
+        .{ .timed_out = false, .exit_code = 1, .stdout = m1of2 ++ r1of2 ++ m2, .ops = 2, .pass = true },
     };
     var failed = false;
     for (cases, 0..) |c, idx| {
@@ -2248,11 +2279,13 @@ fn runInterval(name: []const u8, operations: std.json.Array, markers: bool) I32I
             const step = readIntervalI32(obj, "step") orelse intervalBail(name);
             if (markers) writeReachMarker(idx + 1, n);
             interval = I32Interval.fromToBy(from, to, step);
+            if (markers) writeReturnMarker(idx + 1, n);
             have_interval = true;
         } else if (std.mem.eql(u8, op_field.string, "reversed")) {
             if (!have_interval) intervalBail(name);
             if (markers) writeReachMarker(idx + 1, n);
             interval = interval.reversed();
+            if (markers) writeReturnMarker(idx + 1, n);
         } else intervalBail(name);
     }
     if (!have_interval) intervalBail(name);
