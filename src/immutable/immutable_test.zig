@@ -203,6 +203,22 @@ test "ImmutableArrayList: parameterized read ops + numeric-gated sum/min/max" {
     }
 }
 
+test "ImmutableArrayList.sum wraps i64 and folds wide unsigned values" {
+    var overflowing = try ImmutableArrayList(i64).fromSlice(
+        std.testing.allocator,
+        &[_]i64{ std.math.maxInt(i64), 1 },
+    );
+    defer overflowing.deinit();
+    try std.testing.expectEqual(std.math.minInt(i64), overflowing.sum());
+
+    var unsigned = try ImmutableArrayList(u128).fromSlice(
+        std.testing.allocator,
+        &[_]u128{ std.math.maxInt(u128), 2 },
+    );
+    defer unsigned.deinit();
+    try std.testing.expectEqual(@as(i64, 1), unsigned.sum());
+}
+
 test "ImmutableHashSet: parameterized dedup / contains / fromMutable independence" {
     inline for (type_axis) |T| {
         const S = @field(@field(hashset, token(T) ++ "_hash_set"), pascal(T) ++ "HashSet");

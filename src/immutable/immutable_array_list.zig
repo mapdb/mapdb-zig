@@ -149,7 +149,7 @@ pub fn ImmutableArrayList(comptime T: type) type {
         }
 
         /// Returns the sum of all elements. Float elements sum in their own type;
-        /// `bool` / `char` / integer elements sum into an `i64` accumulator.
+        /// `bool` / `char` / integer elements sum into a wrapping `i64` accumulator.
         pub fn sum(self: *const Self) if (@typeInfo(T) == .float) T else i64 {
             if (@typeInfo(T) == .float) {
                 var total: T = 0;
@@ -157,11 +157,20 @@ pub fn ImmutableArrayList(comptime T: type) type {
                 return total;
             } else if (T == bool) {
                 var total: i64 = 0;
-                for (self.items) |item| total += @as(i64, if (item) 1 else 0);
+                for (self.items) |item| total +%= @as(i64, if (item) 1 else 0);
                 return total;
             } else {
                 var total: i64 = 0;
-                for (self.items) |item| total += @as(i64, @intCast(item));
+                for (self.items) |item| {
+                    const widened: i64 = switch (@typeInfo(T)) {
+                        .int => |info| if (info.signedness == .unsigned and info.bits >= 64)
+                            @bitCast(@as(u64, @truncate(item)))
+                        else
+                            @intCast(item),
+                        else => @intCast(item),
+                    };
+                    total +%= widened;
+                }
                 return total;
             }
         }
