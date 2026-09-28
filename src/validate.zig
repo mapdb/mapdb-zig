@@ -47,6 +47,8 @@ const RoaringU32 = @import("roaring.zig").RoaringU32;
 const SpaceSaving = @import("space_saving.zig").SpaceSaving;
 const SSEntry = @import("space_saving.zig").Entry;
 const I32Interval = @import("interval/interval.zig").I32Interval;
+const object = @import("object/object.zig");
+const strategy = @import("object/strategy.zig");
 
 const CollectionKind = enum {
     hash_map,
@@ -644,6 +646,42 @@ fn writeArray(writer: anytype, items: []const i32) !void {
 // Set whenever any assertion mismatches; the process exits non-zero at the
 // end so the harness treats assertion failures as the primary pass/fail.
 var any_fail: bool = false;
+
+// Runner profile (README "Scenario JSON format", `profile`): which tier of the
+// port a scenario drives. Absent == primitive. Resolved once per scenario by
+// applyProfile before dispatch; echoed by writeScenarioHeader.
+const Profile = enum { primitive, object };
+var scenario_profile: Profile = .primitive;
+
+// Resolve the optional top-level `profile` field. An unknown value (or a
+// non-string) is a runner FAIL with a non-zero exit, never a fallback.
+fn applyProfile(root: std.json.ObjectMap) void {
+    const v = root.get("profile") orelse {
+        scenario_profile = .primitive;
+        return;
+    };
+    if (v == .string) {
+        if (std.meta.stringToEnum(Profile, v.string)) |p| {
+            scenario_profile = p;
+            return;
+        }
+    }
+    var buf: [512]u8 = undefined;
+    var w = std.fs.File.stdout().writer(&buf);
+    const out = &w.interface;
+    out.writeAll("FAIL profile: unknown '") catch {};
+    if (v == .string) out.writeAll(v.string) catch {} else std.json.Stringify.value(v, .{}, out) catch {};
+    out.writeAll("'\n") catch {};
+    out.flush() catch {};
+    std.process.exit(1);
+}
+
+// Scenario banner followed by the `profile: <name>` guard line (exactly once
+// per scenario, before the first assertion line).
+fn writeScenarioHeader(writer: anytype, name: []const u8) !void {
+    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writer.print("profile: {s}\n", .{@tagName(scenario_profile)});
+}
 
 // Controls how an expected JSON value renders into the canonical computed
 // string, so float comparisons are by bit pattern (NaN == NaN, +0 != -0).
@@ -2191,7 +2229,7 @@ fn finishExpectPanic(name: []const u8, passed: bool) noreturn {
     var stdout_buf: [16 * 1024]u8 = undefined;
     var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_w.interface;
-    stdout.print("=== scenario: {s} ===\n", .{name}) catch {};
+    writeScenarioHeader(stdout, name) catch {};
     if (passed) {
         stdout.writeAll("expect_panic: true\n") catch {};
     } else {
@@ -2381,7 +2419,7 @@ fn runIntervalScenario(
     writer: anytype,
 ) !void {
     const iv = runInterval(name, operations, false);
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     const keys = try allocator.dupe([]const u8, assertions.keys());
     defer allocator.free(keys);
@@ -2432,6 +2470,7 @@ fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
         try stdout.flush();
         std.process.exit(0);
     }
+    applyProfile(root);
     try runParsed(allocator, root);
 }
 
@@ -2475,6 +2514,7 @@ pub fn main() !void {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file_data, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
+    applyProfile(root);
 
     switch (classifyExpectPanic(root)) {
         .malformed => std.process.exit(1),
@@ -2507,6 +2547,25 @@ fn runParsed(allocator: Allocator, root: std.json.ObjectMap) !void {
     var stdout_buf: [16 * 1024]u8 = undefined;
     var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_w.interface;
+    // Object profile: the f32 kinds drive the generic object tier
+    // (object.HashMap / HashSet / TreeSet). Any other kind under this profile
+    // is a FAIL, never a fallback to the primitive tier.
+    if (scenario_profile == .object) {
+        const assertions = root.get("assertions").?.object;
+        if (std.mem.eql(u8, collection_type, "HashMap<f32, i32>")) {
+            try runF32HashMapObject(name, operations, assertions, allocator, stdout);
+        } else if (std.mem.eql(u8, collection_type, "HashSet<f32>")) {
+            try runF32HashSetObject(name, operations, assertions, allocator, stdout);
+        } else if (std.mem.eql(u8, collection_type, "TreeSet<f32>")) {
+            try runF32TreeSetObject(name, operations, assertions, allocator, stdout);
+        } else {
+            try stdout.print("FAIL profile: object not supported for '{s}'\n", .{collection_type});
+            any_fail = true;
+        }
+        try stdout.flush();
+        if (any_fail) std.process.exit(1);
+        return;
+    }
     if (std.mem.eql(u8, collection_type, "HashMap<f32, i32>")) {
         try runF32HashMap(name, operations, root.get("assertions").?.object, allocator, stdout);
         try stdout.flush();
@@ -2710,7 +2769,7 @@ fn runParsed(allocator: Allocator, root: std.json.ObjectMap) !void {
     // Output header (reusing the stdout writer set up above for the f32
     // dispatch path).
     defer stdout.flush() catch {};
-    try stdout.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(stdout, name);
 
     // Process assertions in order
     const assertions = root.get("assertions").?.object;
@@ -2792,7 +2851,7 @@ fn runRange(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     const range = buildRange(operations);
     var other: ?I32Range = null;
@@ -2935,7 +2994,7 @@ fn runImmutableSortedMap(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     const op = singleFromSorted(operations) orelse {
         // Malformed (zero or multiple from_sorted) -> SKIP, do not fail.
         std.debug.print("skip: malformed sorted-table scenario (expected exactly one from_sorted)\n", .{});
@@ -3063,7 +3122,7 @@ fn runImmutableSortedSet(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     const op = singleFromSorted(operations) orelse {
         std.debug.print("skip: malformed sorted-table scenario (expected exactly one from_sorted)\n", .{});
         return;
@@ -3407,7 +3466,7 @@ fn runRoaring(
         other = (try buildRoaring(other_ops, allocator)) orelse return; // malformed -> SKIP
     }
 
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     for (assertions.keys(), assertions.values()) |key, expected| {
         if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
@@ -3569,7 +3628,7 @@ fn runHashPipeline(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     // Authoring rule: exactly ONE hash op. Zero or multiple => malformed =>
     // SKIP (like the sorted-table `from_sorted` rule). Forward-compat: an
@@ -3793,7 +3852,7 @@ fn runBloom(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var b = (try buildBloom(operations, allocator)) orelse {
         std.debug.print("skip: malformed/unsupported Bloom scenario (forward-compat): {s}\n", .{name});
@@ -3981,7 +4040,7 @@ fn runHyperLogLog(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var hll = (try buildHll(operations, root.get("other"), allocator)) orelse {
         std.debug.print("skip: malformed HyperLogLog scenario (forward-compat)\n", .{});
@@ -4104,7 +4163,7 @@ fn runCountMin(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var wp_count: usize = 0;
     for (operations.items) |op| {
@@ -4236,7 +4295,7 @@ fn runSpaceSaving(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var wc_count: usize = 0;
     for (operations.items) |op| {
@@ -4514,7 +4573,7 @@ fn runFenwick(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     // Authoring rule: the FIRST op MUST be exactly one construction op
     // (with_size OR from_values); a missing/late/duplicate construction op is a
@@ -4594,7 +4653,7 @@ fn runF32HashMap(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     var m = F32I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
@@ -4682,7 +4741,7 @@ fn runF32HashSet(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     var set = F32HashSet.init(allocator);
     defer set.deinit();
     for (operations.items) |op| {
@@ -4738,7 +4797,7 @@ fn runF32TreeSet(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     var set = F32TreeSet.init(allocator);
     defer set.deinit();
     for (operations.items) |op| {
@@ -4787,6 +4846,178 @@ fn runF32TreeSet(
     }
 }
 
+// Quoted canonical f32 array (`["0x80000000","1.0",...]`), the rendering the
+// primitive f32 runners use for sorted_keys / sorted_values / to_sorted_array.
+fn writeF32QuotedArray(vw: anytype, vals: []const f32) !void {
+    try vw.writeAll("[");
+    for (vals, 0..) |v, i| {
+        if (i > 0) try vw.writeAll(",");
+        try vw.writeAll("\"");
+        try writeF32(vw, v);
+        try vw.writeAll("\"");
+    }
+    try vw.writeAll("]");
+}
+
+// Object profile of HashMap<f32, i32>: drives the generic object tier
+// object.HashMap(f32, i32) (float keys by bit pattern via
+// object/key_context.zig). Same operand decoding and rendering as
+// runF32HashMap; every value comes from the object's own methods.
+fn runF32HashMapObject(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writeScenarioHeader(writer, name);
+    var m = object.HashMap(f32, i32).init(allocator);
+    defer m.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "put")) {
+            const k = parseF32Value(obj.get("key").?);
+            const v = @as(i32, @intCast(obj.get("value").?.integer));
+            _ = try m.put(k, v);
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = m.remove(parseF32Value(obj.get("key").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            m.clear();
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        if (std.mem.eql(u8, key, "size")) {
+            try vw.print("{d}", .{m.len()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try vw.print("{s}", .{if (m.isEmpty()) "true" else "false"});
+        } else if (std.mem.startsWith(u8, key, "get_")) {
+            const probe = parseF32Label(key[4..]);
+            if (m.get(probe)) |v| try vw.print("{d}", .{v}) else try vw.writeAll("null");
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try vw.print("{s}", .{if (m.containsKey(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted_keys")) {
+            // Unordered production result, sorted for display only.
+            const keys = try m.keysToSlice(allocator);
+            defer allocator.free(keys);
+            sortF32Total(keys);
+            try writeF32QuotedArray(vw, keys);
+        } else if (std.mem.eql(u8, key, "sorted_values")) {
+            const vals = try m.valuesToSlice(allocator);
+            defer allocator.free(vals);
+            try writeSortedArray(vw, vals);
+        } else {
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+        const mode: FloatMode = if (std.mem.eql(u8, key, "sorted_values")) .none else .f32_keyed;
+        try emitF32(name, key, vbuf.items, expected, mode, allocator, writer);
+    }
+}
+
+// Object profile of HashSet<f32>: drives object.HashSet(f32).
+fn runF32HashSetObject(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writeScenarioHeader(writer, name);
+    var set = object.HashSet(f32).init(allocator);
+    defer set.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            _ = try set.add(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = set.remove(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        if (std.mem.eql(u8, key, "size")) {
+            try vw.print("{d}", .{set.len()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
+            // Unordered production result, sorted for display only.
+            const vals = try set.toSlice(allocator);
+            defer allocator.free(vals);
+            sortF32Total(vals);
+            try writeF32QuotedArray(vw, vals);
+        } else {
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
+    }
+}
+
+// Object profile of TreeSet<f32>: drives object.TreeSet(f32) under the
+// documented natural comparator (strategy.naturalComparator: floats go to
+// float_order.totalCmp). Order comes from the production in-order toSlice(),
+// min()/max() from the production methods; the runner never sorts.
+fn runF32TreeSetObject(
+    name: []const u8,
+    operations: std.json.Array,
+    assertions: std.json.ObjectMap,
+    allocator: Allocator,
+    writer: anytype,
+) !void {
+    try writeScenarioHeader(writer, name);
+    var set = object.TreeSet(f32).init(allocator, strategy.naturalComparator(f32));
+    defer set.deinit();
+    for (operations.items) |op| {
+        const obj = op.object;
+        const op_name = obj.get("op").?.string;
+        if (std.mem.eql(u8, op_name, "add")) {
+            _ = try set.add(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "remove")) {
+            _ = set.remove(parseF32Value(obj.get("value").?));
+        } else if (std.mem.eql(u8, op_name, "clear")) {
+            set.clear();
+        }
+    }
+    for (assertions.keys(), assertions.values()) |key, expected| {
+        if (std.mem.eql(u8, key, "comment") or std.mem.eql(u8, key, "expect_panic")) continue;
+        var vbuf = std.array_list.Managed(u8).init(allocator);
+        defer vbuf.deinit();
+        const vw = vbuf.writer();
+        if (std.mem.eql(u8, key, "size")) {
+            try vw.print("{d}", .{set.len()});
+        } else if (std.mem.eql(u8, key, "is_empty")) {
+            try vw.print("{s}", .{if (set.isEmpty()) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "min")) {
+            if (set.min()) |mn| try writeF32(vw, mn) else try vw.writeAll("null");
+        } else if (std.mem.eql(u8, key, "max")) {
+            if (set.max()) |mx| try writeF32(vw, mx) else try vw.writeAll("null");
+        } else if (std.mem.startsWith(u8, key, "contains_")) {
+            const probe = parseF32Label(key[9..]);
+            try vw.print("{s}", .{if (set.contains(probe)) "true" else "false"});
+        } else if (std.mem.eql(u8, key, "sorted") or std.mem.eql(u8, key, "sorted_values") or std.mem.eql(u8, key, "to_sorted_array")) {
+            const vals = try set.toSlice(allocator);
+            defer allocator.free(vals);
+            try writeF32QuotedArray(vw, vals);
+        } else {
+            try vw.print("UNKNOWN_ASSERTION:{s}", .{key});
+        }
+        try emitF32(name, key, vbuf.items, expected, .f32_keyed, allocator, writer);
+    }
+}
+
 fn runF32ArrayList(
     name: []const u8,
     operations: std.json.Array,
@@ -4794,7 +5025,7 @@ fn runF32ArrayList(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     var list = F32ArrayList.init(allocator);
     defer list.deinit();
     for (operations.items) |op| {
@@ -4871,7 +5102,7 @@ fn runI64HashMap(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     var m = I64I32HashMap.init(allocator);
     defer m.deinit();
     for (operations.items) |op| {
@@ -4997,7 +5228,7 @@ fn runI64Multimap(
     writer: anytype,
     apply_ops: bool,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
     if (apply_ops) {
         for (operations.items) |op| {
             const obj = op.object;
@@ -5349,7 +5580,7 @@ fn runBoundedLru(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     const max_size: usize = @intCast(root.get("max_size").?.integer);
     // ttl: null/absent => pure max-size map; otherwise a u64 logical tick.
@@ -5624,7 +5855,7 @@ fn runRangeSet(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var set = I32RangeSet.init(allocator);
     defer set.deinit();
@@ -5706,7 +5937,7 @@ fn runRangeMap(
     allocator: Allocator,
     writer: anytype,
 ) !void {
-    try writer.print("=== scenario: {s} ===\n", .{name});
+    try writeScenarioHeader(writer, name);
 
     var map = I32I32RangeMap.init(allocator);
     defer map.deinit();
