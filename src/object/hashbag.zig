@@ -6,11 +6,12 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const key_context = @import("key_context.zig");
 
 pub fn HashBag(comptime T: type) type {
     return struct {
         const Self = @This();
-        const Map = std.AutoHashMapUnmanaged(T, usize);
+        const Map = key_context.AutoHashMapUnmanaged(T, usize);
 
         inner: Map,
         allocator: Allocator,

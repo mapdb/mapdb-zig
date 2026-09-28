@@ -6,13 +6,14 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const key_context = @import("key_context.zig");
 
 /// Insertion-ordered hash map backed by `std.AutoArrayHashMapUnmanaged`.
 /// Iteration follows insertion order.
 pub fn LinkedHashMap(comptime K: type, comptime V: type) type {
     return struct {
         const Self = @This();
-        const Map = std.AutoArrayHashMapUnmanaged(K, V);
+        const Map = key_context.AutoArrayHashMapUnmanaged(K, V);
 
         inner: Map,
         allocator: Allocator,

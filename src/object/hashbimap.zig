@@ -6,12 +6,13 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const key_context = @import("key_context.zig");
 
 pub fn HashBiMap(comptime K: type, comptime V: type) type {
     return struct {
         const Self = @This();
-        const Forward = std.AutoHashMapUnmanaged(K, V);
-        const Inverse = std.AutoHashMapUnmanaged(V, K);
+        const Forward = key_context.AutoHashMapUnmanaged(K, V);
+        const Inverse = key_context.AutoHashMapUnmanaged(V, K);
 
         forward: Forward,
         inverse: Inverse,

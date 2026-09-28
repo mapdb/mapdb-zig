@@ -64,6 +64,8 @@ pub const HashMapWithStrategy = @import("strategy_hashmap.zig").HashMapWithStrat
 comptime {
     _ = @import("strategy_examples.zig");
     _ = @import("ownership_test.zig");
+    _ = @import("key_context.zig");
+    _ = @import("float_key_test.zig");
 }
 
 test {
