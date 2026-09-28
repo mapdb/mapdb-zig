@@ -278,7 +278,7 @@ pub fn OpenHashMap(comptime K: type, comptime V: type) type {
         /// `ensureUnusedCapacity` / `ensureTotalCapacity`, enabling a "reserve
         /// fallibly, then put infallibly" usage pattern.
         pub fn ensureCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const needed = self.size + additional;
+            const needed = std.math.add(usize, self.size, additional) catch return error.OutOfMemory;
             // Keep load factor strictly below 0.75. needsResize() resizes when
             // (size+1)*4 >= capacity*3, so an insert reaching `needed` entries
             // stays in place iff capacity*3 > needed*4, i.e. capacity > needed*4/3.
@@ -580,7 +580,7 @@ pub fn OpenHashSet(comptime K: type) type {
         /// current capacity already covers the request. See the companion
         /// method on `OpenHashMap` for the motivation.
         pub fn ensureCapacity(self: *Self, additional: usize) Allocator.Error!void {
-            const needed = self.size + additional;
+            const needed = std.math.add(usize, self.size, additional) catch return error.OutOfMemory;
             const required = requiredCapacity(needed);
             if (required <= self.capacity) return;
             const new_cap = nextPow2(@max(required, DEFAULT_CAPACITY));
@@ -866,6 +866,18 @@ test "map: ensureCapacity on populated map preserves entries" {
     }
 }
 
+test "map: ensureCapacity rejects size overflow without mutation" {
+    var m = OpenHashMap(i32, i32).init(std.testing.allocator);
+    defer m.deinit();
+    _ = try m.put(1, 10);
+    const old_capacity = m.capacity;
+
+    try std.testing.expectError(error.OutOfMemory, m.ensureCapacity(std.math.maxInt(usize)));
+    try std.testing.expectEqual(old_capacity, m.capacity);
+    try std.testing.expectEqual(@as(usize, 1), m.len());
+    try std.testing.expectEqual(@as(?i32, 10), m.get(1));
+}
+
 test "set: ensureCapacity grows and subsequent adds do not resize" {
     var s = OpenHashSet(i32).init(std.testing.allocator);
     defer s.deinit();
@@ -883,6 +895,18 @@ test "set: ensureCapacity propagates allocator errors" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const result = OpenHashSet(i32).initCapacity(failing.allocator(), 16);
     try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "set: ensureCapacity rejects size overflow without mutation" {
+    var s = OpenHashSet(i32).init(std.testing.allocator);
+    defer s.deinit();
+    _ = try s.add(1);
+    const old_capacity = s.capacity;
+
+    try std.testing.expectError(error.OutOfMemory, s.ensureCapacity(std.math.maxInt(usize)));
+    try std.testing.expectEqual(old_capacity, s.capacity);
+    try std.testing.expectEqual(@as(usize, 1), s.len());
+    try std.testing.expect(s.contains(1));
 }
 
 test "map D3: occupancy bitset stays correct across word boundaries" {
