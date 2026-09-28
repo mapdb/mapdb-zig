@@ -48,6 +48,10 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             try self.forward.ensureUnusedCapacity(self.allocator, 1);
             try self.inverse.ensureUnusedCapacity(self.allocator, 1);
 
+            // Capture this before evicting a conflicting value: an identical
+            // key-value pair is removed from the forward map below.
+            const old_value = self.forward.get(key);
+
             // Remove any existing mapping for this value (bijection enforcement)
             if (self.inverse.get(value)) |existing_key| {
                 _ = self.forward.fetchRemove(existing_key);
@@ -55,9 +59,7 @@ pub fn HashBiMap(comptime K: type, comptime V: type) type {
             }
 
             // Remove old inverse mapping if key already existed
-            var old_value: ?V = null;
-            if (self.forward.get(key)) |existing_value| {
-                old_value = existing_value;
+            if (old_value) |existing_value| {
                 _ = self.inverse.fetchRemove(existing_value);
             }
 
@@ -197,6 +199,23 @@ test "HashBiMap put replaces old value" {
     try std.testing.expectEqual(@as(?i32, 10), old);
     try std.testing.expectEqual(@as(?i32, 20), bimap.get(1));
     try std.testing.expect(!bimap.containsValue(10));
+}
+
+test "HashBiMap put returns previous value for identical pair and conflicts" {
+    var bimap = HashBiMap(i32, i32).init(std.testing.allocator);
+    defer bimap.deinit();
+
+    try std.testing.expectEqual(@as(?i32, null), try bimap.put(1, 10));
+    try std.testing.expectEqual(@as(?i32, 10), try bimap.put(1, 10));
+    try std.testing.expectEqual(@as(usize, 1), bimap.len());
+    try expectBijection(&bimap);
+
+    try std.testing.expectEqual(@as(?i32, null), try bimap.put(2, 20));
+    try std.testing.expectEqual(@as(?i32, 10), try bimap.put(1, 20));
+    try std.testing.expectEqual(@as(?i32, 20), bimap.get(1));
+    try std.testing.expectEqual(@as(?i32, null), bimap.get(2));
+    try std.testing.expectEqual(@as(usize, 1), bimap.len());
+    try expectBijection(&bimap);
 }
 
 test "HashBiMap remove and removeInverse" {
