@@ -653,34 +653,68 @@ var any_fail: bool = false;
 const Profile = enum { primitive, object };
 var scenario_profile: Profile = .primitive;
 
-// Resolve the optional top-level `profile` field. An unknown value (or a
-// non-string) is a runner FAIL with a non-zero exit, never a fallback.
+// Resolve the optional top-level `profile` field. Never a fallback:
+// - an unknown value or a non-string prints the banner and
+//   `FAIL profile: unknown '<value>'`;
+// - "object" on a kind without an object dispatch (a known or an unknown
+//   kind) prints the banner, the `profile: object` echo and
+//   `FAIL profile: object not supported for '<kind>'`.
+// Both exit 1 before any dispatch (including the expect_panic parent). In
+// the --panic-child both exit 1 silently: a `profile:` line in child stdout
+// would be read by the panic judge as an assertion line, and the rejection
+// must never look like a trap.
 fn applyProfile(root: std.json.ObjectMap) void {
     const v = root.get("profile") orelse {
         scenario_profile = .primitive;
         return;
     };
-    if (v == .string) {
-        if (std.meta.stringToEnum(Profile, v.string)) |p| {
-            scenario_profile = p;
-            return;
+    const resolved: ?Profile = if (v == .string) std.meta.stringToEnum(Profile, v.string) else null;
+    if (resolved) |p| {
+        scenario_profile = p;
+        if (p != .object) return;
+        const coll = root.get("collection");
+        if (coll) |c| {
+            if (c == .string and objectProfileKind(c.string)) return;
         }
     }
+    if (panic_child) std.process.exit(1);
     var buf: [512]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
     const out = &w.interface;
-    out.writeAll("FAIL profile: unknown '") catch {};
-    if (v == .string) out.writeAll(v.string) catch {} else std.json.Stringify.value(v, .{}, out) catch {};
-    out.writeAll("'\n") catch {};
+    const name_val = root.get("name");
+    const name: []const u8 = if (name_val) |n| (if (n == .string) n.string else "") else "";
+    out.print("=== scenario: {s} ===\n", .{name}) catch {};
+    if (resolved != null) {
+        const coll = root.get("collection");
+        const kind: []const u8 = if (coll) |c| (if (c == .string) c.string else "") else "";
+        out.print("profile: {s}\n", .{@tagName(scenario_profile)}) catch {};
+        out.print("FAIL profile: object not supported for '{s}'\n", .{kind}) catch {};
+    } else {
+        out.writeAll("FAIL profile: unknown '") catch {};
+        if (v == .string) out.writeAll(v.string) catch {} else std.json.Stringify.value(v, .{}, out) catch {};
+        out.writeAll("'\n") catch {};
+    }
     out.flush() catch {};
     std.process.exit(1);
 }
 
+// The collection kinds with an object-profile dispatch in runParsed. Any
+// other kind under "object" is rejected by applyProfile.
+fn objectProfileKind(collection: []const u8) bool {
+    return std.mem.eql(u8, collection, "HashMap<f32, i32>") or
+        std.mem.eql(u8, collection, "HashSet<f32>") or
+        std.mem.eql(u8, collection, "TreeSet<f32>");
+}
+
+// Set in the --panic-child process: no `profile:` echo there (the parent
+// owns it) and profile rejections exit 1 without output (applyProfile).
+var panic_child: bool = false;
+
 // Scenario banner followed by the `profile: <name>` guard line (exactly once
-// per scenario, before the first assertion line).
+// per scenario, before the first assertion line; never in the panic child).
 fn writeScenarioHeader(writer: anytype, name: []const u8) !void {
     try writer.print("=== scenario: {s} ===\n", .{name});
-    try writer.print("profile: {s}\n", .{@tagName(scenario_profile)});
+    if (!panic_child) try writer.print("profile: {s}\n", .{@tagName(scenario_profile)});
 }
 
 // Controls how an expected JSON value renders into the canonical computed
@@ -2455,6 +2489,10 @@ fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file_data, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
+    // Same (kind, profile) applicability as the parent, before any dispatch
+    // including the Interval special case; silent in the child (exit 1).
+    panic_child = true;
+    applyProfile(root);
     const name = panicScenarioName(root);
     const coll_val = root.get("collection") orelse intervalBail(name);
     if (coll_val != .string) intervalBail(name);
@@ -2470,7 +2508,6 @@ fn runPanicChild(allocator: Allocator, file_path: []const u8) !void {
         try stdout.flush();
         std.process.exit(0);
     }
-    applyProfile(root);
     try runParsed(allocator, root);
 }
 
@@ -2559,6 +2596,7 @@ fn runParsed(allocator: Allocator, root: std.json.ObjectMap) !void {
         } else if (std.mem.eql(u8, collection_type, "TreeSet<f32>")) {
             try runF32TreeSetObject(name, operations, assertions, allocator, stdout);
         } else {
+            // applyProfile already rejected this kind; never fall back.
             try stdout.print("FAIL profile: object not supported for '{s}'\n", .{collection_type});
             any_fail = true;
         }
