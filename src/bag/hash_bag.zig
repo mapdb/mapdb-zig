@@ -190,16 +190,20 @@ pub fn HashBag(comptime T: type) type {
             self.size += n;
         }
 
-        /// Remove up to n occurrences. Returns number actually removed.
+        /// Remove up to n occurrences in O(1). Returns number actually removed.
         pub fn removeOccurrences(self: *Self, value: T, n: usize) usize {
-            var removed: usize = 0;
-            var i: usize = 0;
-            while (i < n) : (i += 1) {
-                if (self.remove(value)) {
-                    removed += 1;
-                } else break;
+            if (n == 0) return 0;
+            if (self.counts.getPtr(value)) |count_ptr| {
+                const removed = @min(n, count_ptr.*);
+                if (removed == count_ptr.*) {
+                    _ = self.counts.remove(value);
+                } else {
+                    count_ptr.* -= removed;
+                }
+                self.size -= removed;
+                return removed;
             }
-            return removed;
+            return 0;
         }
 
         // ---- Iteration ----

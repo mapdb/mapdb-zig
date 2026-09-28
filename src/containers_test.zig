@@ -380,6 +380,28 @@ test "HashBag/TreeBag: parameterized count semantics" {
     }
 }
 
+test "HashBag.removeOccurrences handles zero, partial, and huge removals" {
+    const huge: usize = if (@sizeOf(usize) >= 8) 1 << 40 else 1 << 28;
+    var hb = bag.HashBag(i32).init(testing.allocator);
+    defer hb.deinit();
+
+    try hb.addOccurrences(7, huge);
+    try hb.addOccurrences(8, 3);
+    try testing.expectEqual(@as(usize, 0), hb.removeOccurrences(7, 0));
+    try testing.expectEqual(@as(usize, 0), hb.removeOccurrences(9, 5));
+    try testing.expectEqual(@as(usize, 2), hb.removeOccurrences(7, 2));
+    try testing.expectEqual(huge - 2, hb.occurrencesOf(7));
+    try testing.expectEqual(huge + 1, hb.totalSize());
+    try testing.expectEqual(@as(usize, 2), hb.sizeDistinct());
+
+    try testing.expectEqual(huge - 2, hb.removeOccurrences(7, std.math.maxInt(usize)));
+    try testing.expectEqual(@as(usize, 0), hb.occurrencesOf(7));
+    try testing.expectEqual(@as(usize, 3), hb.totalSize());
+    try testing.expectEqual(@as(usize, 1), hb.sizeDistinct());
+    try testing.expectEqual(@as(usize, 3), hb.removeOccurrences(8, 3));
+    try testing.expect(hb.isEmpty());
+}
+
 test "HashBag: count(predicate) counts occurrences, not distinct values" {
     const P = struct {
         fn isFirst(ctx: i32, v: i32) bool {
