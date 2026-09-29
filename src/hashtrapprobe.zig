@@ -11,13 +11,24 @@
 // every optimize mode including ReleaseFast/ReleaseSmall — which is exactly what
 // this probe verifies.
 //
-// With no args this executable is the HARNESS: it re-execs itself once per trap
-// case (via `std.fs.selfExePathAlloc`) and asserts each child terminated
-// NON-cleanly (not `.Exited == 0`). With one arg it FIRES the named trap, which
-// must `@panic` (so the harness child never returns 0). Wired into
-// `zig build test`, so `zig build test -Doptimize=ReleaseFast` exercises it.
+// With no args this executable re-execs each case and accepts only the selected
+// production guard's diagnostic exit. A normal return, another panic, an error,
+// or a signal must fail, including in ReleaseFast. The message is an internal
+// test discriminator, not a public API promise.
 
 const std = @import("std");
+
+const intended_exit = 73;
+var expected_message: ?[]const u8 = null;
+pub const panic = std.debug.FullPanic(checkPanic);
+
+fn checkPanic(message: []const u8, _: ?usize) noreturn {
+    if (expected_message) |expected| {
+        if (std.mem.eql(u8, message, expected)) std.process.exit(intended_exit);
+    }
+    std.debug.print("unexpected panic: {s}\n", .{message});
+    std.process.exit(74);
+}
 
 const hash = @import("hash.zig");
 
@@ -39,9 +50,9 @@ pub fn main() !void {
     }
 
     if (args.len == 2) {
+        expected_message = try expectedGuard(args[1]);
         try fireTrap(args[1]);
-        // Reaching here means the caller-contract trap did NOT fire — fail
-        // loudly (non-zero child status) so a regressed guard is caught.
+        // Own error exit is intentionally rejected by the parent.
         std.debug.print("trap case {s} returned normally\n", .{args[1]});
         return error.ExpectedTrapDidNotFire;
     }
@@ -59,26 +70,24 @@ fn runHarness(allocator: std.mem.Allocator) !void {
         var child = std.process.Child.init(&argv, allocator);
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
+        child.stderr_behavior = .Inherit;
 
         const term = try child.spawnAndWait();
-        if (isCleanExitZero(term)) {
+        if (term != .Exited or term.Exited != intended_exit) {
             std.debug.print(
-                "trap case {s} exited cleanly; expected panic / non-zero termination\n",
-                .{case_name},
+                "trap case {s}: intended guard did not fire; termination {any}\n",
+                .{ case_name, term },
             );
             return error.ExpectedTrapDidNotFire;
         }
     }
 }
 
-// A panic aborts (POSIX: `.Signal == SIGABRT`); some targets may surface a
-// non-zero `.Exited`. Either is success here — only a clean zero exit fails.
-fn isCleanExitZero(term: std.process.Child.Term) bool {
-    return switch (term) {
-        .Exited => |code| code == 0,
-        .Signal, .Stopped, .Unknown => false,
-    };
+fn expectedGuard(name: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, name, "positions_out_short")) return "hash.positions: out.len must be >= k";
+    if (std.mem.eql(u8, name, "hll_p_low")) return "hash.hllSplit: p must be in [4, 18]";
+    if (std.mem.eql(u8, name, "hll_p_high")) return "hash.hllSplit: p must be in [4, 18]";
+    return error.UnknownTrapCase;
 }
 
 fn fireTrap(name: []const u8) !void {

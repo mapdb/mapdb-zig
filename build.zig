@@ -48,8 +48,8 @@ pub fn build(b: *std.Build) void {
     // hash.zig caller-contract trap probe. The in-process unit-test runner
     // cannot catch `@panic`, so the always-on hash guards (positions out.len < k
     // and hllSplit p out of [4,18]) are exercised out-of-process: with no args
-    // this exe re-execs itself once per trap case and asserts each child
-    // terminated non-cleanly. Wired into `zig build test` so a ReleaseFast run
+    // this exe re-execs itself once per trap case and accepts only the selected
+    // production guard diagnostic. Wired into `zig build test` so a ReleaseFast run
     // confirms the traps fire in release builds too.
     const hashtrapprobe_exe = addExe(b, "hashtrapprobe", b.path("src/hashtrapprobe.zig"), target, optimize);
     b.installArtifact(hashtrapprobe_exe);
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     // catch `@panic`, so the always-on Bloom traps (`withParams` m_bits == 0 and
     // `optimal` n == 0 / p <= 0 / p >= 1 / NaN / Inf) are verified out of
     // process: with no args this exe re-execs itself once per trap case and
-    // asserts each child terminates non-cleanly. Made a `test` dependency so
+    // accepts only the selected production guard diagnostic. Made a `test` dependency so
     // `zig build test` (incl. `-Doptimize=ReleaseFast`) exercises it.
     const trapprobe_exe = addExe(b, "trapprobe", b.path("src/trapprobe.zig"), target, optimize);
     b.installArtifact(trapprobe_exe);
