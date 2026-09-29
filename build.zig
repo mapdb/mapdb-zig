@@ -58,6 +58,13 @@ pub fn build(b: *std.Build) void {
     const hashtrapprobe_step = b.step("hashtrapprobe", "Run the out-of-process hash.zig caller-contract trap probe");
     hashtrapprobe_step.dependOn(&run_hashtrapprobe.step);
 
+    // Interval guards are checked by exact intended-panic detection, so a
+    // Debug arithmetic trap cannot mask an omitted minimum-step guard.
+    const intervaltrapprobe_exe = addExe(b, "intervaltrapprobe", b.path("src/intervaltrapprobe.zig"), target, optimize);
+    const run_intervaltrapprobe = b.addRunArtifact(intervaltrapprobe_exe);
+    const intervaltrapprobe_step = b.step("intervaltrapprobe", "Check intended Interval guards out of process");
+    intervaltrapprobe_step.dependOn(&run_intervaltrapprobe.step);
+
     // Required-input panic/trap probe. The in-process unit-test runner cannot
     // catch `@panic`, so the always-on Bloom traps (`withParams` m_bits == 0 and
     // `optimal` n == 0 / p <= 0 / p >= 1 / NaN / Inf) are verified out of
@@ -111,6 +118,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_hashtrapprobe.step);
+    test_step.dependOn(&run_intervaltrapprobe.step);
     test_step.dependOn(&run_trapprobe.step);
 
     // Autodoc: `zig build docs` emits HTML docs from the library's doc-comments
