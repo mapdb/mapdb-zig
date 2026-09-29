@@ -32,6 +32,10 @@ fn MapKey(comptime K: type) type {
     return if (@typeInfo(K) == .float) std.meta.Int(.unsigned, @bitSizeOf(K)) else K;
 }
 
+fn ValueKey(comptime V: type) type {
+    return if (@typeInfo(V) == .float) std.meta.Int(.unsigned, @bitSizeOf(V)) else V;
+}
+
 /// Whether values of type `V` must be compared by bit pattern (floats) rather
 /// than `==` for dedup / containment / equality. Matches the original per-type
 /// wrappers, where only float-valued multimaps used `@bitCast` comparisons.
@@ -58,13 +62,19 @@ fn valueOrder(comptime V: type, a: V, b: V) std.math.Order {
 /// Set multimap from `K` keys to `V` values.
 ///
 /// Each key maps to a set of unique values (duplicates on put are ignored).
-/// Backed by `AutoHashMapUnmanaged` for O(1) key lookup. Float keys are stored
-/// as their bit pattern for correct hashing/equality.
+/// Backed by `AutoHashMapUnmanaged` for expected O(1) key and pair lookup.
+/// Per-key lists retain insertion order for `get` and iteration. Float keys
+/// and values in the membership index use their bit patterns for identity.
 pub fn SetMultimap(comptime K: type, comptime V: type) type {
     const MK = MapKey(K);
+    const MV = ValueKey(V);
+    const PairKey = struct { key: MK, value: MV };
 
     return struct {
         inner: std.AutoHashMapUnmanaged(MK, std.ArrayListUnmanaged(V)),
+        /// One membership entry per pair; kept in sync with `inner` on every
+        /// insertion, removal and clear.
+        pairs: std.AutoHashMapUnmanaged(PairKey, void),
         allocator: Allocator,
         total_size: usize,
 
@@ -84,11 +94,19 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
             return if (@typeInfo(K) == .float) @as(K, @bitCast(stored)) else stored;
         }
 
+        fn pairKey(key: MK, value: V) PairKey {
+            return .{
+                .key = key,
+                .value = if (@typeInfo(V) == .float) @as(MV, @bitCast(value)) else value,
+            };
+        }
+
         // ---- Construction / Destruction ----
 
         pub fn init(allocator: Allocator) Self {
             return .{
                 .inner = std.AutoHashMapUnmanaged(MK, std.ArrayListUnmanaged(V)){},
+                .pairs = .{},
                 .allocator = allocator,
                 .total_size = 0,
             };
@@ -100,6 +118,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                 entry.value_ptr.deinit(self.allocator);
             }
             self.inner.deinit(self.allocator);
+            self.pairs.deinit(self.allocator);
         }
 
         // ---- Data pump (bulk import) ----
@@ -111,7 +130,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         /// `keys`/`vals` slices where all entries for a key are contiguous and
         /// keys appear in strictly ascending order across runs. Validates key
         /// monotonicity with the multimap's `keyOrder`; duplicate VALUES within a
-        /// key run are collapsed (set semantics). O(n + per-run dedupe). A
+        /// key run are collapsed (set semantics), in expected O(n) time. A
         /// non-contiguous or out-of-order key boundary is `error.NotSorted`. On
         /// any error nothing leaks.
         pub fn fromSortedKeys(allocator: Allocator, keys: []const K, vals: []const V) BulkError!Self {
@@ -124,23 +143,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                 var j = i + 1;
                 while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {}
                 if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
-                const map_key = mapKey(k);
-                const gop = try self.inner.getOrPut(self.allocator, map_key);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayListUnmanaged(V){};
-                }
-                for (vals[i..j]) |v| {
-                    var seen = false;
-                    for (gop.value_ptr.items) |existing| {
-                        if (valueEql(V, existing, v)) {
-                            seen = true;
-                            break;
-                        }
-                    }
-                    if (seen) continue;
-                    try gop.value_ptr.append(self.allocator, v);
-                    self.total_size += 1;
-                }
+                for (vals[i..j]) |v| try self.put(k, v);
                 i = j;
             }
             return self;
@@ -157,29 +160,16 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
             while (i < keys.len) {
                 const k = keys[i];
                 var j = i;
-                var run = std.ArrayListUnmanaged(V){};
-                errdefer run.deinit(allocator);
+                var previous: ?V = null;
                 while (j < keys.len and keyOrder(K, keys[j], k) == .eq) : (j += 1) {
-                    if (run.items.len > 0) {
-                        const ord = valueOrder(V, run.items[run.items.len - 1], vals[j]);
+                    if (previous) |last| {
+                        const ord = valueOrder(V, last, vals[j]);
                         if (ord == .gt) return error.NotSorted;
-                        if (ord == .eq) continue;
                     }
-                    try run.append(allocator, vals[j]);
+                    previous = vals[j];
+                    try self.put(k, vals[j]);
                 }
                 if (j < keys.len and keyOrder(K, k, keys[j]) != .lt) return error.NotSorted;
-                const run_len = run.items.len;
-                const map_key = mapKey(k);
-                const gop = try self.inner.getOrPut(self.allocator, map_key);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = run;
-                    run = .{};
-                } else {
-                    try gop.value_ptr.appendSlice(self.allocator, run.items);
-                    run.deinit(allocator);
-                    run = .{};
-                }
-                self.total_size += run_len;
                 i = j;
             }
             return self;
@@ -203,17 +193,14 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
         /// already present for this key (duplicate is silently dropped).
         pub fn put(self: *Self, key: K, value: V) Allocator.Error!void {
             const map_key = mapKey(key);
+            const pair = pairKey(map_key, value);
+            if (self.pairs.contains(pair)) return;
+            // Reserve the membership slot before mutating the value list. The
+            // final index insertion is then infallible, including on OOM paths.
+            try self.pairs.ensureUnusedCapacity(self.allocator, 1);
             const gop = try self.inner.getOrPut(self.allocator, map_key);
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayListUnmanaged(V){};
-            }
-            for (gop.value_ptr.items) |existing| {
-                if (valueEql(V, existing, value)) {
-                    // Value already present: drop the freshly-created empty key
-                    // if this getOrPut created one (cannot happen — a new key
-                    // has no items — but keep the invariant explicit), then no-op.
-                    return;
-                }
             }
             gop.value_ptr.append(self.allocator, value) catch |err| {
                 // A failed append on a freshly-created key would leave an
@@ -225,6 +212,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                 }
                 return err;
             };
+            self.pairs.putAssumeCapacity(pair, {});
             self.total_size += 1;
         }
 
@@ -255,6 +243,9 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
             const map_key = mapKey(key);
             const list_ptr = self.inner.getPtr(map_key) orelse return 0;
             const removed = list_ptr.items.len;
+            for (list_ptr.items) |value| {
+                _ = self.pairs.remove(pairKey(map_key, value));
+            }
             list_ptr.deinit(self.allocator);
             self.total_size -= removed;
             _ = self.inner.remove(map_key);
@@ -269,11 +260,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
 
         /// Returns true if the multimap contains the given key-value pair.
         pub fn containsKeyValue(self: *const Self, key: K, value: V) bool {
-            const vals = self.get(key);
-            for (vals) |v| {
-                if (valueEql(V, v, value)) return true;
-            }
-            return false;
+            return self.pairs.contains(pairKey(mapKey(key), value));
         }
 
         /// Returns the number of distinct keys. O(1).
@@ -296,6 +283,7 @@ pub fn SetMultimap(comptime K: type, comptime V: type) type {
                 entry.value_ptr.deinit(self.allocator);
             }
             self.inner.clearRetainingCapacity();
+            self.pairs.clearRetainingCapacity();
             self.total_size = 0;
         }
 

@@ -325,7 +325,7 @@ test "ListMultimap put rolls back new key on append OOM (F5)" {
 
 test "SetMultimap put rolls back new key on append OOM (F5)" {
     var fail_index: usize = 0;
-    while (fail_index < 64) : (fail_index += 1) {
+    while (fail_index < 96) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(
             std.testing.allocator,
             .{ .fail_index = fail_index },
@@ -333,6 +333,7 @@ test "SetMultimap put rolls back new key on append OOM (F5)" {
         var m = SetMultimap(i32, i32).init(failing.allocator());
         defer m.deinit();
         m.put(1, 10) catch {};
+        m.put(1, 11) catch {};
         m.put(2, 20) catch |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expect(!m.containsKey(2));
@@ -341,7 +342,29 @@ test "SetMultimap put rolls back new key on append OOM (F5)" {
         var summed: usize = 0;
         while (it.next()) |e| summed += e.value_ptr.items.len;
         try std.testing.expectEqual(summed, m.len());
+        try std.testing.expectEqual(summed, m.pairs.count());
+        for ([_]i32{ 1, 2 }) |key| {
+            for (m.get(key)) |value| {
+                try std.testing.expect(m.containsKeyValue(key, value));
+            }
+        }
     }
+}
+
+test "SetMultimap membership index survives duplicate, removal and reinsert" {
+    var m = SetMultimap(i32, i32).init(std.testing.allocator);
+    defer m.deinit();
+    for (0..4000) |i| try m.put(7, @intCast(i));
+    for (0..4000) |i| try m.put(7, @intCast(i));
+    try std.testing.expectEqual(@as(usize, 4000), m.count(7));
+    try std.testing.expectEqual(m.len(), m.pairs.count());
+    try std.testing.expect(m.containsKeyValue(7, 3999));
+    try std.testing.expectEqual(@as(usize, 4000), m.removeAll(7));
+    try std.testing.expectEqual(@as(usize, 0), m.pairs.count());
+    try m.put(7, 3999);
+    try std.testing.expectEqualSlices(i32, &[_]i32{3999}, m.get(7));
+    m.clear();
+    try std.testing.expectEqual(@as(usize, 0), m.pairs.count());
 }
 
 // ---------------------------------------------------------------------------
