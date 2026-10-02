@@ -200,8 +200,22 @@ fn buildRangeFromObj(op: std.json.ObjectMap) I32Range {
 /// ports fail it (fable72 F11 — this runner used to silently tolerate both in
 /// the if-chain below).
 fn unsupportedOp(op_name: []const u8, coll: *Collection) error{UnsupportedOp} {
-    std.debug.print("error: op '{s}' not supported for {s}\n", .{ op_name, @tagName(std.meta.activeTag(coll.*)) });
+    var buf: [256]u8 = undefined;
+    std.debug.print("error: op '{s}' not supported for {s}\n", .{ safeOpName(op_name, &buf), @tagName(std.meta.activeTag(coll.*)) });
     return error.UnsupportedOp;
+}
+
+/// Render a JSON-sourced op name safe for a single diagnostic line:
+/// non-printable bytes become '?' so an embedded '\n' cannot forge extra
+/// skip:/marker lines in the validation log.
+fn safeOpName(op_name: []const u8, buf: []u8) []const u8 {
+    var n: usize = 0;
+    for (op_name) |c| {
+        if (n >= buf.len) break;
+        buf[n] = if (c >= 0x20 and c < 0x7f) c else '?';
+        n += 1;
+    }
+    return buf[0..n];
 }
 
 fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator: Allocator) !void {
@@ -352,7 +366,10 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         // never breaks an older runner; the skip: line is what validate.sh
         // counts. Every other kind errors on an unrecognised op (F11).
         switch (coll.*) {
-            .tree_set, .tree_map => std.debug.print("skip: unknown op (forward-compat): {s}\n", .{op_name}),
+            .tree_set, .tree_map => {
+                var obuf: [256]u8 = undefined;
+                std.debug.print("skip: unknown op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
+            },
             else => return unsupportedOp(op_name, coll),
         }
     }
@@ -3380,7 +3397,8 @@ fn buildRoaring(operations: std.json.Array, allocator: Allocator) !?RoaringU32 {
                 v += 1;
             }
         } else {
-            std.debug.print("skip: unknown roaring op (forward-compat): {s}\n", .{op_name});
+            var obuf: [256]u8 = undefined;
+            std.debug.print("skip: unknown roaring op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
             set.deinit();
             return null;
         }
@@ -3723,7 +3741,8 @@ fn runHashPipeline(
         hash.positions(&le, m, k, owned_positions.?);
         probe = .{ .positions = owned_positions.? };
     } else {
-        std.debug.print("skip: unknown hash-pipeline op (forward-compat): {s}\n", .{op_name});
+        var obuf: [256]u8 = undefined;
+        std.debug.print("skip: unknown hash-pipeline op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
         return;
     }
 
@@ -4243,7 +4262,8 @@ fn runCountMin(
             };
             cms.add(value, count);
         } else {
-            std.debug.print("skip: unknown CountMin op (forward-compat): {s}\n", .{op_name});
+            var obuf: [256]u8 = undefined;
+            std.debug.print("skip: unknown CountMin op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
             return;
         }
     }
@@ -4373,7 +4393,8 @@ fn runSpaceSaving(
             };
             try ss.add(value, count);
         } else {
-            std.debug.print("skip: unknown SpaceSaving op (forward-compat): {s}\n", .{op_name});
+            var obuf: [256]u8 = undefined;
+            std.debug.print("skip: unknown SpaceSaving op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
             return;
         }
     }
@@ -4673,7 +4694,8 @@ fn runFenwick(
             std.debug.print("skip: fenwick has a non-first construction op (malformed)\n", .{});
             return;
         } else {
-            std.debug.print("skip: unknown fenwick op (forward-compat): {s}\n", .{op_name});
+            var obuf: [256]u8 = undefined;
+            std.debug.print("skip: unknown fenwick op (forward-compat): {s}\n", .{safeOpName(op_name, &obuf)});
             return;
         }
     }
