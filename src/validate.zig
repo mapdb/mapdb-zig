@@ -195,6 +195,15 @@ fn buildRangeFromObj(op: std.json.ObjectMap) I32Range {
     @panic("unknown range op");
 }
 
+/// A known op applied to a kind it does not support, or an op unknown outside
+/// the documented forward-compat families, is a runner error: the other four
+/// ports fail it (fable72 F11 — this runner used to silently tolerate both in
+/// the if-chain below).
+fn unsupportedOp(op_name: []const u8, coll: *Collection) error{UnsupportedOp} {
+    std.debug.print("error: op '{s}' not supported for {s}\n", .{ op_name, @tagName(std.meta.activeTag(coll.*)) });
+    return error.UnsupportedOp;
+}
+
 fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator: Allocator) !void {
     const obj = op.object;
     const op_name = obj.get("op").?.string;
@@ -205,7 +214,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         switch (coll.*) {
             .hash_map => |*m| _ = try m.put(key, value),
             .tree_map => |*m| _ = try m.put(key, value),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "add")) {
         const value = jsonToI32(obj.get("value").?).?;
@@ -215,7 +224,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
             .hash_bag => |*b| try b.add(value),
             .tree_set => |*s| _ = try s.add(value),
             .array_stack => |*s| try s.push(value),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "add_occurrences")) {
         // {"op":"add_occurrences","value":v,"count":n}: the production bulk
@@ -224,14 +233,14 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         const count: usize = @intCast(obj.get("count").?.integer);
         switch (coll.*) {
             .hash_bag => |*b| try b.addOccurrences(value, count),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "add_at")) {
         const index: usize = @intCast(obj.get("index").?.integer);
         const value = jsonToI32(obj.get("value").?).?;
         switch (coll.*) {
             .array_list => |*l| try l.addAtIndex(index, value),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "addToValue")) {
         // Exercise the production addToValue, which now wraps at the value
@@ -243,7 +252,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
             .hash_map => |*m| {
                 try log.add_to_value_results.append(allocator, try m.addToValue(key, delta));
             },
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "remove")) {
         switch (coll.*) {
@@ -290,12 +299,12 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
         switch (coll.*) {
             .array_stack => |*s| try s.push(value),
             .array_list => |*l| try l.push(value),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "pop")) {
         switch (coll.*) {
             .array_stack => |*s| _ = s.pop(),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "poll_first")) {
         // Map: record key + value; set: record element as the key (no value).
@@ -312,7 +321,7 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
             .tree_set => |*s| {
                 try log.poll_first_keys.append(allocator, s.pollFirst());
             },
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "poll_last")) {
         switch (coll.*) {
@@ -328,20 +337,24 @@ fn applyOperation(coll: *Collection, op: std.json.Value, log: *NavLog, allocator
             .tree_set => |*s| {
                 try log.poll_last_keys.append(allocator, s.pollLast());
             },
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else if (std.mem.eql(u8, op_name, "remove_range")) {
         const range = buildRangeFromObj(obj.get("range").?.object);
         switch (coll.*) {
             .tree_map => |*m| try log.remove_range_counts.append(allocator, @intCast(m.removeRange(range))),
             .tree_set => |*s| try log.remove_range_counts.append(allocator, @intCast(try s.removeRange(range))),
-            else => {},
+            else => return unsupportedOp(op_name, coll),
         }
     } else {
         // Forward-compat (README + spec/features/navigable-map.md): on the
         // ordered tree collections an unknown op is SKIPPED so a newer scenario
-        // never breaks an older runner. Other collections silently ignore too
-        // (this runner has always tolerated unrecognised ops in the if-chain).
+        // never breaks an older runner; the skip: line is what validate.sh
+        // counts. Every other kind errors on an unrecognised op (F11).
+        switch (coll.*) {
+            .tree_set, .tree_map => std.debug.print("skip: unknown op (forward-compat): {s}\n", .{op_name}),
+            else => return unsupportedOp(op_name, coll),
+        }
     }
 }
 
