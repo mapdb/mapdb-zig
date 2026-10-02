@@ -402,6 +402,223 @@ test "HashBag.removeOccurrences handles zero, partial, and huge removals" {
     try testing.expect(hb.isEmpty());
 }
 
+// ---------------------------------------------------------------------------
+// Cardinality overflow (spec algorithms.md "Cardinality overflow (bags)"):
+// an add whose resulting total size would exceed maxInt(usize) is refused
+// with error.CountOverflow BEFORE any mutation; reaching exactly the max is
+// allowed. Huge counts via addOccurrences / counted bulk loads — never
+// allocates per occurrence.
+// ---------------------------------------------------------------------------
+
+/// Observable state of a bag over the two sample values: total size, distinct
+/// size, per-value counts, and the (value, count) iteration sequence plus the
+/// first element yielded by the pull iterator.
+fn BagSnapshot(comptime T: type) type {
+    return struct {
+        total: usize,
+        distinct: usize,
+        occ: [2]usize,
+        n_entries: usize,
+        entries: [2]struct { v: T, c: usize },
+        first: ?T,
+
+        const Snap = @This();
+
+        fn take(b: anytype, s: [2]T) Snap {
+            var snap: Snap = .{
+                .total = b.totalSize(),
+                .distinct = b.sizeDistinct(),
+                .occ = .{ b.occurrencesOf(s[0]), b.occurrencesOf(s[1]) },
+                .n_entries = 0,
+                .entries = undefined,
+                .first = null,
+            };
+            b.forEachWithOccurrences(&snap, struct {
+                fn f(ctx: *Snap, v: T, c: usize) void {
+                    ctx.entries[ctx.n_entries] = .{ .v = v, .c = c };
+                    ctx.n_entries += 1;
+                }
+            }.f);
+            var it = b.iterator();
+            snap.first = it.next();
+            return snap;
+        }
+
+        fn expectSame(a: Snap, b: Snap) !void {
+            try testing.expectEqual(a.total, b.total);
+            try testing.expectEqual(a.distinct, b.distinct);
+            try testing.expectEqual(a.occ, b.occ);
+            try testing.expectEqual(a.n_entries, b.n_entries);
+            for (a.entries[0..a.n_entries], b.entries[0..b.n_entries]) |x, y| {
+                try testing.expect(std.meta.eql(x.v, y.v));
+                try testing.expectEqual(x.c, y.c);
+            }
+            try testing.expect(std.meta.eql(a.first, b.first));
+        }
+    };
+}
+
+test "HashBag: cardinality overflow refused before mutation, exact max allowed (all primitive types)" {
+    const max = std.math.maxInt(usize);
+    inline for (type_axis) |T| {
+        const s = samples(T);
+        const Snap = BagSnapshot(T);
+
+        // Existing value reaching exactly max is allowed; one more is refused.
+        {
+            var hb = bag.HashBag(T).init(testing.allocator);
+            defer hb.deinit();
+            try hb.addOccurrences(s[0], max - 5);
+            try hb.addOccurrences(s[0], 5);
+            try testing.expectEqual(@as(usize, max), hb.totalSize());
+            try testing.expectEqual(@as(usize, max), hb.occurrencesOf(s[0]));
+            const before = Snap.take(&hb, s);
+            try testing.expectError(error.CountOverflow, hb.add(s[0]));
+            try testing.expectError(error.CountOverflow, hb.addOccurrences(s[0], 1));
+            try testing.expectError(error.CountOverflow, hb.addOccurrences(s[0], max));
+            try Snap.expectSame(before, Snap.take(&hb, s));
+            // A zero-count add at max is a no-op, not a refusal.
+            try hb.addOccurrences(s[0], 0);
+            try Snap.expectSame(before, Snap.take(&hb, s));
+        }
+
+        // New value reaching exactly max is allowed; then every add is refused.
+        {
+            var hb = bag.HashBag(T).init(testing.allocator);
+            defer hb.deinit();
+            try hb.addOccurrences(s[0], max - 1);
+            try hb.add(s[1]);
+            try testing.expectEqual(@as(usize, max), hb.totalSize());
+            try testing.expectEqual(@as(usize, 2), hb.sizeDistinct());
+            const before = Snap.take(&hb, s);
+            try testing.expectError(error.CountOverflow, hb.add(s[0]));
+            try testing.expectError(error.CountOverflow, hb.add(s[1]));
+            try testing.expectError(error.CountOverflow, hb.with(s[1]));
+            try testing.expectError(error.CountOverflow, hb.withAll(&.{s[1]}));
+            try Snap.expectSame(before, Snap.take(&hb, s));
+        }
+
+        // Below max: a refused add of a NEW value creates no entry; a refused
+        // add of an existing value leaves its count alone.
+        {
+            var hb = bag.HashBag(T).init(testing.allocator);
+            defer hb.deinit();
+            try hb.addOccurrences(s[0], max - 5);
+            const before = Snap.take(&hb, s);
+            try testing.expectError(error.CountOverflow, hb.addOccurrences(s[1], 6));
+            try testing.expect(!hb.contains(s[1]));
+            try testing.expectError(error.CountOverflow, hb.addOccurrences(s[0], 6));
+            try Snap.expectSame(before, Snap.take(&hb, s));
+        }
+
+        // Bulk adds are checked as a whole: a refused batch adds nothing.
+        {
+            var hb = bag.HashBag(T).init(testing.allocator);
+            defer hb.deinit();
+            try hb.addOccurrences(s[0], max - 1);
+            const before = Snap.take(&hb, s);
+            try testing.expectError(error.CountOverflow, hb.withAll(&.{ s[1], s[0] }));
+            try Snap.expectSame(before, Snap.take(&hb, s));
+            _ = try hb.withAll(&.{s[1]});
+            try testing.expectEqual(@as(usize, max), hb.totalSize());
+        }
+
+        // Counted bulk load: a batch summing past max is refused (and frees);
+        // one summing to exactly max loads.
+        try testing.expectError(error.CountOverflow, bag.HashBag(T).bulkLoadCounts(testing.allocator, &.{ s[0], s[1] }, &.{ max, 1 }));
+        try testing.expectError(error.CountOverflow, bag.HashBag(T).bulkLoadCounts(testing.allocator, &.{ s[0], s[0] }, &.{ max - 1, 2 }));
+        var full = try bag.HashBag(T).bulkLoadCounts(testing.allocator, &.{ s[0], s[1] }, &.{ max - 1, 1 });
+        defer full.deinit();
+        try testing.expectEqual(@as(usize, max), full.totalSize());
+        try testing.expectError(error.CountOverflow, full.add(s[1]));
+        try testing.expectEqual(@as(usize, 1), full.occurrencesOf(s[1]));
+    }
+}
+
+test "TreeBag: cardinality overflow refused before mutation, exact max allowed (all primitive types)" {
+    const max = std.math.maxInt(usize);
+    inline for (type_axis) |T| {
+        const s = samples(T);
+        const Snap = BagSnapshot(T);
+
+        // New value reaching exactly max via add is allowed; then refused.
+        {
+            var tb = try bag.TreeBag(T).fromSortedCounts(testing.allocator, &.{s[0]}, &.{max - 1});
+            defer tb.deinit();
+            try tb.add(s[1]);
+            try testing.expectEqual(@as(usize, max), tb.totalSize());
+            const before = Snap.take(&tb, s);
+            try testing.expectError(error.CountOverflow, tb.add(s[0]));
+            try testing.expectError(error.CountOverflow, tb.add(s[1]));
+            try testing.expectError(error.CountOverflow, tb.with(s[0]));
+            try Snap.expectSame(before, Snap.take(&tb, s));
+        }
+
+        // Existing value at exactly max; adding a NEW value is refused and
+        // creates no node.
+        {
+            var tb = try bag.TreeBag(T).fromSortedCounts(testing.allocator, &.{s[0]}, &.{max});
+            defer tb.deinit();
+            try testing.expectEqual(@as(usize, max), tb.occurrencesOf(s[0]));
+            const before = Snap.take(&tb, s);
+            try testing.expectError(error.CountOverflow, tb.add(s[1]));
+            try testing.expect(!tb.contains(s[1]));
+            try testing.expectError(error.CountOverflow, tb.add(s[0]));
+            try Snap.expectSame(before, Snap.take(&tb, s));
+            try testing.expectEqual(@as(?T, s[0]), tb.max());
+        }
+
+        // Counted bulk load summing past max is refused as a whole.
+        try testing.expectError(error.CountOverflow, bag.TreeBag(T).fromSortedCounts(testing.allocator, &.{ s[0], s[1] }, &.{ max, 1 }));
+        try testing.expectError(error.CountOverflow, bag.TreeBag(T).fromSortedCounts(testing.allocator, &.{ s[0], s[1] }, &.{ 2, max - 1 }));
+    }
+}
+
+test "object HashBag: cardinality overflow refused before mutation, exact max allowed" {
+    const max = std.math.maxInt(usize);
+    const ObjBag = object.HashBag(i32);
+    // White-box seeding: the object bag has no bulk add, so reaching the max
+    // through `add` alone would take maxInt calls. Seed the count map and the
+    // total directly (no per-occurrence allocation).
+    var b = ObjBag.init(testing.allocator);
+    defer b.deinit();
+    try b.inner.put(testing.allocator, 1, max - 1);
+    b.total_size = max - 1;
+
+    try b.add(2); // new value reaching exactly max: allowed
+    try testing.expectEqual(@as(usize, max), b.len());
+    try testing.expectEqual(@as(usize, 2), b.sizeDistinct());
+
+    try testing.expectError(error.CountOverflow, b.add(1)); // existing
+    try testing.expectError(error.CountOverflow, b.add(3)); // new
+    try testing.expectEqual(@as(usize, max), b.len());
+    try testing.expectEqual(@as(usize, 2), b.sizeDistinct());
+    try testing.expectEqual(@as(usize, max - 1), b.occurrencesOf(1));
+    try testing.expectEqual(@as(usize, 1), b.occurrencesOf(2));
+    try testing.expect(!b.contains(3));
+    var it = b.iterator();
+    var seen: usize = 0;
+    while (it.next()) |_| : (seen += 1) {
+        if (seen == 3) break; // bounded walk: the bag is huge
+    }
+    try testing.expectEqual(@as(usize, 3), seen);
+}
+
+test "ImmutableHashBag: a max-total snapshot round-trips through toMutable" {
+    const max = std.math.maxInt(usize);
+    const immutable = @import("immutable/immutable.zig");
+    var hb = try bag.HashBag(i64).bulkLoadCounts(testing.allocator, &.{ 7, 9 }, &.{ max - 3, 3 });
+    defer hb.deinit();
+    var snap = try immutable.ImmutableI64HashBag.fromMutable(testing.allocator, &hb);
+    defer snap.deinit();
+    try testing.expectEqual(@as(usize, max), snap.totalSize());
+    var back = try snap.toMutable();
+    defer back.deinit();
+    try testing.expect(back.eql(&hb));
+    try testing.expectError(error.CountOverflow, back.add(9));
+    try testing.expectEqual(@as(usize, 3), back.occurrencesOf(9));
+}
+
 test "HashBag: count(predicate) counts occurrences, not distinct values" {
     const P = struct {
         fn isFirst(ctx: i32, v: i32) bool {

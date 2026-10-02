@@ -102,6 +102,15 @@ pub fn TreeBag(comptime T: type) type {
         /// ascending-input contract.
         pub const BulkError = (error{ NotSorted, CountOverflow } || Allocator.Error);
 
+        /// Error set of every single-bag add path. `CountOverflow` is the
+        /// cardinality refusal (spec algorithms.md "Cardinality overflow
+        /// (bags)"): an add whose resulting total size would exceed
+        /// `maxInt(usize)` fails before any mutation and leaves the bag
+        /// unchanged. A per-value count never exceeds the total size, so the
+        /// one total-size check also bounds every count. Reaching exactly
+        /// `maxInt(usize)` is allowed.
+        pub const AddError = (error{CountOverflow} || Allocator.Error);
+
         /// Bulk-loads a fresh `TreeBag` from a presorted (ascending, with equal
         /// runs allowed) flat value slice. A run of equal consecutive values
         /// becomes one entry with `count = run length`; a strictly-decreasing
@@ -127,8 +136,7 @@ pub fn TreeBag(comptime T: type) type {
                 }
                 // Boundary between runs must be strictly ascending.
                 if (j < values.len and orderFn(v, values[j]) != .lt) return error.NotSorted;
-                if (self.total_size > std.math.maxInt(usize) - run) return error.CountOverflow;
-                try self.addOccurrences(v, run);
+                try self.addOccurrences(v, run); // checked: CountOverflow
                 i = j;
             }
             return self;
@@ -146,13 +154,24 @@ pub fn TreeBag(comptime T: type) type {
             for (values, counts, 0..) |v, c, idx| {
                 if (idx > 0 and orderFn(values[idx - 1], v) != .lt) return error.NotSorted;
                 if (c == 0) continue;
-                if (self.total_size > std.math.maxInt(usize) - c) return error.CountOverflow;
+                // Checked add: a refused batch is freed by the errdefer.
                 try self.addOccurrences(v, c);
             }
             return self;
         }
 
-        fn addOccurrences(self: *Self, value: T, occ: usize) Allocator.Error!void {
+        /// Checked bulk add: refuses with `error.CountOverflow` before any
+        /// mutation if the resulting total size would exceed `maxInt(usize)`.
+        fn addOccurrences(self: *Self, value: T, occ: usize) AddError!void {
+            if (occ > std.math.maxInt(usize) - self.total_size) return error.CountOverflow;
+            return self.addOccurrencesUnchecked(value, occ);
+        }
+
+        /// Unchecked core. The caller guarantees `total_size + occ <=
+        /// maxInt(usize)` (e.g. copying counts out of another valid bag into an
+        /// empty one).
+        fn addOccurrencesUnchecked(self: *Self, value: T, occ: usize) Allocator.Error!void {
+            std.debug.assert(occ <= std.math.maxInt(usize) - self.total_size);
             var entry = self.treap.getEntryFor(value);
             if (entry.node) |treap_node| {
                 bagNodeFromTreapNode(treap_node).occ += occ;
@@ -165,8 +184,9 @@ pub fn TreeBag(comptime T: type) type {
             self.total_size += occ;
         }
 
-        /// Add one occurrence of the value.
-        pub fn add(self: *Self, value: T) Allocator.Error!void {
+        /// Add one occurrence of the value. Refuses with `error.CountOverflow`
+        /// (bag unchanged) if the total size is already `maxInt(usize)`.
+        pub fn add(self: *Self, value: T) AddError!void {
             try self.addOccurrences(value, 1);
         }
 
@@ -326,7 +346,7 @@ pub fn TreeBag(comptime T: type) type {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
                 if (predicate(context, treap_node.key)) {
-                    try result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
+                    try result.addOccurrencesUnchecked(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
                 }
             }
             return result;
@@ -339,7 +359,7 @@ pub fn TreeBag(comptime T: type) type {
             var it = TreapType.InorderIterator{ .current = self.treap.getMin() };
             while (it.next()) |treap_node| {
                 if (!predicate(context, treap_node.key)) {
-                    try result.addOccurrences(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
+                    try result.addOccurrencesUnchecked(treap_node.key, bagNodeFromTreapNode(treap_node).occ);
                 }
             }
             return result;
@@ -388,7 +408,7 @@ pub fn TreeBag(comptime T: type) type {
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+        pub fn with(self: *Self, value: T) AddError!*Self {
             try self.add(value);
             return self;
         }

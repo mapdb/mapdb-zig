@@ -61,9 +61,10 @@ pub fn ImmutableHashBag(comptime T: type) type {
         const Mutable = MutableType(T);
 
         pub fn fromSlice(allocator: Allocator, values: []const T) Allocator.Error!Self {
-            var mutable = Mutable.init(allocator);
+            // `Mutable.fromSlice` stays `Allocator.Error`: a fresh bag fed one
+            // slice cannot exceed `maxInt(usize)` total occurrences.
+            var mutable = try Mutable.fromSlice(allocator, values);
             defer mutable.deinit();
-            for (values) |val| try mutable.add(val);
             const result = try fromMutable(allocator, &mutable);
             return result;
         }
@@ -160,10 +161,13 @@ pub fn ImmutableHashBag(comptime T: type) type {
             errdefer mutable.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.isOccupied(i)) {
-                    var j: usize = 0;
-                    while (j < self.counts.values[i]) : (j += 1) {
-                        try mutable.add(self.counts.keys[i]);
-                    }
+                    // Copying a valid snapshot into an empty bag: the running
+                    // total never exceeds `self.size`, so the cardinality
+                    // refusal cannot fire here.
+                    mutable.addOccurrences(self.counts.keys[i], self.counts.values[i]) catch |e| switch (e) {
+                        error.CountOverflow => unreachable,
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
                 }
             }
             return mutable;

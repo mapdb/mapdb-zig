@@ -31,6 +31,15 @@ pub fn HashBag(comptime T: type) type {
         /// (value, count) pair returned by `topOccurrences`.
         pub const OccurrenceEntry = struct { value: T, count: usize };
 
+        /// Error set of every single-bag add path. `CountOverflow` is the
+        /// cardinality refusal (spec algorithms.md "Cardinality overflow
+        /// (bags)"): an add whose resulting total size would exceed
+        /// `maxInt(usize)` fails before any mutation and leaves the bag
+        /// unchanged. A per-value count never exceeds the total size, so the
+        /// one total-size check also bounds every count. Reaching exactly
+        /// `maxInt(usize)` is allowed.
+        pub const AddError = (error{CountOverflow} || Allocator.Error);
+
         /// Infallible: the backing count table is allocated lazily on first add.
         pub fn init(allocator: Allocator) Self {
             return .{
@@ -48,8 +57,10 @@ pub fn HashBag(comptime T: type) type {
             var bag = init(allocator);
             errdefer bag.deinit(); // add() grows incrementally: a mid-build OOM
             // would otherwise strand every table allocation made so far.
+            // A fresh bag plus one slice cannot exceed `maxInt(usize)` total
+            // (a slice length is itself a `usize`), so the unchecked add is safe.
             for (values) |val| {
-                try bag.add(val);
+                try bag.addOccurrencesUnchecked(val, 1);
             }
             return bag;
         }
@@ -69,7 +80,8 @@ pub fn HashBag(comptime T: type) type {
             var self = init(allocator);
             errdefer self.deinit();
             try self.ensureUnusedCapacity(values.len);
-            for (values) |val| try self.add(val);
+            // Fresh bag + one slice: total <= values.len, cannot overflow.
+            for (values) |val| try self.addOccurrencesUnchecked(val, 1);
             return self;
         }
 
@@ -83,24 +95,18 @@ pub fn HashBag(comptime T: type) type {
             errdefer self.deinit();
             try self.ensureUnusedCapacity(values.len);
             for (values, counts) |val, c| {
-                if (c == 0) continue;
-                // Guard the size accumulator and any existing per-value count.
-                const existing = self.occurrencesOf(val);
-                if (existing > std.math.maxInt(usize) - c) return error.CountOverflow;
-                if (self.size > std.math.maxInt(usize) - c) return error.CountOverflow;
+                // Checked add: refuses with `CountOverflow` once the running
+                // total would exceed `maxInt(usize)`; the fresh bag is then
+                // freed by the errdefer, so a refused batch yields nothing.
                 try self.addOccurrences(val, c);
             }
             return self;
         }
 
-        /// Add one occurrence of the value.
-        pub fn add(self: *Self, value: T) Allocator.Error!void {
-            if (self.counts.getPtr(value)) |count_ptr| {
-                count_ptr.* += 1;
-            } else {
-                _ = try self.counts.put(value, 1);
-            }
-            self.size += 1;
+        /// Add one occurrence of the value. Refuses with `error.CountOverflow`
+        /// (bag unchanged) if the total size is already `maxInt(usize)`.
+        pub fn add(self: *Self, value: T) AddError!void {
+            return self.addOccurrences(value, 1);
         }
 
         /// Remove one occurrence. Returns true if the value was present.
@@ -178,10 +184,21 @@ pub fn HashBag(comptime T: type) type {
 
         /// Add multiple occurrences of a value. O(1) — folds the whole run into
         /// the count in one step (a per-occurrence loop would make a bulk count
-        /// of `n` take O(n), and `n == maxInt` hang). The caller is responsible
-        /// for guarding `size`/count overflow before calling (see `bulkLoadCounts`).
-        pub fn addOccurrences(self: *Self, value: T, n: usize) Allocator.Error!void {
+        /// of `n` take O(n), and `n == maxInt` hang). Refuses with
+        /// `error.CountOverflow` before any mutation if the resulting total size
+        /// would exceed `maxInt(usize)`; the bag is then unchanged.
+        pub fn addOccurrences(self: *Self, value: T, n: usize) AddError!void {
             if (n == 0) return;
+            if (n > std.math.maxInt(usize) - self.size) return error.CountOverflow;
+            return self.addOccurrencesUnchecked(value, n);
+        }
+
+        /// Unchecked core of `addOccurrences`. The caller guarantees
+        /// `self.size + n <= maxInt(usize)` (e.g. copying counts out of another
+        /// valid bag into an empty one, or a fresh bag fed one slice).
+        fn addOccurrencesUnchecked(self: *Self, value: T, n: usize) Allocator.Error!void {
+            if (n == 0) return;
+            std.debug.assert(n <= std.math.maxInt(usize) - self.size);
             if (self.counts.getPtr(value)) |count_ptr| {
                 count_ptr.* += n;
             } else {
@@ -269,7 +286,7 @@ pub fn HashBag(comptime T: type) type {
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.isOccupied(i)) {
-                    if (predicate(context, self.counts.keys[i])) try result.addOccurrences(self.counts.keys[i], self.counts.values[i]);
+                    if (predicate(context, self.counts.keys[i])) try result.addOccurrencesUnchecked(self.counts.keys[i], self.counts.values[i]);
                 }
             }
             return result;
@@ -281,7 +298,7 @@ pub fn HashBag(comptime T: type) type {
             errdefer result.deinit();
             for (0..self.counts.capacity) |i| {
                 if (self.counts.isOccupied(i)) {
-                    if (!predicate(context, self.counts.keys[i])) try result.addOccurrences(self.counts.keys[i], self.counts.values[i]);
+                    if (!predicate(context, self.counts.keys[i])) try result.addOccurrencesUnchecked(self.counts.keys[i], self.counts.values[i]);
                 }
             }
             return result;
@@ -348,7 +365,7 @@ pub fn HashBag(comptime T: type) type {
 
         // ---- Fluent API ----
 
-        pub fn with(self: *Self, value: T) Allocator.Error!*Self {
+        pub fn with(self: *Self, value: T) AddError!*Self {
             try self.add(value);
             return self;
         }
@@ -358,8 +375,14 @@ pub fn HashBag(comptime T: type) type {
             return self;
         }
 
-        pub fn withAll(self: *Self, values: []const T) Allocator.Error!*Self {
-            for (values) |val| try self.add(val);
+        /// Adds every value of the slice. The batch is checked as a whole: if
+        /// `values.len` more occurrences would push the total size past
+        /// `maxInt(usize)`, `error.CountOverflow` is returned and nothing is
+        /// added. (An allocator failure part-way still leaves the values added
+        /// so far, as before.)
+        pub fn withAll(self: *Self, values: []const T) AddError!*Self {
+            if (values.len > std.math.maxInt(usize) - self.size) return error.CountOverflow;
+            for (values) |val| try self.addOccurrencesUnchecked(val, 1);
             return self;
         }
 

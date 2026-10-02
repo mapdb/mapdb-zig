@@ -29,7 +29,17 @@ pub fn HashBag(comptime T: type) type {
             self.inner.deinit(self.allocator);
         }
 
-        pub fn add(self: *Self, value: T) Allocator.Error!void {
+        /// Error set of `add`. `CountOverflow` is the cardinality refusal (spec
+        /// algorithms.md "Cardinality overflow (bags)"): an add whose resulting
+        /// total size would exceed `maxInt(usize)` fails before any mutation and
+        /// leaves the bag unchanged. Reaching exactly `maxInt(usize)` is allowed.
+        pub const AddError = (error{CountOverflow} || Allocator.Error);
+
+        /// Add one occurrence of the value. Refuses with `error.CountOverflow`
+        /// (bag unchanged) if the total size is already `maxInt(usize)`; one
+        /// total-size check also bounds the per-value count.
+        pub fn add(self: *Self, value: T) AddError!void {
+            if (self.total_size == std.math.maxInt(usize)) return error.CountOverflow;
             if (self.inner.getPtr(value)) |count_ptr| {
                 count_ptr.* += 1;
             } else {
