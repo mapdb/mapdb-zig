@@ -108,6 +108,17 @@ change, so the compiler points at each site that needs updating.
   field access to the old interleaved layout is gone; the method surface is
   unchanged.
 
+- **Bag adds can fail with `error.CountOverflow`.** `HashBag.add`,
+  `addOccurrences`, `with`, `withAll`, `TreeBag.add`/`with` and the object
+  `HashBag.add` return `AddError!` (`error{CountOverflow} || Allocator.Error`)
+  instead of `Allocator.Error!`: an add whose total size would exceed
+  `maxInt(usize)` is refused before any mutation (spec algorithms.md
+  "Cardinality overflow (bags)"). Callers using an inferred error set only
+  keep `try`; a caller that declares exactly `Allocator.Error!` must widen it
+  to include `error.CountOverflow` (or handle it):
+  `fn f(b: *Bag) Allocator.Error!void { try b.add(x); }` →
+  `fn f(b: *Bag) (error{CountOverflow} || Allocator.Error)!void { ... }`.
+
 Additive, not breaking, but new in the same line: `concurrent.Synchronized` and
 `concurrent.ShardedHashMap` (two concurrency tiers), bounded-LRU read-time TTL
 (`getAt`/`getOrDefaultAt`) and owning-value teardown (`clearWith`). The
